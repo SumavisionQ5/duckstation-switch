@@ -90,26 +90,6 @@ add_library(common
   timestamp.cpp
   timestamp.h
   types.h
-  vulkan/builders.cpp
-  vulkan/builders.h
-  vulkan/context.cpp
-  vulkan/context.h
-  vulkan/shader_cache.cpp
-  vulkan/shader_cache.h
-  vulkan/shader_compiler.cpp
-  vulkan/shader_compiler.h
-  vulkan/staging_buffer.cpp
-  vulkan/staging_buffer.h
-  vulkan/staging_texture.cpp
-  vulkan/staging_texture.h
-  vulkan/stream_buffer.cpp
-  vulkan/stream_buffer.h
-  vulkan/swap_chain.cpp
-  vulkan/swap_chain.h
-  vulkan/texture.cpp
-  vulkan/texture.h
-  vulkan/util.cpp
-  vulkan/util.h
   wav_writer.cpp
   wav_writer.h
   window_info.cpp
@@ -118,7 +98,34 @@ add_library(common
 
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(common PRIVATE glad stb Threads::Threads libchdr glslang vulkan-loader zlib minizip samplerate)
+target_link_libraries(common PRIVATE glad stb Threads::Threads libchdr zlib minizip samplerate)
+
+if (NOT SWITCH)
+  add_library(common PRIVATE
+    vulkan/builders.cpp
+    vulkan/builders.h
+    vulkan/context.cpp
+    vulkan/context.h
+    vulkan/shader_cache.cpp
+    vulkan/shader_cache.h
+    vulkan/shader_compiler.cpp
+    vulkan/shader_compiler.h
+    vulkan/staging_buffer.cpp
+    vulkan/staging_buffer.h
+    vulkan/staging_texture.cpp
+    vulkan/staging_texture.h
+    vulkan/stream_buffer.cpp
+    vulkan/stream_buffer.h
+    vulkan/swap_chain.cpp
+    vulkan/swap_chain.h
+    vulkan/texture.cpp
+    vulkan/texture.h
+    vulkan/util.cpp
+    vulkan/util.h
+  )
+
+  target_link_libraries(common PRIVATE glslang vulkan-loader)
+endif()
 
 if(WIN32)
   target_sources(common PRIVATE
@@ -221,6 +228,12 @@ if(USE_EGL)
     target_sources(common PRIVATE
       gl/context_egl_fbdev.cpp
       gl/context_egl_fbdev.h
+    )
+  endif()
+  if(SWITCH AND USE_EGL)
+    target_sources(common PRIVATE
+      gl/context_egl_switch.cpp
+      gl/context_egl_switch.h
     )
   endif()
 endif()

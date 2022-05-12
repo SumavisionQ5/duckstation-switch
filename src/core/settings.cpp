@@ -836,7 +836,9 @@ float Settings::GetDisplayAspectRatioValue() const
   }
 }
 
-static const auto s_audio_backend_names = make_array("Null", "Cubeb"
+static const auto s_audio_backend_names = make_array("Null",
+#ifndef __SWITCH__
+                                                     "Cubeb"
 #ifdef _WIN32
                                                      ,
                                                      "XAudio2"
@@ -848,9 +850,14 @@ static const auto s_audio_backend_names = make_array("Null", "Cubeb"
                                                      ,
                                                      "OpenSLES"
 #endif
+#else
+                                                     "Switch"
+#endif
 );
 static const auto s_audio_backend_display_names =
-  make_array(TRANSLATABLE("AudioBackend", "Null (No Output)"), TRANSLATABLE("AudioBackend", "Cubeb")
+  make_array(TRANSLATABLE("AudioBackend", "Null (No Output)"),
+#ifndef __SWITCH__
+             TRANSLATABLE("AudioBackend", "Cubeb")
 #ifdef _WIN32
                                                                  ,
              TRANSLATABLE("AudioBackend", "XAudio2")
@@ -861,6 +868,9 @@ static const auto s_audio_backend_display_names =
 #else
                                                                  ,
              TRANSLATABLE("AudioBackend", "OpenSL ES")
+#endif
+#else
+              TRANSLATABLE("AudioBackend", "Switch")
 #endif
   );
 

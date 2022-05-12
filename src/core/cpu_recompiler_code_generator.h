@@ -25,9 +25,9 @@ public:
   static const char* GetHostRegName(HostReg reg, RegSize size = HostPointerSize);
   static void AlignCodeBuffer(JitCodeBuffer* code_buffer);
 
-  static bool BackpatchLoadStore(const LoadStoreBackpatchInfo& lbi);
-  static void BackpatchBranch(void* pc, u32 pc_size, void* target);
-  static void BackpatchReturn(void* pc, u32 pc_size);
+  static bool BackpatchLoadStore(JitCodeBuffer* code_buffer, const LoadStoreBackpatchInfo& lbi);
+  static void BackpatchBranch(JitCodeBuffer* code_buffer, void* pc, u32 pc_size, void* target);
+  static void BackpatchReturn(JitCodeBuffer* code_buffer, void* pc, u32 pc_size);
 
   bool CompileBlock(CodeBlock* block, CodeBlock::HostCodePointer* out_host_code, u32* out_host_code_size);
 

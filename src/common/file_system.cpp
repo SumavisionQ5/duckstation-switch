@@ -640,9 +640,18 @@ void SanitizeFileName(std::string& Destination, bool StripSlashes /* = true*/)
 
 bool IsAbsolutePath(const std::string_view& path)
 {
-#ifdef _WIN32
+#if defined(_WIN32)
   return (path.length() >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
           path[1] == ':' && (path[2] == '/' || path[2] == '\\'));
+#elif defined(__SWITCH__)
+  if (path.length() >= 1 && path[0] == '/')
+    return true;
+
+  size_t i = 0;
+  while (i < path.length() && isalnum(path[i]))
+    i++;
+
+  return i < path.length() && path[i] == ':';
 #else
   return (path.length() >= 1 && path[0] == '/');
 #endif
@@ -814,6 +823,8 @@ std::vector<std::string> GetRootDirectoryList()
     if (!path.empty())
       results.push_back(StringUtil::WideStringToUTF8String(path));
   }
+#elif defined(__SWITCH__)
+  results.push_back("sdmc:");
 #else
   const char* home_path = std::getenv("HOME");
   if (home_path)
@@ -2032,6 +2043,12 @@ static u32 RecursiveFindFiles(const char* OriginPath, const char* ParentPath, co
     tempStr = StringUtil::StdStringFromFormat("%s", OriginPath);
   }
 
+#ifdef __SWITCH__
+  // on Switch sdmc: is not a valid directory
+  if (tempStr[tempStr.size()-1] == ':')
+    tempStr += "/";
+#endif
+
   DIR* pDir = opendir(tempStr.c_str());
   if (pDir == nullptr)
     return 0;
@@ -2073,7 +2090,7 @@ static u32 RecursiveFindFiles(const char* OriginPath, const char* ParentPath, co
     FILESYSTEM_FIND_DATA outData;
     outData.Attributes = 0;
 
-#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__SWITCH__)
     struct stat sDir;
     if (stat(full_path, &sDir) < 0)
       continue;
@@ -2181,7 +2198,7 @@ bool StatFile(const char* Path, FILESYSTEM_STAT_DATA* pStatData)
 #endif
 
     // stat file
-#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__SWITCH__)
   struct stat sysStatData;
   if (stat(Path, &sysStatData) < 0)
 #else
@@ -2215,7 +2232,7 @@ bool StatFile(std::FILE* fp, FILESYSTEM_STAT_DATA* pStatData)
     return false;
 
     // stat file
-#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__SWITCH__)
   struct stat sysStatData;
   if (fstat(fd, &sysStatData) < 0)
 #else
@@ -2257,7 +2274,7 @@ bool FileExists(const char* Path)
 #endif
 
   // stat file
-#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__SWITCH__)
   struct stat sysStatData;
   if (stat(Path, &sysStatData) < 0)
 #else
@@ -2287,7 +2304,7 @@ bool DirectoryExists(const char* Path)
 #endif
 
   // stat file
-#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__HAIKU__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__SWITCH__)
   struct stat sysStatData;
   if (stat(Path, &sysStatData) < 0)
 #else
@@ -2468,6 +2485,10 @@ std::string GetProgramPath()
 
   buffer[cb] = '\0';
   return buffer;
+#elif defined(__SWITCH__)
+  // cheating, but otherwise things would get messy while debugging
+  // because nxlink sends binaries to /switch
+  return "/switch/duckstation/duckstation.nro";
 #else
   return {};
 #endif

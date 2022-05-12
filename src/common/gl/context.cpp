@@ -31,6 +31,8 @@ Log_SetChannel(GL::Context);
 #endif
 #elif defined(ANDROID)
 #include "context_egl_android.h"
+#elif defined(__SWITCH__)
+#include "context_egl_switch.h"
 #else
 #error Unknown EGL platform
 #endif
@@ -105,6 +107,8 @@ std::unique_ptr<GL::Context> Context::Create(const WindowInfo& wi, const Version
 #ifdef USE_EGL
   context = ContextEGLAndroid::Create(wi, versions_to_try, num_versions_to_try);
 #endif
+#elif defined(__SWITCH__)
+  context = ContextEGLSwitch::Create(wi, versions_to_try, num_versions_to_try);
 #endif
 
 #if defined(USE_X11)

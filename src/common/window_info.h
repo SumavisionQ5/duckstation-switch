@@ -15,6 +15,7 @@ struct WindowInfo
     Android,
     Display,
     Libretro,
+    Switch,
   };
 
   enum class SurfaceFormat

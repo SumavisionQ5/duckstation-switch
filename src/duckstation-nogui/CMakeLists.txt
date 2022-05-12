@@ -4,7 +4,28 @@ add_executable(duckstation-nogui
   nogui_host_interface.h
 )
 
-target_link_libraries(duckstation-nogui PRIVATE core common imgui glad frontend-common scmversion vulkan-loader)
+target_link_libraries(duckstation-nogui PRIVATE core common imgui glad frontend-common scmversion)
+
+if(SWITCH)
+  enable_language(ASM)
+
+  target_sources(duckstation-nogui PRIVATE
+    imgui_impl_switch.cpp
+    imgui_impl_switch.h
+    switch_host_interface.cpp
+    switch_host_interface.h
+    switch_asm.s
+  )
+  target_link_libraries(duckstation-nogui PUBLIC EGL glapi drm_nouveau nx)
+
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/control.nacp
+    COMMAND ${NACPTOOL} --create "duckstation" "Stenzek, RSDuck" "aaaa" ${CMAKE_BINARY_DIR}/control.nacp)
+  
+    add_custom_target(duckstation.nro ALL
+      ${ELF2NRO} ${CMAKE_BINARY_DIR}/bin/duckstation-nogui ${CMAKE_BINARY_DIR}/duckstation.nro --icon=${CMAKE_SOURCE_DIR}/extras/icons/icon-switch.jpg --nacp=${CMAKE_BINARY_DIR}/control.nacp
+      DEPENDS duckstation-nogui
+      ${CMAKE_BINARY_DIR}/control.nacp)
+endif()
 
 if(USE_SDL2)
   target_sources(duckstation-nogui PRIVATE 

@@ -27,8 +27,6 @@ add_library(frontend-common
   imgui_fullscreen.h
   imgui_impl_opengl3.cpp
   imgui_impl_opengl3.h
-  imgui_impl_vulkan.cpp
-  imgui_impl_vulkan.h
   imgui_styles.cpp
   imgui_styles.h  
   opengl_host_display.cpp
@@ -41,11 +39,20 @@ add_library(frontend-common
   postprocessing_shadergen.h
   save_state_selector_ui.cpp
   save_state_selector_ui.h
-  vulkan_host_display.cpp
-  vulkan_host_display.h
 )
 
-target_link_libraries(frontend-common PUBLIC core common glad vulkan-loader cubeb imgui simpleini tinyxml2 rapidjson scmversion)
+target_link_libraries(frontend-common PUBLIC core common glad cubeb imgui simpleini tinyxml2 rapidjson scmversion)
+
+if (NOT SWITCH)
+  add_library(frontend-common
+    imgui_impl_vulkan.cpp
+    imgui_impl_vulkan.h
+    vulkan_host_display.cpp
+    vulkan_host_display.h
+  )
+
+  target_link_libraries(frontend-common PUBLIC vulkan-loader)
+endif()
 
 if(WIN32)
   target_sources(frontend-common PRIVATE
@@ -90,6 +97,12 @@ if(SDL2_FOUND)
     add_custom_command(TARGET frontend-common POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SDL2_DLL_PATH}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/SDL2.dll")
   endif()
+endif()
+
+if (SWITCH)
+  target_sources(frontend-common PRIVATE
+    switch_audio_stream.cpp
+    switch_controller_interface.cpp)
 endif()
 
 if(USE_EVDEV)

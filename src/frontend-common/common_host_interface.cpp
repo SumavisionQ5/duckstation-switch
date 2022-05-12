@@ -39,7 +39,7 @@
 #include <cstring>
 #include <ctime>
 
-#ifndef _UWP
+#if !defined(_UWP) && !defined(__SWITCH__)
 #include "cubeb_audio_stream.h"
 #endif
 
@@ -61,6 +61,10 @@
 #include <KnownFolders.h>
 #include <ShlObj.h>
 #include <mmsystem.h>
+#endif
+
+#ifdef __SWITCH__
+#include "switch_audio_stream.h"
 #endif
 
 namespace FrontendCommon {
@@ -537,10 +541,13 @@ void CommonHostInterface::CreateImGuiContext()
 {
   ImGui::CreateContext();
   ImGui::GetIO().IniFilename = nullptr;
-#ifndef __ANDROID__
+#if defined(__ANDROID__)
   // Android has no keyboard, nor are we using ImGui for any actual user-interactable windows.
   ImGui::GetIO().ConfigFlags |=
     ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NoMouseCursorChange;
+#elif defined(__SWITCH__)
+  ImGui::GetIO().ConfigFlags |=
+    ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NoMouseCursorChange;
 #endif
 }
 
@@ -684,6 +691,7 @@ std::unique_ptr<AudioStream> CommonHostInterface::CreateAudioStream(AudioBackend
     case AudioBackend::Null:
       return AudioStream::CreateNullAudioStream();
 
+#ifndef __SWITCH__
 #ifndef _UWP
     case AudioBackend::Cubeb:
       return CubebAudioStream::Create();
@@ -697,6 +705,11 @@ std::unique_ptr<AudioStream> CommonHostInterface::CreateAudioStream(AudioBackend
 #ifdef WITH_SDL2
     case AudioBackend::SDL:
       return SDLAudioStream::Create();
+#endif
+
+#else
+    case AudioBackend::Switch:
+      return SwitchAudioStream::Create();
 #endif
 
     default:
@@ -1074,6 +1087,8 @@ void CommonHostInterface::SetUserDirectory()
     const char* home_path = getenv("HOME");
     if (home_path)
       m_user_directory = StringUtil::StdStringFromFormat("%s/Library/Application Support/DuckStation", home_path);
+#elif defined(__SWITCH__)
+    m_user_directory = "/switch/duckstation";
 #endif
 
     if (m_user_directory.empty())

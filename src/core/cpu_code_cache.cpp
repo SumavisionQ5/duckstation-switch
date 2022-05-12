@@ -26,7 +26,7 @@ static constexpr u32 INVALIDATE_THRESHOLD_TO_DISABLE_LINKING = 10;
 #ifdef WITH_RECOMPILER
 
 // Currently remapping the code buffer doesn't work in macOS or Haiku.
-#if !defined(__HAIKU__) && !defined(__APPLE__) && !defined(_UWP)
+#if !defined(__HAIKU__) && !defined(__APPLE__) && !defined(_UWP) && !defined(__SWITCH__)
 #define USE_STATIC_CODE_BUFFER 1
 #endif
 
@@ -963,7 +963,7 @@ void LinkBlock(CodeBlock* from, CodeBlock* to, void* host_pc, void* host_resolve
   {
     Log_ProfilePrintf("Backpatching %p(%08x) to jump to block %p (%08x)", host_pc, from->GetPC(), to, to->GetPC());
     s_code_buffer.WriteProtect(false);
-    Recompiler::CodeGenerator::BackpatchBranch(host_pc, host_pc_size, reinterpret_cast<void*>(to->host_code));
+    Recompiler::CodeGenerator::BackpatchBranch(&s_code_buffer, host_pc, host_pc_size, reinterpret_cast<void*>(to->host_code));
     s_code_buffer.WriteProtect(true);
   }
 #endif
@@ -990,7 +990,7 @@ void UnlinkBlock(CodeBlock* block)
     if (li.host_pc)
     {
       Log_ProfilePrintf("Backpatching %p(%08x) [predecessor] to jump to resolver", li.host_pc, li.block->GetPC());
-      Recompiler::CodeGenerator::BackpatchBranch(li.host_pc, li.host_pc_size, li.host_resolve_pc);
+      Recompiler::CodeGenerator::BackpatchBranch(&s_code_buffer, li.host_pc, li.host_pc_size, li.host_resolve_pc);
     }
 #endif
 
@@ -1010,7 +1010,7 @@ void UnlinkBlock(CodeBlock* block)
     if (li.host_pc)
     {
       Log_ProfilePrintf("Backpatching %p(%08x) [successor] to jump to resolver", li.host_pc, li.block->GetPC());
-      Recompiler::CodeGenerator::BackpatchBranch(li.host_pc, li.host_pc_size, li.host_resolve_pc);
+      Recompiler::CodeGenerator::BackpatchBranch(&s_code_buffer, li.host_pc, li.host_pc_size, li.host_resolve_pc);
     }
 #endif
 
@@ -1133,7 +1133,7 @@ Common::PageFaultHandler::HandlerResult MMapPageFaultHandler(void* exception_pc,
 
       // found it, do fixup
       s_code_buffer.WriteProtect(false);
-      const bool backpatch_result = Recompiler::CodeGenerator::BackpatchLoadStore(lbi);
+      const bool backpatch_result = Recompiler::CodeGenerator::BackpatchLoadStore(&s_code_buffer, lbi);
       s_code_buffer.WriteProtect(true);
       if (backpatch_result)
       {
@@ -1177,7 +1177,7 @@ Common::PageFaultHandler::HandlerResult LUTPageFaultHandler(void* exception_pc, 
     {
       // found it, do fixup
       s_code_buffer.WriteProtect(false);
-      const bool backpatch_result = Recompiler::CodeGenerator::BackpatchLoadStore(lbi);
+      const bool backpatch_result = Recompiler::CodeGenerator::BackpatchLoadStore(&s_code_buffer, lbi);
       s_code_buffer.WriteProtect(true);
       if (backpatch_result)
       {
@@ -1215,7 +1215,7 @@ void CPU::Recompiler::Thunks::ResolveBranch(CodeBlock* block, void* host_pc, voi
   {
     // just turn it into a return to the dispatcher instead.
     s_code_buffer.WriteProtect(false);
-    CodeGenerator::BackpatchReturn(host_pc, host_pc_size);
+    CodeGenerator::BackpatchReturn(&s_code_buffer, host_pc, host_pc_size);
     s_code_buffer.WriteProtect(true);
   }
   else

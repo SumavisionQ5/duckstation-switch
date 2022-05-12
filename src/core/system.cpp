@@ -1019,9 +1019,11 @@ bool CreateGPU(GPURenderer renderer)
       g_gpu = GPU::CreateHardwareOpenGLRenderer();
       break;
 
+#ifndef __SWITCH__
     case GPURenderer::HardwareVulkan:
       g_gpu = GPU::CreateHardwareVulkanRenderer();
       break;
+#endif
 
 #ifdef _WIN32
     case GPURenderer::HardwareD3D11:

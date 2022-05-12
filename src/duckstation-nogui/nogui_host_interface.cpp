@@ -14,7 +14,9 @@
 #include "frontend-common/imgui_styles.h"
 #include "frontend-common/ini_settings_interface.h"
 #include "frontend-common/opengl_host_display.h"
+#ifndef __SWITCH__
 #include "frontend-common/vulkan_host_display.h"
+#endif
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
@@ -105,9 +107,11 @@ bool NoGUIHostInterface::CreateDisplay(bool fullscreen)
   Assert(!m_display);
   switch (g_settings.gpu_renderer)
   {
+#ifndef __SWITCH__
     case GPURenderer::HardwareVulkan:
       m_display = std::make_unique<FrontendCommon::VulkanHostDisplay>();
       break;
+#endif
 
     case GPURenderer::HardwareOpenGL:
 #ifndef _WIN32

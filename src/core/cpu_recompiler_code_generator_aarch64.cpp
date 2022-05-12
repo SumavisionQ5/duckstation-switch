@@ -93,9 +93,11 @@ static const a64::XRegister GetFastmemBasePtrReg()
 
 CodeGenerator::CodeGenerator(JitCodeBuffer* code_buffer)
   : m_code_buffer(code_buffer), m_register_cache(*this),
-    m_near_emitter(static_cast<vixl::byte*>(code_buffer->GetFreeCodePointer()), code_buffer->GetFreeCodeSpace(),
+    m_near_emitter(static_cast<vixl::byte*>(code_buffer->ToRwAddr(code_buffer->GetFreeCodePointer())),
+                   code_buffer->GetFreeCodeSpace(),
                    a64::PositionDependentCode),
-    m_far_emitter(static_cast<vixl::byte*>(code_buffer->GetFreeFarCodePointer()), code_buffer->GetFreeFarCodeSpace(),
+    m_far_emitter(static_cast<vixl::byte*>(code_buffer->ToRwAddr(code_buffer->GetFreeFarCodePointer())),
+                  code_buffer->GetFreeFarCodeSpace(),
                   a64::PositionDependentCode),
     m_emit(&m_near_emitter)
 {
@@ -1753,7 +1755,7 @@ void CodeGenerator::EmitUpdateFastmemBase()
   m_emit->Ldr(GetFastmemBasePtrReg(), a64::MemOperand(GetCPUPtrReg(), offsetof(State, fastmem_base)));
 }
 
-bool CodeGenerator::BackpatchLoadStore(const LoadStoreBackpatchInfo& lbi)
+bool CodeGenerator::BackpatchLoadStore(JitCodeBuffer* code_buffer, const LoadStoreBackpatchInfo& lbi)
 {
   Log_DevPrintf("Backpatching %p (guest PC 0x%08X) to slowmem at %p", lbi.host_pc, lbi.guest_pc, lbi.host_slowmem_pc);
 
@@ -1764,7 +1766,8 @@ bool CodeGenerator::BackpatchLoadStore(const LoadStoreBackpatchInfo& lbi)
   Assert(a64::Instruction::IsValidImmPCOffset(a64::UncondBranchType, jump_distance >> 2));
 
   // turn it into a jump to the slowmem handler
-  vixl::aarch64::MacroAssembler emit(static_cast<vixl::byte*>(lbi.host_pc), lbi.host_code_size,
+  vixl::aarch64::MacroAssembler emit(code_buffer->ToRwAddr(static_cast<vixl::byte*>(lbi.host_pc)),
+                                     lbi.host_code_size,
                                      a64::PositionDependentCode);
   emit.b(jump_distance >> 2);
 
@@ -1777,11 +1780,11 @@ bool CodeGenerator::BackpatchLoadStore(const LoadStoreBackpatchInfo& lbi)
   return true;
 }
 
-void CodeGenerator::BackpatchReturn(void* pc, u32 pc_size)
+void CodeGenerator::BackpatchReturn(JitCodeBuffer* code_buffer, void* pc, u32 pc_size)
 {
   Log_ProfilePrintf("Backpatching %p to return", pc);
 
-  vixl::aarch64::MacroAssembler emit(static_cast<vixl::byte*>(pc), pc_size, a64::PositionDependentCode);
+  vixl::aarch64::MacroAssembler emit(code_buffer->ToRwAddr(static_cast<vixl::byte*>(pc)), pc_size, a64::PositionDependentCode);
   emit.ret();
 
   const s32 nops = (static_cast<s32>(pc_size) - static_cast<s32>(emit.GetCursorOffset())) / 4;
@@ -1792,7 +1795,7 @@ void CodeGenerator::BackpatchReturn(void* pc, u32 pc_size)
   JitCodeBuffer::FlushInstructionCache(pc, pc_size);
 }
 
-void CodeGenerator::BackpatchBranch(void* pc, u32 pc_size, void* target)
+void CodeGenerator::BackpatchBranch(JitCodeBuffer* code_buffer, void* pc, u32 pc_size, void* target)
 {
   Log_ProfilePrintf("Backpatching %p to %p [branch]", pc, target);
 
@@ -1801,7 +1804,8 @@ void CodeGenerator::BackpatchBranch(void* pc, u32 pc_size, void* target)
   Assert(Common::IsAligned(jump_distance, 4));
   Assert(a64::Instruction::IsValidImmPCOffset(a64::UncondBranchType, jump_distance >> 2));
 
-  vixl::aarch64::MacroAssembler emit(static_cast<vixl::byte*>(pc), pc_size, a64::PositionDependentCode);
+  vixl::aarch64::MacroAssembler emit(code_buffer->ToRwAddr(static_cast<vixl::byte*>(pc)),
+                                     pc_size, a64::PositionDependentCode);
   emit.b(jump_distance >> 2);
 
   // shouldn't have any nops

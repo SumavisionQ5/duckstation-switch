@@ -108,6 +108,7 @@ enum class DisplayAspectRatio : u8
 enum class AudioBackend : u8
 {
   Null,
+#ifndef __SWITCH__
   Cubeb,
 #ifdef _WIN32
   XAudio2,
@@ -116,6 +117,9 @@ enum class AudioBackend : u8
   SDL,
 #else
   OpenSLES,
+#endif
+#else
+  Switch,
 #endif
   Count
 };

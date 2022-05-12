@@ -122,6 +122,9 @@ static constexpr std::array<const char*, static_cast<u32>(ControllerInterface::B
 #ifdef WITH_EVDEV
   TRANSLATABLE("ControllerInterface", "Evdev"),
 #endif
+#ifdef __SWITCH__
+  "Switch",
+#endif
 }};
 
 std::optional<ControllerInterface::Backend> ControllerInterface::ParseBackendName(const char* name)
@@ -142,14 +145,14 @@ const char* ControllerInterface::GetBackendName(Backend type)
 
 ControllerInterface::Backend ControllerInterface::GetDefaultBackend()
 {
-#ifdef WITH_SDL2
+#if defined(WITH_SDL2)
   return Backend::SDL;
-#else
-#ifdef _WIN32
+#elif defined(_WIN32)
   return Backend::XInput;
+#elif defined(__SWITCH__)
+  return Backend::Switch;
 #else
   return Backend::None;
-#endif
 #endif
 }
 
@@ -164,6 +167,9 @@ ControllerInterface::Backend ControllerInterface::GetDefaultBackend()
 #endif
 #ifdef WITH_EVDEV
 #include "evdev_controller_interface.h"
+#endif
+#ifdef __SWITCH__
+#include "switch_controller_interface.h"
 #endif
 
 std::unique_ptr<ControllerInterface> ControllerInterface::Create(Backend type)
@@ -183,6 +189,10 @@ std::unique_ptr<ControllerInterface> ControllerInterface::Create(Backend type)
 #ifdef WITH_EVDEV
   if (type == Backend::Evdev)
     return std::make_unique<EvdevControllerInterface>();
+#endif
+#ifdef __SWITCH__
+  if (type == Backend::Switch)
+    return std::make_unique<SwitchControllerInterface>();
 #endif
 
   return {};

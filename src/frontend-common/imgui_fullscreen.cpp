@@ -1284,6 +1284,8 @@ void CloseFileSelector()
   std::string().swap(s_file_selector_current_directory);
   s_file_selector_items.clear();
   ImGui::CloseCurrentPopup();
+
+  ImGui::SetNextWindowFocus();
 }
 
 void DrawFileSelector()

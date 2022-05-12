@@ -18,6 +18,8 @@ Log_SetChannel(Common::PageFaultHandler);
 #include <signal.h>
 #include <unistd.h>
 #define USE_SIGSEGV 1
+#elif defined(__SWITCH__)
+#include <switch.h>
 #endif
 
 namespace Common::PageFaultHandler {
@@ -350,6 +352,37 @@ u32 GetHandlerCodeSize()
   return 0;
 }
 
+#elif defined(__SWITCH__)
+
+bool PageFaultHandler(ThreadExceptionDump* ctx)
+{
+  if (s_in_handler)
+    return false;
+
+  std::lock_guard<std::mutex> guard(m_handler_lock);
+
+  s_in_handler = true;
+
+  for (const RegisteredHandler& rh : m_handlers)
+  {
+    void* const pc = reinterpret_cast<void*>(ctx->pc.x);
+    void* const fault_addr = reinterpret_cast<void*>(ctx->far.x);
+    const bool is_write = IsStoreInstruction(pc);
+    if (rh.callback(pc, fault_addr, is_write) == HandlerResult::ContinueExecution)
+    {
+      s_in_handler = false;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+u32 GetHandlerCodeSize()
+{
+  return 0;
+}
+
 #else
 
 u32 GetHandlerCodeSize()
@@ -405,8 +438,7 @@ bool InstallHandler(const void* owner, void* start_pc, u32 code_size, Callback c
       return false;
     }
 #endif
-
-#else
+#elif !defined(__SWITCH__)
     return false;
 #endif
   }
@@ -450,7 +482,7 @@ bool RemoveHandler(const void* owner)
     }
 
     s_old_sigsegv_action = {};
-#else
+#elif !defined(__SWITCH__)
     return false;
 #endif
   }

@@ -18,6 +18,8 @@ Log_SetChannel(Common::MemoryArena);
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#elif defined(__SWITCH__)
+#include <switch.h>
 #endif
 
 namespace Common {
@@ -98,6 +100,8 @@ bool MemoryArena::IsValid() const
 {
 #if defined(_WIN32)
   return m_file_handle != nullptr;
+#elif defined(__SWITCH__)
+  return false;
 #else
   return m_shmem_fd >= 0;
 #endif
@@ -109,6 +113,9 @@ static std::string GetFileMappingName()
   const unsigned pid = GetCurrentProcessId();
 #elif defined(__ANDROID__) || defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
   const unsigned pid = static_cast<unsigned>(getpid());
+#elif defined(__SWITCH__)
+  // miauz
+  const unsigned pid = 0;
 #else
 #error Unknown platform.
 #endif
@@ -215,6 +222,17 @@ bool MemoryArena::Create(size_t size, bool writable, bool executable)
   m_writable = writable;
   m_executable = executable;
   return true;
+#elif defined(__SWITCH__)
+  m_size = size;
+  m_writable = writable;
+  m_executable = executable;
+
+  m_underlying_memory = aligned_alloc(0x1000, size);
+  virtmemLock();
+  m_mapping_base = virtmemFindCodeMemory(size, 0x1000);
+  m_mapping_base_reservation = virtmemAddReservation(m_mapping_base_reservation, size);
+  virtmemUnlock();
+  return R_SUCCEEDED(svcMapProcessCodeMemory(envGetOwnProcessHandle(), (u64)m_mapping_base, (u64)m_underlying_memory, size));
 #else
   return false;
 #endif
@@ -233,6 +251,16 @@ void MemoryArena::Destroy()
   {
     close(m_shmem_fd);
     m_shmem_fd = -1;
+  }
+#elif defined(__SWITCH__)
+  if (m_underlying_memory)
+  {
+    svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64)m_mapping_base, (u64)m_underlying_memory, m_size);
+    virtmemLock();
+    virtmemRemoveReservation(m_mapping_base_reservation);
+    virtmemUnlock();
+    free(m_underlying_memory);
+    m_underlying_memory = nullptr;
   }
 #endif
 }
@@ -280,6 +308,24 @@ void* MemoryArena::CreateViewPtr(size_t offset, size_t size, bool writable, bool
   base_pointer = mmap(fixed_address, size, prot, flags, m_shmem_fd, static_cast<off_t>(offset));
   if (base_pointer == reinterpret_cast<void*>(-1))
     return nullptr;
+#elif defined(__SWITCH__)
+  Assert(writable && !executable);
+  VirtmemReservation* reservation = nullptr;
+  virtmemLock();
+  base_pointer = fixed_address
+    ? fixed_address
+    : virtmemFindAslr(size, 0x1000);
+
+  u64 source = (u64)m_mapping_base + offset;
+
+  if (R_FAILED(svcMapProcessMemory(base_pointer, envGetOwnProcessHandle(), source, size)))
+  {
+    virtmemUnlock();
+    return nullptr;
+  }
+  virtmemAddReservation(base_pointer, size);
+  m_mirrors.push_back({base_pointer, (void*)source, reservation});
+  virtmemUnlock();
 #else
   return nullptr;
 #endif
@@ -294,6 +340,8 @@ bool MemoryArena::FlushViewPtr(void* address, size_t size)
   return FlushViewOfFile(address, size);
 #elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
   return (msync(address, size, 0) >= 0);
+#elif defined(__SWITCH__)
+  return true;
 #else
   return false;
 #endif
@@ -306,6 +354,26 @@ bool MemoryArena::ReleaseViewPtr(void* address, size_t size)
   result = static_cast<bool>(UnmapViewOfFile(address));
 #elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
   result = (munmap(address, size) >= 0);
+#elif defined(__SWITCH__)
+  result = false;
+  for (auto it = m_mirrors.begin(); it != m_mirrors.end(); ++it)
+  {
+    if (it->address == address)
+    {
+      result = R_SUCCEEDED(svcUnmapProcessMemory(address, envGetOwnProcessHandle(), (u64)it->source, size));
+      if (result)
+      {
+        if (it->reservation)
+        {
+          virtmemLock();
+          virtmemRemoveReservation(it->reservation);
+          virtmemUnlock();
+        }
+        m_mirrors.erase(it);
+      }
+      break;
+    }
+  }
 #else
   result = false;
 #endif
@@ -332,6 +400,13 @@ void* MemoryArena::CreateReservedPtr(size_t size, void* fixed_address /*= nullpt
   base_pointer = mmap(fixed_address, size, PROT_NONE, flags, -1, 0);
   if (base_pointer == reinterpret_cast<void*>(-1))
     return nullptr;
+#elif defined(__SWITCH__)
+  virtmemLock();
+  base_pointer = fixed_address
+    ? fixed_address
+    : virtmemFindAslr(size, 0x1000);
+  m_reserved_regions.push_back({fixed_address, virtmemAddReservation(fixed_address, size)});
+  virtmemUnlock();
 #else
   return nullptr;
 #endif
@@ -347,6 +422,20 @@ bool MemoryArena::ReleaseReservedPtr(void* address, size_t size)
   result = static_cast<bool>(VirtualFree(address, 0, MEM_RELEASE));
 #elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
   result = (munmap(address, size) >= 0);
+#elif defined(__SWITCH__)
+  result = false;
+  for (auto it = m_reserved_regions.begin(); it != m_reserved_regions.end(); ++it)
+  {
+    if (it->address == address)
+    {
+      virtmemLock();
+      virtmemRemoveReservation(it->reservation);
+      virtmemUnlock();
+      m_reserved_regions.erase(it);
+      result = true;
+      break;
+    }
+  }
 #else
   result = false;
 #endif
@@ -384,8 +473,7 @@ MemoryArena::View::View(MemoryArena* parent, void* base_pointer, size_t arena_of
                         bool writable)
   : m_parent(parent), m_base_pointer(base_pointer), m_arena_offset(arena_offset), m_mapping_size(mapping_size),
     m_writable(writable)
-{
-}
+{}
 
 MemoryArena::View::View(View&& view)
   : m_parent(view.m_parent), m_base_pointer(view.m_base_pointer), m_arena_offset(view.m_arena_offset),

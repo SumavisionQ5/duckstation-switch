@@ -33,6 +33,9 @@ public:
 #ifdef WITH_EVDEV
     Evdev,
 #endif
+#ifdef __SWITCH__
+    Switch,
+#endif
     Count
   };
 

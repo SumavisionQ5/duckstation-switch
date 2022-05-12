@@ -1,5 +1,8 @@
 #pragma once
 #include "types.h"
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 class JitCodeBuffer
 {
@@ -28,6 +31,15 @@ public:
   ALWAYS_INLINE u32 GetFreeFarCodeSpace() const { return static_cast<u32>(m_far_code_size - m_far_code_used); }
   void CommitFarCode(u32 length);
 
+  ALWAYS_INLINE u8* ToRwAddr(const u8* addr)
+  {
+#ifdef __SWITCH__
+    return addr - m_code_ptr + m_rw_ptr;
+#else
+    return addr;
+#endif
+  }
+
   /// Adjusts the free code pointer to the specified alignment, padding with bytes.
   /// Assumes alignment is a power-of-two.
   void Align(u32 alignment, u8 padding_value);
@@ -43,6 +55,11 @@ public:
 #endif
 
 private:
+#ifdef __SWITCH__
+  u8* m_base_memory = nullptr;
+  u8* m_rw_ptr = nullptr;
+  VirtmemReservation* m_rx_reservation = nullptr, *m_rw_reservation = nullptr;
+#endif
   u8* m_code_ptr = nullptr;
   u8* m_free_code_ptr = nullptr;
   u32 m_code_size = 0;

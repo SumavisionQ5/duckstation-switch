@@ -1554,7 +1554,7 @@ void CodeGenerator::EmitStoreGuestMemorySlowmem(const CodeBlockInstruction& cbi,
   }
 }
 
-bool CodeGenerator::BackpatchLoadStore(const LoadStoreBackpatchInfo& lbi)
+bool CodeGenerator::BackpatchLoadStore(JitCodeBuffer* code_buffer, const LoadStoreBackpatchInfo& lbi)
 {
   Log_DevPrintf("Backpatching %p (guest PC 0x%08X) to slowmem at %p", lbi.host_pc, lbi.guest_pc, lbi.host_slowmem_pc);
 
@@ -1583,7 +1583,7 @@ bool CodeGenerator::BackpatchLoadStore(const LoadStoreBackpatchInfo& lbi)
   return true;
 }
 
-void CodeGenerator::BackpatchReturn(void* pc, u32 pc_size)
+void CodeGenerator::BackpatchReturn(JitCodeBuffer* code_buffer, void* pc, u32 pc_size)
 {
   Log_ProfilePrintf("Backpatching %p to return", pc);
 
@@ -1598,7 +1598,7 @@ void CodeGenerator::BackpatchReturn(void* pc, u32 pc_size)
   JitCodeBuffer::FlushInstructionCache(pc, pc_size);
 }
 
-void CodeGenerator::BackpatchBranch(void* pc, u32 pc_size, void* target)
+void CodeGenerator::BackpatchBranch(JitCodeBuffer* code_buffer, void* pc, u32 pc_size, void* target)
 {
   Log_ProfilePrintf("Backpatching %p to %p [branch]", pc, target);
 

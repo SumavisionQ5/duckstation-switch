@@ -8,6 +8,11 @@ Log_SetChannel(JitCodeBuffer);
 
 #if defined(_WIN32)
 #include "windows_headers.h"
+#elif defined(__SWITCH__)
+#include <switch.h>
+#include <stdlib.h>
+
+extern "C" char __start__;
 #else
 #include <errno.h>
 #include <sys/mman.h>
@@ -77,6 +82,68 @@ bool JitCodeBuffer::Allocate(u32 size /* = 64 * 1024 * 1024 */, u32 far_code_siz
     Log_ErrorPrintf("mmap(RWX, %u) for internal buffer failed: %d", m_total_size, errno);
     return false;
   }
+#elif defined(__SWITCH__)
+  m_base_memory = static_cast<u8*>(aligned_alloc(0x1000, m_total_size));
+  if (!m_base_memory)
+  {
+    Log_ErrorPrintf("aligned_alloc(0x1000, %u) for internal buffer failed", m_total_size);
+    return false;
+  }
+
+  m_code_ptr = reinterpret_cast<u8*>(&__start__) - m_total_size - 0x1000;
+  virtmemLock();
+  MemoryInfo info = {0};
+  u32 pageInfo = {0};
+  int i = 0;
+  while (m_code_ptr != nullptr)
+  {
+      svcQueryMemory(&info, &pageInfo, (u64)m_code_ptr);
+      if (info.type != MemType_Unmapped)
+          m_code_ptr = (reinterpret_cast<u8*>(info.addr) - m_total_size - 0x1000);
+      else
+          break;
+      if (i++ > 8)
+      {
+          Log_ErrorPrintf("couldn't find unmapped place for jit memory\n");
+          m_code_ptr = nullptr;
+          return false;
+      }
+  }
+
+  m_rx_reservation = virtmemAddReservation(m_code_ptr, m_total_size);
+
+  m_rw_ptr = static_cast<u8*>(virtmemFindAslr(m_total_size, 0x1000));
+  m_rw_reservation = virtmemAddReservation(m_code_ptr, m_total_size);
+
+  Result r = svcMapProcessCodeMemory(envGetOwnProcessHandle(),
+    reinterpret_cast<u64>(m_code_ptr),
+    reinterpret_cast<u64>(m_base_memory),
+    m_total_size);
+  if (R_FAILED(r))
+  {
+    Log_ErrorPrintf("svcMapProcessCodeMemory failed: 0x%08X", r);
+    return false;
+  }
+  r = svcSetProcessMemoryPermission(envGetOwnProcessHandle(),
+    reinterpret_cast<u64>(m_code_ptr), m_total_size, Perm_Rx);
+  if (R_FAILED(r))
+  {
+    Log_ErrorPrintf("svcSetProcessMemoryPermission failed: 0x%08X", r);
+    return false;
+  }
+  r = svcMapProcessMemory(m_rw_ptr,
+    envGetOwnProcessHandle(),
+    reinterpret_cast<u64>(m_code_ptr),
+    m_total_size);
+  if (R_FAILED(r))
+  {
+    Log_ErrorPrintf("svcMapProcessMemory failed: 0x%08X", r);
+    return false;
+  }
+
+  Log_InfoPrintf("buffers: %p %p %p %x", m_code_ptr, m_rw_ptr, m_base_memory, m_total_size);
+
+  virtmemUnlock();
 #else
   return false;
 #endif
@@ -176,6 +243,19 @@ void JitCodeBuffer::Destroy()
 #elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
     if (munmap(m_code_ptr, m_total_size) != 0)
       Log_ErrorPrintf("Failed to free code pointer %p", m_code_ptr);
+#elif defined(__SWITCH__)
+    if (m_base_memory)
+    {
+      Result r = svcUnmapProcessMemory(m_rw_ptr, envGetOwnProcessHandle(), (u64)m_code_ptr, m_total_size);
+      if (R_FAILED(r))
+        Log_ErrorPrintf("could not unmap r/w memory %x", r);
+      svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64)m_code_ptr, (u64)m_base_memory, m_total_size);
+      if (R_FAILED(r))
+        Log_ErrorPrintf("could not unmap r/x memory %x", r);
+
+      free(m_base_memory);
+      m_base_memory = nullptr;
+    }
 #endif
   }
   else if (m_code_ptr)
@@ -184,6 +264,8 @@ void JitCodeBuffer::Destroy()
     DWORD old_protect = 0;
     if (!VirtualProtect(m_code_ptr, m_total_size, m_old_protection, &old_protect))
       Log_ErrorPrintf("Failed to restore protection on %p", m_code_ptr);
+#elif defined(__SWITCH__)
+    // not owning the buffer not allowed on Switch!
 #else
     if (mprotect(m_code_ptr, m_total_size, m_old_protection) != 0)
       Log_ErrorPrintf("Failed to restore protection on %p", m_code_ptr);
@@ -251,14 +333,22 @@ void JitCodeBuffer::Reset()
 
   m_free_code_ptr = m_code_ptr + m_guard_size + m_code_reserve_size;
   m_code_used = 0;
+#ifdef __SWITCH__
+  std::memset(m_free_code_ptr - m_code_ptr + m_rw_ptr, 0, m_code_size);
+#else
   std::memset(m_free_code_ptr, 0, m_code_size);
+#endif
   FlushInstructionCache(m_free_code_ptr, m_code_size);
 
   if (m_far_code_size > 0)
   {
     m_free_far_code_ptr = m_far_code_ptr;
     m_far_code_used = 0;
+#ifdef __SWITCH__
+    std::memset(m_free_far_code_ptr - m_code_ptr + m_rw_ptr, 0, m_far_code_size);
+#else
     std::memset(m_free_far_code_ptr, 0, m_far_code_size);
+#endif
     FlushInstructionCache(m_free_far_code_ptr, m_far_code_size);
   }
 
@@ -272,7 +362,11 @@ void JitCodeBuffer::Align(u32 alignment, u8 padding_value)
     std::min(static_cast<u32>(Common::AlignUpPow2(reinterpret_cast<uintptr_t>(m_free_code_ptr), alignment) -
                               reinterpret_cast<uintptr_t>(m_free_code_ptr)),
              GetFreeCodeSpace());
+#ifdef __SWITCH__
+  std::memset(m_free_code_ptr - m_code_ptr + m_rw_ptr, padding_value, num_padding_bytes);
+#else
   std::memset(m_free_code_ptr, padding_value, num_padding_bytes);
+#endif
   m_free_code_ptr += num_padding_bytes;
   m_code_used += num_padding_bytes;
 }

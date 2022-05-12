@@ -855,7 +855,7 @@ void close_gl(void) {
         libGL = NULL;
     }
 }
-#else
+#elif !defined(__SWITCH__)
 #include <dlfcn.h>
 static void* libGL;
 
@@ -904,6 +904,14 @@ void close_gl(void) {
 }
 #endif
 
+#ifdef __SWITCH__
+
+#include <EGL/egl.h>
+int gladLoadGL(void) {
+	return gladLoadGLLoader((GLADloadproc)eglGetProcAddress);
+}
+
+#else
 static
 void* get_proc(const char *namez) {
     void* result = NULL;
@@ -935,6 +943,7 @@ int gladLoadGL(void) {
 
     return status;
 }
+#endif
 
 struct gladGLversionStruct GLVersion;
 

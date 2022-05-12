@@ -3,6 +3,11 @@
 #include <atomic>
 #include <optional>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#include <vector>
+#endif
+
 namespace Common {
 class MemoryArena
 {
@@ -57,13 +62,30 @@ public:
   void* CreateReservedPtr(size_t size, void* fixed_address = nullptr);
   bool ReleaseReservedPtr(void* address, size_t size);
 
-  static bool SetPageProtection(void* address, size_t length, bool readable, bool writable, bool executable);
+  bool SetPageProtection(void* address, size_t length, bool readable, bool writable, bool executable);
 
 private:
 #if defined(_WIN32)
   void* m_file_handle = nullptr;
 #elif defined(__linux__) || defined(ANDROID) || defined(__APPLE__) || defined(__FreeBSD__)
   int m_shmem_fd = -1;
+#elif defined(__SWITCH__)
+  void* m_underlying_memory = nullptr;
+  void* m_mapping_base;
+  VirtmemReservation* m_mapping_base_reservation;
+
+  struct Mirror
+  {
+    void* address, *source;
+    VirtmemReservation* reservation;
+  };
+  struct Reservation
+  {
+    void* address;
+    VirtmemReservation* reservation;
+  };
+  std::vector<Reservation> m_reserved_regions;
+  std::vector<Mirror> m_mirrors;
 #endif
 
   std::atomic_size_t m_num_views{0};

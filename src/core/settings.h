@@ -162,7 +162,11 @@ struct Settings
   u32 cdrom_read_speedup = 1;
   u32 cdrom_seek_speedup = 1;
 
+#ifndef __SWITCH__
   AudioBackend audio_backend = AudioBackend::Cubeb;
+#else
+  AudioBackend audio_backend = AudioBackend::Switch;
+#endif
   s32 audio_output_volume = 100;
   s32 audio_fast_forward_volume = 100;
   u32 audio_buffer_size = 2048;
@@ -376,6 +380,8 @@ struct Settings
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::OpenSLES;
 #elif defined(_UWP)
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::XAudio2;
+#elif defined(__SWITCH__)
+  static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Switch;
 #else
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Cubeb;
 #endif

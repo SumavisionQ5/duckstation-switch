@@ -12,6 +12,7 @@ ContextEGL::~ContextEGL()
 {
   DestroySurface();
   DestroyContext();
+  eglTerminate(m_display);
 }
 
 std::unique_ptr<Context> ContextEGL::Create(const WindowInfo& wi, const Version* versions_to_try,
@@ -105,7 +106,7 @@ bool ContextEGL::ChangeSurface(const WindowInfo& new_wi)
 
 void ContextEGL::ResizeSurface(u32 new_surface_width /*= 0*/, u32 new_surface_height /*= 0*/)
 {
-  if (new_surface_width == 0 && new_surface_height == 0)
+  /*if (new_surface_width == 0 && new_surface_height == 0)
   {
     EGLint surface_width, surface_height;
     if (eglQuerySurface(m_display, m_surface, EGL_WIDTH, &surface_width) &&
@@ -119,7 +120,7 @@ void ContextEGL::ResizeSurface(u32 new_surface_width /*= 0*/, u32 new_surface_he
     {
       Log_ErrorPrintf("eglQuerySurface() failed: %d", eglGetError());
     }
-  }
+  }*/
 
   m_wi.surface_width = new_surface_width;
   m_wi.surface_height = new_surface_height;
@@ -187,6 +188,8 @@ bool ContextEGL::CreateSurface()
   }
 
   // Some implementations may require the size to be queried at runtime.
+#ifndef __SWITCH__
+  // query surface is currently broken on Switch
   EGLint surface_width, surface_height;
   if (eglQuerySurface(m_display, m_surface, EGL_WIDTH, &surface_width) &&
       eglQuerySurface(m_display, m_surface, EGL_HEIGHT, &surface_height))
@@ -198,6 +201,7 @@ bool ContextEGL::CreateSurface()
   {
     Log_ErrorPrintf("eglQuerySurface() failed: %d", eglGetError());
   }
+#endif
 
   return true;
 }

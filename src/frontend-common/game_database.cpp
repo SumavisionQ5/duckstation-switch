@@ -183,8 +183,10 @@ bool GameDatabase::GetEntryForCode(const std::string_view& code, GameDatabaseEnt
       if (!iss.fail())
       {
         parsed_time.tm_isdst = 0;
-#ifdef _WIN32
+#if defined(_WIN32)
         entry->release_date = _mkgmtime(&parsed_time);
+#elif defined(__SWITCH__)
+        entry->release_date = mktime(&parsed_time);
 #else
         entry->release_date = timegm(&parsed_time);
 #endif
