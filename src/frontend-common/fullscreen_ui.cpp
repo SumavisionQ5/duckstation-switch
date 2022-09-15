@@ -2091,6 +2091,7 @@ void DrawSettingsWindow()
 
         switch (s_settings_copy.gpu_renderer)
         {
+#ifndef __SWITCH__
 #ifdef _WIN32
           case GPURenderer::HardwareD3D11:
           {
@@ -2118,6 +2119,7 @@ void DrawSettingsWindow()
                                              &s_settings_copy.gpu_use_thread);
           }
           break;
+#endif
 
           default:
             break;

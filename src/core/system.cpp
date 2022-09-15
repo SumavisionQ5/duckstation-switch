@@ -1015,11 +1015,11 @@ bool CreateGPU(GPURenderer renderer)
 {
   switch (renderer)
   {
+#ifndef __SWITCH__
     case GPURenderer::HardwareOpenGL:
       g_gpu = GPU::CreateHardwareOpenGLRenderer();
       break;
 
-#ifndef __SWITCH__
     case GPURenderer::HardwareVulkan:
       g_gpu = GPU::CreateHardwareVulkanRenderer();
       break;
@@ -1035,6 +1035,7 @@ bool CreateGPU(GPURenderer renderer)
 #endif
 
     case GPURenderer::Software:
+    case GPURenderer::HardwareDeko3D:
     default:
       g_gpu = GPU::CreateSoftwareRenderer();
       break;

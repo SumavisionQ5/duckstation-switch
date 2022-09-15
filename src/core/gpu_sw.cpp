@@ -231,7 +231,7 @@ void GPU_SW::CopyOut15Bit(u32 src_x, u32 src_y, u32 width, u32 height, u32 field
   using OutputPixelType = std::conditional_t<
     display_format == HostDisplayPixelFormat::RGBA8 || display_format == HostDisplayPixelFormat::BGRA8, u32, u16>;
 
-  if (!interlaced)
+  /*if (!interlaced)
   {
     if (!m_host_display->BeginSetDisplayPixels(display_format, width, height, reinterpret_cast<void**>(&dst_ptr),
                                                &dst_stride))
@@ -239,7 +239,7 @@ void GPU_SW::CopyOut15Bit(u32 src_x, u32 src_y, u32 width, u32 height, u32 field
       return;
     }
   }
-  else
+  else*/
   {
     dst_stride = GPU_MAX_DISPLAY_WIDTH * sizeof(OutputPixelType);
     dst_ptr = m_display_texture_buffer.data() + (field != 0 ? dst_stride : 0);
@@ -283,11 +283,11 @@ void GPU_SW::CopyOut15Bit(u32 src_x, u32 src_y, u32 width, u32 height, u32 field
     }
   }
 
-  if (!interlaced)
+  /*if (!interlaced)
   {
     m_host_display->EndSetDisplayPixels();
   }
-  else
+  else*/
   {
     m_host_display->SetDisplayPixels(display_format, width, height, m_display_texture_buffer.data(), output_stride);
   }

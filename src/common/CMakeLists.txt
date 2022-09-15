@@ -40,16 +40,6 @@ add_library(common
   file_system.h
   image.cpp
   image.h
-  gl/context.cpp
-  gl/context.h
-  gl/program.cpp
-  gl/program.h
-  gl/shader_cache.cpp
-  gl/shader_cache.h
-  gl/stream_buffer.cpp
-  gl/stream_buffer.h
-  gl/texture.cpp
-  gl/texture.h
   hash_combine.h
   heap_array.h
   iso_reader.cpp
@@ -96,12 +86,22 @@ add_library(common
   window_info.h
 )
 
+target_link_libraries(common PRIVATE stb Threads::Threads libchdr zlib minizip samplerate)
+
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(common PRIVATE glad stb Threads::Threads libchdr zlib minizip samplerate)
-
 if (NOT SWITCH)
-  add_library(common PRIVATE
+  target_sources(common PRIVATE
+    gl/context.cpp
+    gl/context.h
+    gl/program.cpp
+    gl/program.h
+    gl/shader_cache.cpp
+    gl/shader_cache.h
+    gl/stream_buffer.cpp
+    gl/stream_buffer.h
+    gl/texture.cpp
+    gl/texture.h
     vulkan/builders.cpp
     vulkan/builders.h
     vulkan/context.cpp
@@ -124,7 +124,26 @@ if (NOT SWITCH)
     vulkan/util.h
   )
 
-  target_link_libraries(common PRIVATE glslang vulkan-loader)
+  target_link_libraries(common PRIVATE glad glslang vulkan-loader)
+else()
+  target_sources(common PRIVATE
+    deko3d/context.cpp
+    deko3d/context.h
+    deko3d/memory_heap.cpp
+    deko3d/memory_heap.h
+    deko3d/swap_chain.cpp
+    deko3d/swap_chain.h
+    deko3d/texture.cpp
+    deko3d/texture.h
+    deko3d/util.cpp
+    deko3d/util.h
+    deko3d/staging_texture.cpp
+    deko3d/staging_texture.h
+    deko3d/shader_cache.cpp
+    deko3d/shader_cache.h
+  )
+
+  target_link_libraries(common PRIVATE uam deko3dd nxd)
 endif()
 
 if(WIN32)

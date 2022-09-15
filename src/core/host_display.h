@@ -44,7 +44,8 @@ public:
     D3D12,
     Vulkan,
     OpenGL,
-    OpenGLES
+    OpenGLES,
+    Deko3D
   };
 
   enum class Alignment

@@ -13,9 +13,11 @@
 #include "frontend-common/icon.h"
 #include "frontend-common/imgui_styles.h"
 #include "frontend-common/ini_settings_interface.h"
-#include "frontend-common/opengl_host_display.h"
 #ifndef __SWITCH__
+#include "frontend-common/opengl_host_display.h"
 #include "frontend-common/vulkan_host_display.h"
+#else
+#include "frontend-common/deko3d_host_display.h"
 #endif
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -111,7 +113,6 @@ bool NoGUIHostInterface::CreateDisplay(bool fullscreen)
     case GPURenderer::HardwareVulkan:
       m_display = std::make_unique<FrontendCommon::VulkanHostDisplay>();
       break;
-#endif
 
     case GPURenderer::HardwareOpenGL:
 #ifndef _WIN32
@@ -129,6 +130,12 @@ bool NoGUIHostInterface::CreateDisplay(bool fullscreen)
     default:
       m_display = std::make_unique<FrontendCommon::D3D11HostDisplay>();
       break;
+#endif
+#else
+  default:
+  case GPURenderer::HardwareDeko3D:
+    m_display = std::make_unique<FrontendCommon::Deko3DHostDisplay>();
+    break;
 #endif
   }
 
@@ -170,6 +177,7 @@ bool NoGUIHostInterface::AcquireHostDisplay()
   // Handle renderer switch if required.
   const HostDisplay::RenderAPI render_api = m_display->GetRenderAPI();
   bool needs_switch = false;
+#ifndef __SWITCH__
   switch (g_settings.gpu_renderer)
   {
 #ifdef _WIN32
@@ -191,6 +199,7 @@ bool NoGUIHostInterface::AcquireHostDisplay()
       needs_switch = false;
       break;
   }
+#endif
 
   if (needs_switch)
   {
