@@ -75,13 +75,13 @@ void SwitchControllerInterface::PollEvents()
         | HidNpadButton_StickRDown);
       HandleButtons(i, padGetButtonsDown(&m_controllers[i].pad) & button_mask, true);
       HandleButtons(i, padGetButtonsUp(&m_controllers[i].pad) & button_mask, false);
-/*
+
       for (int j = 0; j < 2; j++)
       {
         HidAnalogStickState state = padGetStickPos(&m_controllers[i].pad, j);
         HandleAxis(i, j*2+0, static_cast<float>(state.x) / JOYSTICK_MAX);
-        HandleAxis(i, j*2+1, static_cast<float>(state.y) / JOYSTICK_MAX);
-      }*/
+        HandleAxis(i, j*2+1, -static_cast<float>(state.y) / JOYSTICK_MAX);
+      }
     }
   }
 }
