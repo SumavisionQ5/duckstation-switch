@@ -11,10 +11,7 @@ endif()
 
 target_include_directories(glad PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(glad INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(glad PRIVATE Threads::Threads)
-if (NOT SWITCH)
-  target_link_libraries(glad PRIVATE "${CMAKE_DL_LIBS}")
-endif()
+target_link_libraries(glad PRIVATE Threads::Threads "${CMAKE_DL_LIBS}")
 
 if(WIN32)
   target_sources(glad PRIVATE src/glad_wgl.c)

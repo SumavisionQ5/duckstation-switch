@@ -57,13 +57,13 @@ void ShaderCache::Open(bool is_gles, std::string_view base_path, u32 version)
 {
   m_base_path = base_path;
   m_version = version;
-  m_program_binary_supported = is_gles || GLAD_GL_ARB_get_program_binary || GLAD_GL_VERSION_4_1;
+  m_program_binary_supported = is_gles || GLAD_GL_ARB_get_program_binary;
   if (m_program_binary_supported)
   {
     // check that there's at least one format and the extension isn't being "faked"
     GLint num_formats = 0;
     glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &num_formats);
-    Log_InfoPrintf("%u program binary formats supported by driver %u", num_formats);
+    Log_InfoPrintf("%u program binary formats supported by driver");
     m_program_binary_supported = (num_formats > 0);
   }
 

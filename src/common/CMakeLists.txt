@@ -55,8 +55,6 @@ add_library(common
   timer.cpp
   timer.h
   types.h
-  wav_writer.cpp
-  wav_writer.h
   window_info.cpp
   window_info.h
 )
