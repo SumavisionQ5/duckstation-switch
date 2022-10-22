@@ -36,8 +36,8 @@ GPU_SW::GPU_SW()
 GPU_SW::~GPU_SW()
 {
   m_backend.Shutdown();
-  if (m_host_display)
-    m_host_display->ClearDisplayTexture();
+  if (g_host_display)
+    g_host_display->ClearDisplayTexture();
 }
 
 GPURenderer GPU_SW::GetRendererType() const
@@ -45,9 +45,18 @@ GPURenderer GPU_SW::GetRendererType() const
   return GPURenderer::Software;
 }
 
-bool GPU_SW::Initialize(HostDisplay* host_display)
+const Threading::Thread* GPU_SW::GetSWThread() const
 {
-  if (!GPU::Initialize(host_display) || !m_backend.Initialize(false))
+  return m_backend.GetThread();
+}
+
+bool GPU_SW::Initialize()
+{
+  // we need something to draw in.. but keep the current api if we have one
+  if (!g_host_display && !Host::AcquireHostDisplay(HostDisplay::GetPreferredAPI()))
+    return false;
+
+  if (!GPU::Initialize() || !m_backend.Initialize(false))
     return false;
 
   static constexpr auto formats_for_16bit = make_array(HostDisplayPixelFormat::RGB565, HostDisplayPixelFormat::RGBA5551,
@@ -57,7 +66,7 @@ bool GPU_SW::Initialize(HostDisplay* host_display)
                HostDisplayPixelFormat::RGBA5551);
   for (const HostDisplayPixelFormat format : formats_for_16bit)
   {
-    if (m_host_display->SupportsDisplayPixelFormat(format))
+    if (g_host_display->SupportsDisplayPixelFormat(format))
     {
       m_16bit_display_format = format;
       break;
@@ -65,7 +74,7 @@ bool GPU_SW::Initialize(HostDisplay* host_display)
   }
   for (const HostDisplayPixelFormat format : formats_for_24bit)
   {
-    if (m_host_display->SupportsDisplayPixelFormat(format))
+    if (g_host_display->SupportsDisplayPixelFormat(format))
     {
       m_24bit_display_format = format;
       break;
@@ -92,6 +101,21 @@ void GPU_SW::UpdateSettings()
 {
   GPU::UpdateSettings();
   m_backend.UpdateSettings();
+}
+
+HostDisplayTexture* GPU_SW::GetDisplayTexture(u32 width, u32 height, HostDisplayPixelFormat format)
+{
+  if (!m_display_texture || m_display_texture->GetWidth() != width || m_display_texture->GetHeight() != height ||
+      m_display_texture->GetFormat() != format)
+  {
+    g_host_display->ClearDisplayTexture();
+    m_display_texture.reset();
+    m_display_texture = g_host_display->CreateTexture(width, height, 1, 1, 1, format, nullptr, 0, true);
+    if (!m_display_texture)
+      Log_ErrorPrintf("Failed to create %ux%u %u texture", width, height, static_cast<u32>(format));
+  }
+
+  return m_display_texture.get();
 }
 
 template<HostDisplayPixelFormat out_format, typename out_type>
@@ -231,15 +255,16 @@ void GPU_SW::CopyOut15Bit(u32 src_x, u32 src_y, u32 width, u32 height, u32 field
   using OutputPixelType = std::conditional_t<
     display_format == HostDisplayPixelFormat::RGBA8 || display_format == HostDisplayPixelFormat::BGRA8, u32, u16>;
 
-  /*if (!interlaced)
+  HostDisplayTexture* texture = GetDisplayTexture(width, height, display_format);
+  if (!texture)
+    return;
+
+  if (!interlaced)
   {
-    if (!m_host_display->BeginSetDisplayPixels(display_format, width, height, reinterpret_cast<void**>(&dst_ptr),
-                                               &dst_stride))
-    {
+    if (!texture->BeginUpdate(width, height, reinterpret_cast<void**>(&dst_ptr), &dst_stride))
       return;
-    }
   }
-  else*/
+  else
   {
     dst_stride = GPU_MAX_DISPLAY_WIDTH * sizeof(OutputPixelType);
     dst_ptr = m_display_texture_buffer.data() + (field != 0 ? dst_stride : 0);
@@ -283,14 +308,12 @@ void GPU_SW::CopyOut15Bit(u32 src_x, u32 src_y, u32 width, u32 height, u32 field
     }
   }
 
-  /*if (!interlaced)
-  {
-    m_host_display->EndSetDisplayPixels();
-  }
-  else*/
-  {
-    m_host_display->SetDisplayPixels(display_format, width, height, m_display_texture_buffer.data(), output_stride);
-  }
+  if (!interlaced)
+    texture->EndUpdate(0, 0, width, height);
+  else
+    texture->Update(0, 0, width, height, m_display_texture_buffer.data(), output_stride);
+
+  g_host_display->SetDisplayTexture(texture->GetHandle(), display_format, width, height, 0, 0, width, height);
 }
 
 void GPU_SW::CopyOut15Bit(HostDisplayPixelFormat display_format, u32 src_x, u32 src_y, u32 width, u32 height, u32 field,
@@ -325,13 +348,14 @@ void GPU_SW::CopyOut24Bit(u32 src_x, u32 src_y, u32 skip_x, u32 width, u32 heigh
   using OutputPixelType = std::conditional_t<
     display_format == HostDisplayPixelFormat::RGBA8 || display_format == HostDisplayPixelFormat::BGRA8, u32, u16>;
 
+  HostDisplayTexture* texture = GetDisplayTexture(width, height, display_format);
+  if (!texture)
+    return;
+
   if (!interlaced)
   {
-    if (!m_host_display->BeginSetDisplayPixels(display_format, width, height, reinterpret_cast<void**>(&dst_ptr),
-                                               &dst_stride))
-    {
+    if (!texture->BeginUpdate(width, height, reinterpret_cast<void**>(&dst_ptr), &dst_stride))
       return;
-    }
   }
   else
   {
@@ -442,13 +466,11 @@ void GPU_SW::CopyOut24Bit(u32 src_x, u32 src_y, u32 skip_x, u32 width, u32 heigh
   }
 
   if (!interlaced)
-  {
-    m_host_display->EndSetDisplayPixels();
-  }
+    texture->EndUpdate(0, 0, width, height);
   else
-  {
-    m_host_display->SetDisplayPixels(display_format, width, height, m_display_texture_buffer.data(), output_stride);
-  }
+    texture->Update(0, 0, width, height, m_display_texture_buffer.data(), output_stride);
+
+  g_host_display->SetDisplayTexture(texture->GetHandle(), display_format, width, height, 0, 0, width, height);
 }
 
 void GPU_SW::CopyOut24Bit(HostDisplayPixelFormat display_format, u32 src_x, u32 src_y, u32 skip_x, u32 width,
@@ -486,14 +508,14 @@ void GPU_SW::UpdateDisplay()
 
   if (!g_settings.debugging.show_vram)
   {
-    m_host_display->SetDisplayParameters(m_crtc_state.display_width, m_crtc_state.display_height,
+    g_host_display->SetDisplayParameters(m_crtc_state.display_width, m_crtc_state.display_height,
                                          m_crtc_state.display_origin_left, m_crtc_state.display_origin_top,
                                          m_crtc_state.display_vram_width, m_crtc_state.display_vram_height,
                                          GetDisplayAspectRatio());
 
     if (IsDisplayDisabled())
     {
-      m_host_display->ClearDisplayTexture();
+      g_host_display->ClearDisplayTexture();
       return;
     }
 
@@ -534,7 +556,7 @@ void GPU_SW::UpdateDisplay()
   else
   {
     CopyOut15Bit(m_16bit_display_format, 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 0, false, false);
-    m_host_display->SetDisplayParameters(VRAM_WIDTH, VRAM_HEIGHT, 0, 0, VRAM_WIDTH, VRAM_HEIGHT,
+    g_host_display->SetDisplayParameters(VRAM_WIDTH, VRAM_HEIGHT, 0, 0, VRAM_WIDTH, VRAM_HEIGHT,
                                          static_cast<float>(VRAM_WIDTH) / static_cast<float>(VRAM_HEIGHT));
   }
 }

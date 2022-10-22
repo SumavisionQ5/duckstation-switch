@@ -24,9 +24,7 @@
 
 // unreferenced parameter macro
 #ifndef UNREFERENCED_VARIABLE
-#if defined(_MSC_VER)
-#define UNREFERENCED_VARIABLE(P) (P)
-#elif defined(__GNUC__) || defined(__clang__) || defined(__EMSCRIPTEN__)
+#if defined(__GNUC__) || defined(__clang__) || defined(__EMSCRIPTEN__)
 #define UNREFERENCED_VARIABLE(P) (void)(P)
 #else
 #define UNREFERENCED_VARIABLE(P) (P)
@@ -54,6 +52,16 @@ char (&__countof_ArraySizeHelper(T (&array)[N]))[N];
 #else
 #define printflike(n,m)
 #endif
+
+#ifdef _MSC_VER
+// TODO: Use C++20 [[likely]] when available.
+#define LIKELY(x)  (!!(x))
+#define UNLIKELY(x)  (!!(x))
+#else
+#define LIKELY(x) __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#endif
+
 
 // disable warnings that show up at warning level 4
 // TODO: Move to build system instead

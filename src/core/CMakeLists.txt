@@ -1,4 +1,5 @@
 add_library(core
+    achievements.h
     analog_controller.cpp
     analog_controller.h
     analog_joystick.cpp
@@ -28,6 +29,8 @@ add_library(core
     digital_controller.h
     dma.cpp
     dma.h
+    game_database.cpp
+    game_database.h
     gdb_protocol.cpp
     gdb_protocol.h
     gpu.cpp
@@ -44,15 +47,18 @@ add_library(core
     gpu_sw_backend.cpp
     gpu_sw_backend.h
     gpu_types.h
+    guncon.cpp
+    guncon.h
     gte.cpp
     gte.h
     gte_types.h
+    host.cpp
+    host.h
     host_display.cpp
     host_display.h
-    host_interface.cpp
-    host_interface.h
     host_interface_progress_callback.cpp
     host_interface_progress_callback.h
+    host_settings.h
     interrupt_controller.cpp
     interrupt_controller.h
     libcrypt_game_codes.cpp
@@ -65,8 +71,6 @@ add_library(core
     memory_card_image.h
     multitap.cpp
     multitap.h
-    namco_guncon.cpp
-    namco_guncon.h
     negcon.cpp
     negcon.h
     pad.cpp
@@ -112,9 +116,8 @@ set(RECOMPILER_SRCS
 
 target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(core PUBLIC Threads::Threads common zlib)
-target_link_libraries(core PRIVATE stb xxhash imgui)
-target_compile_definitions(core PUBLIC "-DWITH_IMGUI=1")
+target_link_libraries(core PUBLIC Threads::Threads common util zlib)
+target_link_libraries(core PRIVATE stb xxhash imgui rapidjson tinyxml2)
 
 if (NOT SWITCH)
   target_sources(core PRIVATE
@@ -137,6 +140,25 @@ if(WIN32)
   target_link_libraries(core PRIVATE winmm.lib)
 endif()
 
+if(ENABLE_CUBEB)
+  target_compile_definitions(core PUBLIC "WITH_CUBEB=1")
+endif()
+
+if(ENABLE_OPENGL)
+  target_sources(core PRIVATE
+    gpu_hw_opengl.cpp
+    gpu_hw_opengl.h
+  )
+  target_link_libraries(core PRIVATE glad)
+endif()
+
+if(ENABLE_VULKAN)
+  target_sources(core PRIVATE
+    gpu_hw_vulkan.cpp
+    gpu_hw_vulkan.h
+  )
+endif()
+
 if(${CPU_ARCH} STREQUAL "x64")
   target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../dep/xbyak/xbyak")
   target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1" "WITH_MMAP_FASTMEM=1")
@@ -153,7 +175,8 @@ elseif(${CPU_ARCH} STREQUAL "aarch32")
   message("Building AArch32 recompiler")
 elseif(${CPU_ARCH} STREQUAL "aarch64")
   target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1")
-  if (NOT SWITCH)
+  if (NOT APPLE AND NOT SWITCH)
+    # Disabled until we support 16K pages.
     target_compile_definitions(core PUBLIC "WITH_MMAP_FASTMEM=1")
   endif()
   target_sources(core PRIVATE ${RECOMPILER_SRCS}
@@ -163,4 +186,8 @@ elseif(${CPU_ARCH} STREQUAL "aarch64")
   message("Building AArch64 recompiler")
 else()
   message("Not building recompiler")
+endif()
+
+if(ENABLE_CHEEVOS)
+  target_compile_definitions(core PRIVATE -DWITH_CHEEVOS=1)
 endif()

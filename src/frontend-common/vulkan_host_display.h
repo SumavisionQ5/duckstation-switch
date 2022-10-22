@@ -1,11 +1,11 @@
 #pragma once
+#include "common/vulkan/loader.h"
 #include "common/vulkan/staging_texture.h"
 #include "common/vulkan/stream_buffer.h"
 #include "common/vulkan/swap_chain.h"
 #include "common/window_info.h"
 #include "core/host_display.h"
 #include "postprocessing_chain.h"
-#include "vulkan_loader.h"
 #include <memory>
 #include <string_view>
 
@@ -30,9 +30,9 @@ public:
   bool HasRenderSurface() const override;
 
   bool CreateRenderDevice(const WindowInfo& wi, std::string_view adapter_name, bool debug_device,
-                                  bool threaded_presentation) override;
+                          bool threaded_presentation) override;
   bool InitializeRenderDevice(std::string_view shader_cache_directory, bool debug_device,
-                                      bool threaded_presentation) override;
+                              bool threaded_presentation) override;
   void DestroyRenderDevice() override;
 
   bool MakeRenderContextCurrent() override;
@@ -51,21 +51,18 @@ public:
   std::unique_ptr<HostDisplayTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
                                                     HostDisplayPixelFormat format, const void* data, u32 data_stride,
                                                     bool dynamic = false) override;
-  void UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* texture_data,
-                     u32 texture_data_stride) override;
   bool DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y, u32 width,
                        u32 height, void* out_data, u32 out_data_stride) override;
-
   bool SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const override;
-  bool BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                             u32* out_pitch) override;
-  void EndSetDisplayPixels() override;
 
   void SetVSync(bool enabled) override;
 
-  bool Render() override;
+  bool Render(bool skip_present) override;
   bool RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
-                                HostDisplayPixelFormat* out_format) override;
+                        HostDisplayPixelFormat* out_format) override;
+
+  bool SetGPUTimingEnabled(bool enabled) override;
+  float GetAndResetAccumulatedGPUTime() override;
 
   static AdapterAndModeList StaticGetAdapterAndModeList(const WindowInfo* wi);
 
@@ -125,8 +122,6 @@ protected:
   VkSampler m_point_sampler = VK_NULL_HANDLE;
   VkSampler m_linear_sampler = VK_NULL_HANDLE;
 
-  Vulkan::Texture m_display_pixels_texture;
-  Vulkan::StagingTexture m_upload_staging_texture;
   Vulkan::StagingTexture m_readback_staging_texture;
 
   VkDescriptorSetLayout m_post_process_descriptor_set_layout = VK_NULL_HANDLE;

@@ -3,6 +3,8 @@
 #include "file_system.h"
 #include "log.h"
 #include "string_util.h"
+#include "zstd.h"
+#include "zstd_errors.h"
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -37,9 +39,9 @@ class FileByteStream : public ByteStream
 public:
   FileByteStream(FILE* pFile) : m_pFile(pFile) { DebugAssert(m_pFile != nullptr); }
 
-  virtual ~FileByteStream() { fclose(m_pFile); }
+  virtual ~FileByteStream() override { fclose(m_pFile); }
 
-  virtual bool ReadByte(u8* pDestByte) override
+  bool ReadByte(u8* pDestByte) override
   {
     if (m_errorState)
       return false;
@@ -53,7 +55,7 @@ public:
     return true;
   }
 
-  virtual u32 Read(void* pDestination, u32 ByteCount) override
+  u32 Read(void* pDestination, u32 ByteCount) override
   {
     if (m_errorState)
       return 0;
@@ -65,7 +67,7 @@ public:
     return readCount;
   }
 
-  virtual bool Read2(void* pDestination, u32 ByteCount, u32* pNumberOfBytesRead /* = nullptr */) override
+  bool Read2(void* pDestination, u32 ByteCount, u32* pNumberOfBytesRead /* = nullptr */) override
   {
     if (m_errorState)
       return false;
@@ -84,7 +86,7 @@ public:
     return true;
   }
 
-  virtual bool WriteByte(u8 SourceByte) override
+  bool WriteByte(u8 SourceByte) override
   {
     if (m_errorState)
       return false;
@@ -98,7 +100,7 @@ public:
     return true;
   }
 
-  virtual u32 Write(const void* pSource, u32 ByteCount) override
+  u32 Write(const void* pSource, u32 ByteCount) override
   {
     if (m_errorState)
       return 0;
@@ -110,7 +112,7 @@ public:
     return writeCount;
   }
 
-  virtual bool Write2(const void* pSource, u32 ByteCount, u32* pNumberOfBytesWritten /* = nullptr */) override
+  bool Write2(const void* pSource, u32 ByteCount, u32* pNumberOfBytesWritten /* = nullptr */) override
   {
     if (m_errorState)
       return false;
@@ -131,7 +133,7 @@ public:
 
 #if defined(_WIN32)
 
-  virtual bool SeekAbsolute(u64 Offset) override
+  bool SeekAbsolute(u64 Offset) override
   {
     if (m_errorState)
       return false;
@@ -145,7 +147,7 @@ public:
     return true;
   }
 
-  virtual bool SeekRelative(s64 Offset) override
+  bool SeekRelative(s64 Offset) override
   {
     if (m_errorState)
       return false;
@@ -159,7 +161,7 @@ public:
     return true;
   }
 
-  virtual bool SeekToEnd() override
+  bool SeekToEnd() override
   {
     if (m_errorState)
       return false;
@@ -173,9 +175,12 @@ public:
     return true;
   }
 
-  virtual u64 GetPosition() const override { return _ftelli64(m_pFile); }
+  u64 GetPosition() const override
+  {
+    return _ftelli64(m_pFile);
+  }
 
-  virtual u64 GetSize() const override
+  u64 GetSize() const override
   {
     s64 OldPos = _ftelli64(m_pFile);
     _fseeki64(m_pFile, 0, SEEK_END);
@@ -186,7 +191,7 @@ public:
 
 #else
 
-  virtual bool SeekAbsolute(u64 Offset) override
+  bool SeekAbsolute(u64 Offset) override
   {
     if (m_errorState)
       return false;
@@ -200,7 +205,7 @@ public:
     return true;
   }
 
-  virtual bool SeekRelative(s64 Offset) override
+  bool SeekRelative(s64 Offset) override
   {
     if (m_errorState)
       return false;
@@ -214,7 +219,7 @@ public:
     return true;
   }
 
-  virtual bool SeekToEnd() override
+  bool SeekToEnd() override
   {
     if (m_errorState)
       return false;
@@ -228,9 +233,12 @@ public:
     return true;
   }
 
-  virtual u64 GetPosition() const override { return static_cast<u64>(ftello(m_pFile)); }
+  u64 GetPosition() const override
+  {
+    return static_cast<u64>(ftello(m_pFile));
+  }
 
-  virtual u64 GetSize() const override
+  u64 GetSize() const override
   {
     off_t OldPos = ftello(m_pFile);
     fseeko(m_pFile, 0, SEEK_END);
@@ -241,7 +249,7 @@ public:
 
 #endif
 
-  virtual bool Flush() override
+  bool Flush() override
   {
     if (m_errorState)
       return false;
@@ -255,15 +263,21 @@ public:
     return true;
   }
 
-  virtual bool Commit() override { return true; }
+  virtual bool Commit() override
+  {
+    return true;
+  }
 
-  virtual bool Discard() override { return false; }
+  virtual bool Discard() override
+  {
+    return false;
+  }
 
 protected:
   FILE* m_pFile;
 };
 
-class AtomicUpdatedFileByteStream : public FileByteStream
+class AtomicUpdatedFileByteStream final : public FileByteStream
 {
 public:
   AtomicUpdatedFileByteStream(FILE* pFile, std::string originalFileName, std::string temporaryFileName)
@@ -272,21 +286,13 @@ public:
   {
   }
 
-  virtual ~AtomicUpdatedFileByteStream()
+  ~AtomicUpdatedFileByteStream() override
   {
     if (m_discarded)
     {
-#if defined(_WIN32) && !defined(_UWP)
+#if defined(_WIN32)
       // delete the temporary file
       if (!DeleteFileW(StringUtil::UTF8StringToWideString(m_temporaryFileName).c_str()))
-      {
-        Log_WarningPrintf(
-          "AtomicUpdatedFileByteStream::~AtomicUpdatedFileByteStream(): Failed to delete temporary file '%s'",
-          m_temporaryFileName.c_str());
-      }
-#elif defined(_UWP)
-      // delete the temporary file
-      if (!DeleteFileFromAppW(StringUtil::UTF8StringToWideString(m_temporaryFileName).c_str()))
       {
         Log_WarningPrintf(
           "AtomicUpdatedFileByteStream::~AtomicUpdatedFileByteStream(): Failed to delete temporary file '%s'",
@@ -308,18 +314,7 @@ public:
     // fclose called by FileByteStream destructor
   }
 
-  virtual bool Flush() override
-  {
-    if (fflush(m_pFile) != 0)
-    {
-      m_errorState = true;
-      return false;
-    }
-
-    return true;
-  }
-
-  virtual bool Commit() override
+  bool Commit() override
   {
     Assert(!m_discarded);
     if (m_committed)
@@ -327,21 +322,10 @@ public:
 
     fflush(m_pFile);
 
-#if defined(_WIN32) && !defined(_UWP)
+#if defined(_WIN32)
     // move the atomic file name to the original file name
     if (!MoveFileExW(StringUtil::UTF8StringToWideString(m_temporaryFileName).c_str(),
                      StringUtil::UTF8StringToWideString(m_originalFileName).c_str(), MOVEFILE_REPLACE_EXISTING))
-    {
-      Log_WarningPrintf("AtomicUpdatedFileByteStream::Commit(): Failed to rename temporary file '%s' to '%s'",
-                        m_temporaryFileName.c_str(), m_originalFileName.c_str());
-      m_discarded = true;
-    }
-    else
-    {
-      m_committed = true;
-    }
-#elif defined(_UWP)
-    if (!FileSystem::RenamePath(m_temporaryFileName.c_str(), m_originalFileName.c_str()))
     {
       Log_WarningPrintf("AtomicUpdatedFileByteStream::Commit(): Failed to rename temporary file '%s' to '%s'",
                         m_temporaryFileName.c_str(), m_originalFileName.c_str());
@@ -384,7 +368,7 @@ public:
     return (!m_discarded);
   }
 
-  virtual bool Discard() override
+  bool Discard() override
   {
     Assert(!m_committed);
     m_discarded = true;
@@ -916,9 +900,106 @@ void GrowableMemoryByteStream::Grow(u32 MinimumGrowth)
   ResizeMemory(NewSize);
 }
 
-#if defined(_MSC_VER)
+bool ByteStream::ReadU8(u8* dest)
+{
+  return Read2(dest, sizeof(u8));
+}
 
-std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 openMode)
+bool ByteStream::ReadU16(u16* dest)
+{
+  return Read2(dest, sizeof(u16));
+}
+
+bool ByteStream::ReadU32(u32* dest)
+{
+  return Read2(dest, sizeof(u32));
+}
+
+bool ByteStream::ReadU64(u64* dest)
+{
+  return Read2(dest, sizeof(u64));
+}
+
+bool ByteStream::ReadS8(s8* dest)
+{
+  return Read2(dest, sizeof(s8));
+}
+
+bool ByteStream::ReadS16(s16* dest)
+{
+  return Read2(dest, sizeof(s16));
+}
+
+bool ByteStream::ReadS32(s32* dest)
+{
+  return Read2(dest, sizeof(s32));
+}
+
+bool ByteStream::ReadS64(s64* dest)
+{
+  return Read2(dest, sizeof(s64));
+}
+
+bool ByteStream::ReadSizePrefixedString(std::string* dest)
+{
+  u32 size;
+  if (!Read2(&size, sizeof(size)))
+    return false;
+
+  dest->resize(size);
+  if (!Read2(dest->data(), size))
+    return false;
+
+  return true;
+}
+
+bool ByteStream::WriteU8(u8 dest)
+{
+  return Write2(&dest, sizeof(u8));
+}
+
+bool ByteStream::WriteU16(u16 dest)
+{
+  return Write2(&dest, sizeof(u16));
+}
+
+bool ByteStream::WriteU32(u32 dest)
+{
+  return Write2(&dest, sizeof(u32));
+}
+
+bool ByteStream::WriteU64(u64 dest)
+{
+  return Write2(&dest, sizeof(u64));
+}
+
+bool ByteStream::WriteS8(s8 dest)
+{
+  return Write2(&dest, sizeof(s8));
+}
+
+bool ByteStream::WriteS16(s16 dest)
+{
+  return Write2(&dest, sizeof(s16));
+}
+
+bool ByteStream::WriteS32(s32 dest)
+{
+  return Write2(&dest, sizeof(s32));
+}
+
+bool ByteStream::WriteS64(s64 dest)
+{
+  return Write2(&dest, sizeof(s64));
+}
+
+bool ByteStream::WriteSizePrefixedString(const std::string_view& str)
+{
+  const u32 size = static_cast<u32>(str.size());
+  return (Write2(&size, sizeof(size)) && (size == 0 || Write2(str.data(), size)));
+}
+
+std::unique_ptr<ByteStream> ByteStream::OpenFile(const char* fileName, u32 openMode)
 {
   if ((openMode & (BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_WRITE)) == BYTESTREAM_OPEN_WRITE)
   {
@@ -965,81 +1046,10 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
 
   modeString[modeStringLength] = 0;
 
-  if (openMode & BYTESTREAM_OPEN_CREATE_PATH)
-  {
-    u32 i;
-    u32 fileNameLength = static_cast<u32>(std::strlen(fileName));
-    char* tempStr = (char*)alloca(fileNameLength + 1);
-
-    // check if it starts with a drive letter. if so, skip ahead
-    if (fileNameLength >= 2 && fileName[1] == ':')
-    {
-      if (fileNameLength <= 3)
-      {
-        // create a file called driveletter: or driveletter:\ ? you must be crazy
-        i = fileNameLength;
-      }
-      else
-      {
-        std::memcpy(tempStr, fileName, 3);
-        i = 3;
-      }
-    }
-    else
-    {
-      // start at beginning
-      i = 0;
-    }
-
-    // step through each path component, create folders as necessary
-    for (; i < fileNameLength; i++)
-    {
-      if (i > 0 && (fileName[i] == '\\' || fileName[i] == '/'))
-      {
-        // terminate the string
-        tempStr[i] = '\0';
-
-        // check if it exists
-        struct stat s;
-        if (stat(tempStr, &s) < 0)
-        {
-          if (errno == ENOENT)
-          {
-            // try creating it
-            if (_mkdir(tempStr) < 0)
-            {
-              // no point trying any further down the chain
-              break;
-            }
-          }
-          else // if (errno == ENOTDIR)
-          {
-            // well.. someone's trying to open a fucking weird path that is comprised of both directories and files...
-            // I aint sticking around here to find out what disaster awaits... let fopen deal with it
-            break;
-          }
-        }
-
-// append platform path seperator
-#if defined(_WIN32)
-        tempStr[i] = '\\';
-#else
-        tempStr[i] = '/';
-#endif
-      }
-      else
-      {
-        // append character to temp string
-        tempStr[i] = fileName[i];
-      }
-    }
-  }
-
   if (openMode & BYTESTREAM_OPEN_ATOMIC_UPDATE)
   {
     DebugAssert(openMode & (BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_WRITE));
-
-#ifndef _UWP
+#ifdef _WIN32
     // generate the temporary file name
     u32 fileNameLength = static_cast<u32>(std::strlen(fileName));
     char* temporaryFileName = (char*)alloca(fileNameLength + 8);
@@ -1048,35 +1058,14 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
     // fill in random characters
     _mktemp_s(temporaryFileName, fileNameLength + 8);
     const std::wstring wideTemporaryFileName(StringUtil::UTF8StringToWideString(temporaryFileName));
-#else
-    // On UWP, preserve the extension, as it affects permissions.
-    std::string temporaryFileName;
-    const char* extension = std::strrchr(fileName, '.');
-    if (extension)
-      temporaryFileName.append(fileName, extension - fileName);
-    else
-      temporaryFileName.append(fileName);
-
-    temporaryFileName.append("_XXXXXX");
-    _mktemp_s(temporaryFileName.data(), temporaryFileName.size() + 1);
-    if (extension)
-      temporaryFileName.append(extension);
-
-    const std::wstring wideTemporaryFileName(StringUtil::UTF8StringToWideString(temporaryFileName));
-#endif
 
     // massive hack here
     DWORD desiredAccess = GENERIC_WRITE;
     if (openMode & BYTESTREAM_OPEN_READ)
       desiredAccess |= GENERIC_READ;
 
-#ifndef _UWP
     HANDLE hFile =
       CreateFileW(wideTemporaryFileName.c_str(), desiredAccess, FILE_SHARE_DELETE, NULL, CREATE_NEW, 0, NULL);
-#else
-    HANDLE hFile =
-      CreateFile2FromAppW(wideTemporaryFileName.c_str(), desiredAccess, FILE_SHARE_DELETE, CREATE_NEW, nullptr);
-#endif
 
     if (hFile == INVALID_HANDLE_VALUE)
       return nullptr;
@@ -1136,131 +1125,7 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
 
     // return pointer
     return pStream;
-  }
-  else
-  {
-    // forward through
-    FILE* pFile = FileSystem::OpenCFile(fileName, modeString);
-    if (!pFile)
-      return nullptr;
-
-    return std::make_unique<FileByteStream>(pFile);
-  }
-}
-
 #else
-
-std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 openMode)
-{
-  if ((openMode & (BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_WRITE)) == BYTESTREAM_OPEN_WRITE)
-  {
-    // if opening with write but not create, the path must exist.
-    struct stat s;
-    if (stat(fileName, &s) < 0)
-      return nullptr;
-  }
-
-  char modeString[16];
-  u32 modeStringLength = 0;
-
-  if (openMode & BYTESTREAM_OPEN_WRITE)
-  {
-    if (openMode & BYTESTREAM_OPEN_TRUNCATE)
-      modeString[modeStringLength++] = 'w';
-    else
-      modeString[modeStringLength++] = 'a';
-
-    modeString[modeStringLength++] = 'b';
-
-    if (openMode & BYTESTREAM_OPEN_READ)
-      modeString[modeStringLength++] = '+';
-  }
-  else if (openMode & BYTESTREAM_OPEN_READ)
-  {
-    modeString[modeStringLength++] = 'r';
-    modeString[modeStringLength++] = 'b';
-  }
-
-  modeString[modeStringLength] = 0;
-
-  if (openMode & BYTESTREAM_OPEN_CREATE_PATH)
-  {
-    u32 i;
-    const u32 fileNameLength = static_cast<u32>(std::strlen(fileName));
-    char* tempStr = (char*)alloca(fileNameLength + 1);
-
-#if defined(_WIN32)
-    // check if it starts with a drive letter. if so, skip ahead
-    if (fileNameLength >= 2 && fileName[1] == ':')
-    {
-      if (fileNameLength <= 3)
-      {
-        // create a file called driveletter: or driveletter:\ ? you must be crazy
-        i = fileNameLength;
-      }
-      else
-      {
-        std::memcpy(tempStr, fileName, 3);
-        i = 3;
-      }
-    }
-    else
-    {
-      // start at beginning
-      i = 0;
-    }
-#endif
-
-    // step through each path component, create folders as necessary
-    for (i = 0; i < fileNameLength; i++)
-    {
-      if (i > 0 && (fileName[i] == '\\' || fileName[i] == '/') && fileName[i] != ':')
-      {
-        // terminate the string
-        tempStr[i] = '\0';
-
-        // check if it exists
-        struct stat s;
-        if (stat(tempStr, &s) < 0)
-        {
-          if (errno == ENOENT)
-          {
-            // try creating it
-#if defined(_WIN32)
-            if (mkdir(tempStr) < 0)
-#else
-            if (mkdir(tempStr, 0777) < 0)
-#endif
-            {
-              // no point trying any further down the chain
-              break;
-            }
-          }
-          else // if (errno == ENOTDIR)
-          {
-            // well.. someone's trying to open a fucking weird path that is comprised of both directories and
-            // files... I aint sticking around here to find out what disaster awaits... let fopen deal with it
-            break;
-          }
-        }
-
-// append platform path seperator
-#if defined(_WIN32)
-        tempStr[i] = '\\';
-#else
-        tempStr[i] = '/';
-#endif
-      }
-      else
-      {
-        // append character to temp string
-        tempStr[i] = fileName[i];
-      }
-    }
-  }
-
-  if (openMode & BYTESTREAM_OPEN_ATOMIC_UPDATE)
-  {
     DebugAssert(openMode & (BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_WRITE));
 
     // generate the temporary file name
@@ -1276,7 +1141,7 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
 #endif
 
     // open the file
-    std::FILE* pTemporaryFile = std::fopen(temporaryFileName, modeString);
+    std::FILE* pTemporaryFile = FileSystem::OpenCFile(temporaryFileName, modeString);
     if (pTemporaryFile == nullptr)
       return nullptr;
 
@@ -1287,7 +1152,7 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
     // do we need to copy the existing file into this one?
     if (!(openMode & BYTESTREAM_OPEN_TRUNCATE))
     {
-      std::FILE* pOriginalFile = std::fopen(fileName, "rb");
+      std::FILE* pOriginalFile = FileSystem::OpenCFile(fileName, "rb");
       if (!pOriginalFile)
       {
         // this will delete the temporary file
@@ -1317,10 +1182,12 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
 
     // return pointer
     return pStream;
+#endif
   }
   else
   {
-    std::FILE* pFile = std::fopen(fileName, modeString);
+    // forward through
+    std::FILE* pFile = FileSystem::OpenCFile(fileName, modeString);
     if (!pFile)
       return nullptr;
 
@@ -1328,36 +1195,34 @@ std::unique_ptr<ByteStream> ByteStream_OpenFileStream(const char* fileName, u32 
   }
 }
 
-#endif
-
-std::unique_ptr<MemoryByteStream> ByteStream_CreateMemoryStream(void* pMemory, u32 Size)
+std::unique_ptr<MemoryByteStream> ByteStream::CreateMemoryStream(void* pMemory, u32 Size)
 {
   DebugAssert(pMemory != nullptr && Size > 0);
   return std::make_unique<MemoryByteStream>(pMemory, Size);
 }
 
-std::unique_ptr<ReadOnlyMemoryByteStream> ByteStream_CreateReadOnlyMemoryStream(const void* pMemory, u32 Size)
+std::unique_ptr<ReadOnlyMemoryByteStream> ByteStream::CreateReadOnlyMemoryStream(const void* pMemory, u32 Size)
 {
   DebugAssert(pMemory != nullptr && Size > 0);
   return std::make_unique<ReadOnlyMemoryByteStream>(pMemory, Size);
 }
 
-std::unique_ptr<NullByteStream> ByteStream_CreateNullStream()
+std::unique_ptr<NullByteStream> ByteStream::CreateNullStream()
 {
   return std::make_unique<NullByteStream>();
 }
 
-std::unique_ptr<GrowableMemoryByteStream> ByteStream_CreateGrowableMemoryStream(void* pInitialMemory, u32 InitialSize)
+std::unique_ptr<GrowableMemoryByteStream> ByteStream::CreateGrowableMemoryStream(void* pInitialMemory, u32 InitialSize)
 {
   return std::make_unique<GrowableMemoryByteStream>(pInitialMemory, InitialSize);
 }
 
-std::unique_ptr<GrowableMemoryByteStream> ByteStream_CreateGrowableMemoryStream()
+std::unique_ptr<GrowableMemoryByteStream> ByteStream::CreateGrowableMemoryStream()
 {
   return std::make_unique<GrowableMemoryByteStream>(nullptr, 0);
 }
 
-bool ByteStream_CopyStream(ByteStream* pDestinationStream, ByteStream* pSourceStream)
+bool ByteStream::CopyStream(ByteStream* pDestinationStream, ByteStream* pSourceStream)
 {
   const u32 chunkSize = 4096;
   u8 chunkData[chunkSize];
@@ -1383,7 +1248,7 @@ bool ByteStream_CopyStream(ByteStream* pDestinationStream, ByteStream* pSourceSt
   return (pSourceStream->SeekAbsolute(oldSourcePosition) && success);
 }
 
-bool ByteStream_AppendStream(ByteStream* pSourceStream, ByteStream* pDestinationStream)
+bool ByteStream::AppendStream(ByteStream* pSourceStream, ByteStream* pDestinationStream)
 {
   const u32 chunkSize = 4096;
   u8 chunkData[chunkSize];
@@ -1409,7 +1274,7 @@ bool ByteStream_AppendStream(ByteStream* pSourceStream, ByteStream* pDestination
   return (pSourceStream->SeekAbsolute(oldSourcePosition) && success);
 }
 
-u32 ByteStream_CopyBytes(ByteStream* pSourceStream, u32 byteCount, ByteStream* pDestinationStream)
+u32 ByteStream::CopyBytes(ByteStream* pSourceStream, u32 byteCount, ByteStream* pDestinationStream)
 {
   const u32 chunkSize = 4096;
   u8 chunkData[chunkSize];
@@ -1430,4 +1295,373 @@ u32 ByteStream_CopyBytes(ByteStream* pSourceStream, u32 byteCount, ByteStream* p
   }
 
   return byteCount - remaining;
+}
+
+std::string ByteStream::ReadStreamToString(ByteStream* stream, bool seek_to_start /* = true */)
+{
+  u64 pos = stream->GetPosition();
+  u64 size = stream->GetSize();
+  if (pos > 0 && seek_to_start)
+  {
+    if (!stream->SeekAbsolute(0))
+      return {};
+
+    pos = 0;
+  }
+
+  Assert(size >= pos);
+  size -= pos;
+  if (size == 0 || size > std::numeric_limits<u32>::max())
+    return {};
+
+  std::string ret;
+  ret.resize(static_cast<size_t>(size));
+  if (!stream->Read2(ret.data(), static_cast<u32>(size)))
+    return {};
+
+  return ret;
+}
+
+bool ByteStream::WriteStreamToString(const std::string_view& sv, ByteStream* stream)
+{
+  if (sv.size() > std::numeric_limits<u32>::max())
+    return false;
+
+  return stream->Write2(sv.data(), static_cast<u32>(sv.size()));
+}
+
+std::vector<u8> ByteStream::ReadBinaryStream(ByteStream* stream, bool seek_to_start /*= true*/)
+{
+  u64 pos = stream->GetPosition();
+  u64 size = stream->GetSize();
+  if (pos > 0 && seek_to_start)
+  {
+    if (!stream->SeekAbsolute(0))
+      return {};
+
+    pos = 0;
+  }
+
+  Assert(size >= pos);
+  size -= pos;
+  if (size == 0 || size > std::numeric_limits<u32>::max())
+    return {};
+
+  std::vector<u8> ret;
+  ret.resize(static_cast<size_t>(size));
+  if (!stream->Read2(ret.data(), static_cast<u32>(size)))
+    return {};
+
+  return ret;
+}
+
+bool ByteStream::WriteBinaryToStream(ByteStream* stream, const void* data, size_t data_length)
+{
+  if (data_length > std::numeric_limits<u32>::max())
+    return false;
+
+  return stream->Write2(data, static_cast<u32>(data_length));
+}
+
+class ZstdCompressStream final : public ByteStream
+{
+public:
+  ZstdCompressStream(ByteStream* dst_stream, int compression_level) : m_dst_stream(dst_stream)
+  {
+    m_cstream = ZSTD_createCStream();
+    ZSTD_CCtx_setParameter(m_cstream, ZSTD_c_compressionLevel, compression_level);
+  }
+
+  ~ZstdCompressStream() override
+  {
+    if (!m_done)
+      Compress(ZSTD_e_end);
+
+    ZSTD_freeCStream(m_cstream);
+  }
+
+  bool ReadByte(u8* pDestByte) override { return false; }
+
+  u32 Read(void* pDestination, u32 ByteCount) override { return 0; }
+
+  bool Read2(void* pDestination, u32 ByteCount, u32* pNumberOfBytesRead = nullptr) override { return false; }
+
+  bool WriteByte(u8 SourceByte) override
+  {
+    if (m_input_buffer_wpos == INPUT_BUFFER_SIZE && !Compress(ZSTD_e_continue))
+      return false;
+
+    m_input_buffer[m_input_buffer_wpos++] = SourceByte;
+    return true;
+  }
+
+  u32 Write(const void* pSource, u32 ByteCount) override
+  {
+    u32 remaining = ByteCount;
+    const u8* read_ptr = static_cast<const u8*>(pSource);
+    for (;;)
+    {
+      const u32 copy_size = std::min(INPUT_BUFFER_SIZE - m_input_buffer_wpos, remaining);
+      std::memcpy(&m_input_buffer[m_input_buffer_wpos], read_ptr, copy_size);
+      read_ptr += copy_size;
+      remaining -= copy_size;
+      m_input_buffer_wpos += copy_size;
+      if (remaining == 0 || !Compress(ZSTD_e_continue))
+        break;
+    }
+
+    return ByteCount - remaining;
+  }
+
+  bool Write2(const void* pSource, u32 ByteCount, u32* pNumberOfBytesWritten = nullptr) override
+  {
+    const u32 bytes_written = Write(pSource, ByteCount);
+    if (pNumberOfBytesWritten)
+      *pNumberOfBytesWritten = bytes_written;
+    return (bytes_written == ByteCount);
+  }
+
+  bool SeekAbsolute(u64 Offset) override { return false; }
+
+  bool SeekRelative(s64 Offset) override { return (Offset == 0); }
+
+  bool SeekToEnd() override { return false; }
+
+  u64 GetPosition() const override { return m_position; }
+
+  u64 GetSize() const override { return 0; }
+
+  bool Flush() override { return Compress(ZSTD_e_flush); }
+
+  bool Discard() override { return true; }
+
+  bool Commit() override { return Compress(ZSTD_e_end); }
+
+private:
+  enum : u32
+  {
+    INPUT_BUFFER_SIZE = 131072,
+    OUTPUT_BUFFER_SIZE = 65536,
+  };
+
+  bool Compress(ZSTD_EndDirective action)
+  {
+    if (m_errorState || m_done)
+      return false;
+
+    ZSTD_inBuffer inbuf = {m_input_buffer, m_input_buffer_wpos, 0};
+
+    for (;;)
+    {
+      ZSTD_outBuffer outbuf = {m_output_buffer, OUTPUT_BUFFER_SIZE, 0};
+
+      const size_t ret = ZSTD_compressStream2(m_cstream, &outbuf, &inbuf, action);
+      if (ZSTD_isError(ret))
+      {
+        Log_ErrorPrintf("ZSTD_compressStream2() failed: %u (%s)", static_cast<unsigned>(ZSTD_getErrorCode(ret)),
+                        ZSTD_getErrorString(ZSTD_getErrorCode(ret)));
+        SetErrorState();
+        return false;
+      }
+
+      if (outbuf.pos > 0)
+      {
+        if (!m_dst_stream->Write2(m_output_buffer, static_cast<u32>(outbuf.pos)))
+        {
+          SetErrorState();
+          return false;
+        }
+
+        outbuf.pos = 0;
+      }
+
+      if (action == ZSTD_e_end)
+      {
+        // break when compression output has finished
+        if (ret == 0)
+        {
+          m_done = true;
+          break;
+        }
+      }
+      else
+      {
+        // break when all input data is consumed
+        if (inbuf.pos == inbuf.size)
+          break;
+      }
+    }
+
+    m_position += m_input_buffer_wpos;
+    m_input_buffer_wpos = 0;
+    return true;
+  }
+
+  ByteStream* m_dst_stream;
+  ZSTD_CStream* m_cstream = nullptr;
+  u64 m_position = 0;
+  u32 m_input_buffer_wpos = 0;
+  bool m_done = false;
+
+  u8 m_input_buffer[INPUT_BUFFER_SIZE];
+  u8 m_output_buffer[OUTPUT_BUFFER_SIZE];
+};
+
+std::unique_ptr<ByteStream> ByteStream::CreateZstdCompressStream(ByteStream* src_stream, int compression_level)
+{
+  return std::make_unique<ZstdCompressStream>(src_stream, compression_level);
+}
+
+class ZstdDecompressStream final : public ByteStream
+{
+public:
+  ZstdDecompressStream(ByteStream* src_stream, u32 compressed_size)
+    : m_src_stream(src_stream), m_bytes_remaining(compressed_size)
+  {
+    m_cstream = ZSTD_createDStream();
+    m_in_buffer.src = m_input_buffer;
+    Decompress();
+  }
+
+  ~ZstdDecompressStream() override { ZSTD_freeDStream(m_cstream); }
+
+  bool ReadByte(u8* pDestByte) override { return Read(pDestByte, sizeof(u8)) == sizeof(u8); }
+
+  u32 Read(void* pDestination, u32 ByteCount) override
+  {
+    u8* write_ptr = static_cast<u8*>(pDestination);
+    u32 remaining = ByteCount;
+    for (;;)
+    {
+      const u32 copy_size = std::min<u32>(m_output_buffer_wpos - m_output_buffer_rpos, remaining);
+      std::memcpy(write_ptr, &m_output_buffer[m_output_buffer_rpos], copy_size);
+      m_output_buffer_rpos += copy_size;
+      write_ptr += copy_size;
+      remaining -= copy_size;
+      if (remaining == 0 || !Decompress())
+        break;
+    }
+
+    return ByteCount - remaining;
+  }
+
+  bool Read2(void* pDestination, u32 ByteCount, u32* pNumberOfBytesRead = nullptr) override
+  {
+    const u32 bytes_read = Read(pDestination, ByteCount);
+    if (pNumberOfBytesRead)
+      *pNumberOfBytesRead = bytes_read;
+    return (bytes_read == ByteCount);
+  }
+
+  bool WriteByte(u8 SourceByte) override { return false; }
+
+  u32 Write(const void* pSource, u32 ByteCount) override { return 0; }
+
+  bool Write2(const void* pSource, u32 ByteCount, u32* pNumberOfBytesWritten = nullptr) override { return false; }
+
+  bool SeekAbsolute(u64 Offset) override { return false; }
+
+  bool SeekRelative(s64 Offset) override
+  {
+    if (Offset < 0)
+      return false;
+    else if (Offset == 0)
+      return true;
+
+    s64 remaining = Offset;
+    for (;;)
+    {
+      const s64 skip = std::min<s64>(m_output_buffer_wpos - m_output_buffer_rpos, remaining);
+      remaining -= skip;
+      m_output_buffer_wpos += static_cast<u32>(skip);
+      if (remaining == 0)
+        return true;
+      else if (!Decompress())
+        return false;
+    }
+  }
+
+  bool SeekToEnd() override { return false; }
+
+  u64 GetPosition() const override { return 0; }
+
+  u64 GetSize() const override { return 0; }
+
+  bool Flush() override { return true; }
+
+  bool Discard() override { return true; }
+
+  bool Commit() override { return true; }
+
+private:
+  enum : u32
+  {
+    INPUT_BUFFER_SIZE = 65536,
+    OUTPUT_BUFFER_SIZE = 131072,
+  };
+
+  bool Decompress()
+  {
+    if (m_output_buffer_rpos != m_output_buffer_wpos)
+    {
+      const u32 move_size = m_output_buffer_wpos - m_output_buffer_rpos;
+      std::memmove(&m_output_buffer[0], &m_output_buffer[m_output_buffer_rpos], move_size);
+      m_output_buffer_rpos = move_size;
+      m_output_buffer_wpos = move_size;
+    }
+    else
+    {
+      m_output_buffer_rpos = 0;
+      m_output_buffer_wpos = 0;
+    }
+
+    ZSTD_outBuffer outbuf = {m_output_buffer, OUTPUT_BUFFER_SIZE - m_output_buffer_wpos, 0};
+    while (outbuf.pos == 0)
+    {
+      if (m_in_buffer.pos == m_in_buffer.size && !m_errorState)
+      {
+        const u32 requested_size = std::min<u32>(m_bytes_remaining, INPUT_BUFFER_SIZE);
+        const u32 bytes_read = m_src_stream->Read(m_input_buffer, requested_size);
+        m_in_buffer.size = bytes_read;
+        m_in_buffer.pos = 0;
+        m_bytes_remaining -= bytes_read;
+        if (bytes_read != requested_size || m_bytes_remaining == 0)
+        {
+          m_errorState = true;
+          break;
+        }
+      }
+
+      size_t ret = ZSTD_decompressStream(m_cstream, &outbuf, &m_in_buffer);
+      if (ZSTD_isError(ret))
+      {
+        Log_ErrorPrintf("ZSTD_decompressStream() failed: %u (%s)", static_cast<unsigned>(ZSTD_getErrorCode(ret)),
+                        ZSTD_getErrorString(ZSTD_getErrorCode(ret)));
+        m_in_buffer.pos = m_in_buffer.size;
+        m_output_buffer_rpos = 0;
+        m_output_buffer_wpos = 0;
+        m_errorState = true;
+        return false;
+      }
+    }
+
+    m_output_buffer_wpos = static_cast<u32>(outbuf.pos);
+    return true;
+  }
+
+  ByteStream* m_src_stream;
+  ZSTD_DStream* m_cstream = nullptr;
+  ZSTD_inBuffer m_in_buffer = {};
+  u32 m_output_buffer_rpos = 0;
+  u32 m_output_buffer_wpos = 0;
+  u32 m_bytes_remaining;
+  bool m_errorState = false;
+
+  u8 m_input_buffer[INPUT_BUFFER_SIZE];
+  u8 m_output_buffer[OUTPUT_BUFFER_SIZE];
+};
+
+std::unique_ptr<ByteStream> ByteStream::CreateZstdDecompressStream(ByteStream* src_stream, u32 compressed_size)
+{
+  return std::make_unique<ZstdDecompressStream>(src_stream, compressed_size);
 }

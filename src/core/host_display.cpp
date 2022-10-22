@@ -5,7 +5,7 @@
 #include "common/log.h"
 #include "common/string_util.h"
 #include "common/timer.h"
-#include "host_interface.h"
+#include "settings.h"
 #include "stb_image.h"
 #include "stb_image_resize.h"
 #include "stb_image_write.h"
@@ -16,9 +16,90 @@
 #include <vector>
 Log_SetChannel(HostDisplay);
 
+std::unique_ptr<HostDisplay> g_host_display;
+
 HostDisplayTexture::~HostDisplayTexture() = default;
 
+bool HostDisplayTexture::BeginUpdate(u32 width, u32 height, void** out_buffer, u32* out_pitch) /* = 0*/
+{
+  return false;
+}
+
+void HostDisplayTexture::EndUpdate(u32 x, u32 y, u32 width, u32 height) /* = 0*/ {}
+
+bool HostDisplayTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch)
+{
+  void* map_ptr;
+  u32 map_pitch;
+  if (!BeginUpdate(width, height, &map_ptr, &map_pitch))
+    return false;
+
+  StringUtil::StrideMemCpy(map_ptr, map_pitch, data, pitch, std::min(pitch, map_pitch), height);
+  EndUpdate(x, y, width, height);
+  return true;
+}
+
 HostDisplay::~HostDisplay() = default;
+
+RenderAPI HostDisplay::GetPreferredAPI()
+{
+#ifdef _WIN32
+  return RenderAPI::D3D11;
+#else
+  return RenderAPI::OpenGL;
+#endif
+}
+
+bool HostDisplay::ParseFullscreenMode(const std::string_view& mode, u32* width, u32* height, float* refresh_rate)
+{
+  if (!mode.empty())
+  {
+    std::string_view::size_type sep1 = mode.find('x');
+    if (sep1 != std::string_view::npos)
+    {
+      std::optional<u32> owidth = StringUtil::FromChars<u32>(mode.substr(0, sep1));
+      sep1++;
+
+      while (sep1 < mode.length() && std::isspace(mode[sep1]))
+        sep1++;
+
+      if (owidth.has_value() && sep1 < mode.length())
+      {
+        std::string_view::size_type sep2 = mode.find('@', sep1);
+        if (sep2 != std::string_view::npos)
+        {
+          std::optional<u32> oheight = StringUtil::FromChars<u32>(mode.substr(sep1, sep2 - sep1));
+          sep2++;
+
+          while (sep2 < mode.length() && std::isspace(mode[sep2]))
+            sep2++;
+
+          if (oheight.has_value() && sep2 < mode.length())
+          {
+            std::optional<float> orefresh_rate = StringUtil::FromChars<float>(mode.substr(sep2));
+            if (orefresh_rate.has_value())
+            {
+              *width = owidth.value();
+              *height = oheight.value();
+              *refresh_rate = orefresh_rate.value();
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  *width = 0;
+  *height = 0;
+  *refresh_rate = 0;
+  return false;
+}
+
+std::string HostDisplay::GetFullscreenModeString(u32 width, u32 height, float refresh_rate)
+{
+  return StringUtil::StdStringFromFormat("%u x %u @ %f hz", width, height, refresh_rate);
+}
 
 bool HostDisplay::UsesLowerLeftOrigin() const
 {
@@ -36,7 +117,7 @@ bool HostDisplay::ShouldSkipDisplayingFrame()
   if (m_display_frame_interval == 0.0f)
     return false;
 
-  const u64 now = Common::Timer::GetValue();
+  const u64 now = Common::Timer::GetCurrentValue();
   const double diff = Common::Timer::ConvertValueToSeconds(now - m_last_frame_displayed_time);
   if (diff < m_display_frame_interval)
     return true;
@@ -62,36 +143,6 @@ u32 HostDisplay::GetDisplayPixelFormatSize(HostDisplayPixelFormat format)
   }
 }
 
-bool HostDisplay::SetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, const void* buffer, u32 pitch)
-{
-  void* map_ptr;
-  u32 map_pitch;
-  if (!BeginSetDisplayPixels(format, width, height, &map_ptr, &map_pitch))
-    return false;
-
-  if (pitch == map_pitch)
-  {
-    std::memcpy(map_ptr, buffer, height * map_pitch);
-  }
-  else
-  {
-    const u32 copy_size = width * GetDisplayPixelFormatSize(format);
-    DebugAssert(pitch >= copy_size && map_pitch >= copy_size);
-
-    const u8* src_ptr = static_cast<const u8*>(buffer);
-    u8* dst_ptr = static_cast<u8*>(map_ptr);
-    for (u32 i = 0; i < height; i++)
-    {
-      std::memcpy(dst_ptr, src_ptr, copy_size);
-      src_ptr += pitch;
-      dst_ptr += map_pitch;
-    }
-  }
-
-  EndSetDisplayPixels();
-  return true;
-}
-
 bool HostDisplay::GetHostRefreshRate(float* refresh_rate)
 {
   if (m_window_info.surface_refresh_rate > 0.0f)
@@ -101,6 +152,16 @@ bool HostDisplay::GetHostRefreshRate(float* refresh_rate)
   }
 
   return WindowInfo::QueryRefreshRateForWindow(m_window_info, refresh_rate);
+}
+
+bool HostDisplay::SetGPUTimingEnabled(bool enabled)
+{
+  return false;
+}
+
+float HostDisplay::GetAndResetAccumulatedGPUTime()
+{
+  return 0.0f;
 }
 
 void HostDisplay::SetSoftwareCursor(std::unique_ptr<HostDisplayTexture> texture, float scale /*= 1.0f*/)
@@ -155,13 +216,18 @@ void HostDisplay::ClearSoftwareCursor()
   m_cursor_texture_scale = 1.0f;
 }
 
+bool HostDisplay::IsUsingLinearFiltering() const
+{
+  return g_settings.display_linear_filtering;
+}
+
 void HostDisplay::CalculateDrawRect(s32 window_width, s32 window_height, float* out_left, float* out_top,
                                     float* out_width, float* out_height, float* out_left_padding,
                                     float* out_top_padding, float* out_scale, float* out_x_scale,
                                     bool apply_aspect_ratio /* = true */) const
 {
   const float window_ratio = static_cast<float>(window_width) / static_cast<float>(window_height);
-  const float display_aspect_ratio = m_display_stretch ? window_ratio : m_display_aspect_ratio;
+  const float display_aspect_ratio = g_settings.display_stretch ? window_ratio : m_display_aspect_ratio;
   const float x_scale =
     apply_aspect_ratio ?
       (display_aspect_ratio / (static_cast<float>(m_display_width) / static_cast<float>(m_display_height))) :
@@ -181,12 +247,12 @@ void HostDisplay::CalculateDrawRect(s32 window_width, s32 window_height, float* 
   {
     // align in middle vertically
     scale = static_cast<float>(window_width) / display_width;
-    if (m_display_integer_scaling)
+    if (g_settings.display_integer_scaling)
       scale = std::max(std::floor(scale), 1.0f);
 
     if (out_left_padding)
     {
-      if (m_display_integer_scaling)
+      if (g_settings.display_integer_scaling)
         *out_left_padding = std::max<float>((static_cast<float>(window_width) - display_width * scale) / 2.0f, 0.0f);
       else
         *out_left_padding = 0.0f;
@@ -215,7 +281,7 @@ void HostDisplay::CalculateDrawRect(s32 window_width, s32 window_height, float* 
   {
     // align in middle horizontally
     scale = static_cast<float>(window_height) / display_height;
-    if (m_display_integer_scaling)
+    if (g_settings.display_integer_scaling)
       scale = std::max(std::floor(scale), 1.0f);
 
     if (out_left_padding)
@@ -240,7 +306,7 @@ void HostDisplay::CalculateDrawRect(s32 window_width, s32 window_height, float* 
 
     if (out_top_padding)
     {
-      if (m_display_integer_scaling)
+      if (g_settings.display_integer_scaling)
         *out_top_padding = std::max<float>((static_cast<float>(window_height) - (display_height * scale)) / 2.0f, 0.0f);
       else
         *out_top_padding = 0.0f;

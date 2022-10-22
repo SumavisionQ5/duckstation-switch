@@ -1,18 +1,19 @@
 #include "cdrom.h"
 #include "common/align.h"
-#include "common/cd_image.h"
+#include "common/file_system.h"
 #include "common/log.h"
 #include "common/platform.h"
-#include "common/state_wrapper.h"
 #include "dma.h"
+#include "host.h"
+#include "host_interface_progress_callback.h"
+#include "imgui.h"
 #include "interrupt_controller.h"
 #include "settings.h"
 #include "spu.h"
 #include "system.h"
+#include "util/cd_image.h"
+#include "util/state_wrapper.h"
 #include <cmath>
-#ifdef WITH_IMGUI
-#include "imgui.h"
-#endif
 Log_SetChannel(CDROM);
 
 #if defined(CPU_X64)
@@ -346,7 +347,7 @@ bool CDROM::DoesMediaRegionMatchConsole() const
 void CDROM::InsertMedia(std::unique_ptr<CDImage> media)
 {
   if (CanReadMedia())
-    RemoveMedia();
+    RemoveMedia(true);
 
   // set the region from the system area of the disc
   m_disc_region = System::GetRegionForImage(media.get());
@@ -361,12 +362,15 @@ void CDROM::InsertMedia(std::unique_ptr<CDImage> media)
   SetHoldPosition(0, true);
 }
 
-std::unique_ptr<CDImage> CDROM::RemoveMedia(bool force /* = false */)
+std::unique_ptr<CDImage> CDROM::RemoveMedia(bool for_disc_swap)
 {
-  if (!HasMedia() && !force)
+  if (!HasMedia())
     return nullptr;
 
-  const TickCount stop_ticks = GetTicksForStop(true);
+  // Add an additional two seconds to the disc swap, some games don't like it happening too quickly.
+  TickCount stop_ticks = GetTicksForStop(true);
+  if (for_disc_swap)
+    stop_ticks += System::ScaleTicksToOverclock(System::MASTER_CLOCK * 2);
 
   Log_InfoPrintf("Removing CD...");
   std::unique_ptr<CDImage> image = m_reader.RemoveMedia();
@@ -390,13 +394,37 @@ std::unique_ptr<CDImage> CDROM::RemoveMedia(bool force /* = false */)
   SendAsyncErrorResponse(STAT_ERROR, 0x08);
 
   // Begin spin-down timer, we can't swap the new disc in immediately for some games (e.g. Metal Gear Solid).
-  if (!force)
+  if (for_disc_swap)
   {
     m_drive_state = DriveState::ShellOpening;
     m_drive_event->SetIntervalAndSchedule(stop_ticks);
   }
 
   return image;
+}
+
+bool CDROM::PrecacheMedia()
+{
+  if (!m_reader.HasMedia())
+    return false;
+
+  if (m_reader.GetMedia()->HasSubImages() && m_reader.GetMedia()->GetSubImageCount() > 1)
+  {
+    Host::AddFormattedOSDMessage(
+      15.0f, Host::TranslateString("OSDMessage", "CD image preloading not available for multi-disc image '%s'"),
+      FileSystem::GetDisplayNameFromPath(m_reader.GetMedia()->GetFileName()).c_str());
+    return false;
+  }
+
+  HostInterfaceProgressCallback callback;
+  if (!m_reader.Precache(&callback))
+  {
+    Host::AddOSDMessage(Host::TranslateStdString("OSDMessage", "Precaching CD image failed, it may be unreliable."),
+                        15.0f);
+    return false;
+  }
+
+  return true;
 }
 
 void CDROM::SetReadaheadSectors(u32 readahead_sectors)
@@ -410,7 +438,8 @@ void CDROM::SetReadaheadSectors(u32 readahead_sectors)
   else
     m_reader.StopThread();
 
-  m_reader.QueueReadSector(m_requested_lba);
+  if (HasMedia())
+    m_reader.QueueReadSector(m_requested_lba);
 }
 
 void CDROM::CPUClockChanged()
@@ -612,7 +641,7 @@ void CDROM::WriteRegister(u32 offset, u8 value)
       {
         if (HasPendingDiscEvent())
           m_drive_event->InvokeEarly();
-        g_spu.GeneratePendingSamples();
+        SPU::GeneratePendingSamples();
       }
 
       m_adpcm_muted = adpcm_muted;
@@ -2554,7 +2583,7 @@ void CDROM::ProcessXAADPCMSector(const u8* raw_sector, const CDImage::SubChannel
   if (m_muted || m_adpcm_muted || g_settings.cdrom_mute_cd_audio)
     return;
 
-  g_spu.GeneratePendingSamples();
+  SPU::GeneratePendingSamples();
 
   if (m_last_sector_subheader.codinginfo.IsStereo())
   {
@@ -2660,7 +2689,7 @@ void CDROM::ProcessCDDASector(const u8* raw_sector, const CDImage::SubChannelQ& 
   if (m_muted || g_settings.cdrom_mute_cd_audio)
     return;
 
-  g_spu.GeneratePendingSamples();
+  SPU::GeneratePendingSamples();
 
   constexpr bool is_stereo = true;
   constexpr u32 num_samples = CDImage::RAW_SECTOR_SIZE / sizeof(s16) / (is_stereo ? 2 : 1);
@@ -2722,10 +2751,9 @@ void CDROM::ClearSectorBuffers()
 
 void CDROM::DrawDebugWindow()
 {
-#ifdef WITH_IMGUI
   static const ImVec4 active_color{1.0f, 1.0f, 1.0f, 1.0f};
   static const ImVec4 inactive_color{0.4f, 0.4f, 0.4f, 1.0f};
-  const float framebuffer_scale = ImGui::GetIO().DisplayFramebufferScale.x;
+  const float framebuffer_scale = Host::GetOSDScale();
 
   ImGui::SetNextWindowSize(ImVec2(800.0f * framebuffer_scale, 550.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("CDROM State", nullptr))
@@ -2919,5 +2947,4 @@ void CDROM::DrawDebugWindow()
   }
 
   ImGui::End();
-#endif
 }

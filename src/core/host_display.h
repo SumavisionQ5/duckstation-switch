@@ -8,6 +8,17 @@
 #include <tuple>
 #include <vector>
 
+enum class RenderAPI : u32
+{
+  None,
+  D3D11,
+  D3D12,
+  Vulkan,
+  OpenGL,
+  OpenGLES,
+  Deko3D
+};
+
 enum class HostDisplayPixelFormat : u32
 {
   Unknown,
@@ -31,23 +42,16 @@ public:
   virtual u32 GetLevels() const = 0;
   virtual u32 GetSamples() const = 0;
   virtual HostDisplayPixelFormat GetFormat() const = 0;
+
+  virtual bool BeginUpdate(u32 width, u32 height, void** out_buffer, u32* out_pitch)/* = 0*/;
+  virtual void EndUpdate(u32 x, u32 y, u32 width, u32 height)/* = 0*/;
+  virtual bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch);
 };
 
 // Interface to the frontend's renderer.
 class HostDisplay
 {
 public:
-  enum class RenderAPI
-  {
-    None,
-    D3D11,
-    D3D12,
-    Vulkan,
-    OpenGL,
-    OpenGLES,
-    Deko3D
-  };
-
   enum class Alignment
   {
     LeftOrTop,
@@ -63,6 +67,15 @@ public:
 
   virtual ~HostDisplay();
 
+  /// Returns the default/preferred API for the system.
+  static RenderAPI GetPreferredAPI();
+
+  /// Parses a fullscreen mode into its components (width * height @ refresh hz)
+  static bool ParseFullscreenMode(const std::string_view& mode, u32* width, u32* height, float* refresh_rate);
+
+  /// Converts a fullscreen mode to a string.
+  static std::string GetFullscreenModeString(u32 width, u32 height, float refresh_rate);
+
   ALWAYS_INLINE const WindowInfo& GetWindowInfo() const { return m_window_info; }
   ALWAYS_INLINE s32 GetWindowWidth() const { return static_cast<s32>(m_window_info.surface_width); }
   ALWAYS_INLINE s32 GetWindowHeight() const { return static_cast<s32>(m_window_info.surface_height); }
@@ -76,6 +89,13 @@ public:
     m_mouse_position_x = x;
     m_mouse_position_y = y;
   }
+
+  ALWAYS_INLINE const void* GetDisplayTextureHandle() const { return m_display_texture_handle; }
+  ALWAYS_INLINE s32 GetDisplayTopMargin() const { return m_display_top_margin; }
+  ALWAYS_INLINE s32 GetDisplayWidth() const { return m_display_width; }
+  ALWAYS_INLINE s32 GetDisplayHeight() const { return m_display_height; }
+  ALWAYS_INLINE float GetDisplayAspectRatio() const { return m_display_aspect_ratio; }
+  ALWAYS_INLINE bool IsGPUTimingEnabled() const { return m_gpu_timing_enabled; }
 
   virtual RenderAPI GetRenderAPI() const = 0;
   virtual void* GetRenderDevice() const = 0;
@@ -109,14 +129,11 @@ public:
   virtual std::unique_ptr<HostDisplayTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
                                                             HostDisplayPixelFormat format, const void* data,
                                                             u32 data_stride, bool dynamic = false) = 0;
-  virtual void UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* data,
-                             u32 data_stride) = 0;
-
   virtual bool DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y,
                                u32 width, u32 height, void* out_data, u32 out_data_stride) = 0;
 
   /// Returns false if the window was completely occluded.
-  virtual bool Render() = 0;
+  virtual bool Render(bool skip_present) = 0;
 
   /// Renders the display with postprocessing to the specified image.
   virtual bool RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
@@ -124,18 +141,10 @@ public:
 
   virtual void SetVSync(bool enabled) = 0;
 
-#ifdef WITH_IMGUI
   /// ImGui context management, usually called by derived classes.
   virtual bool CreateImGuiContext() = 0;
   virtual void DestroyImGuiContext() = 0;
   virtual bool UpdateImGuiFontTexture() = 0;
-#endif
-
-  const void* GetDisplayTextureHandle() const { return m_display_texture_handle; }
-  const s32 GetDisplayTopMargin() const { return m_display_top_margin; }
-  const s32 GetDisplayWidth() const { return m_display_width; }
-  const s32 GetDisplayHeight() const { return m_display_height; }
-  const float GetDisplayAspectRatio() const { return m_display_aspect_ratio; }
 
   bool UsesLowerLeftOrigin() const;
   void SetDisplayMaxFPS(float max_fps);
@@ -196,18 +205,16 @@ public:
 
   virtual bool SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const = 0;
 
-  virtual bool BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                     u32* out_pitch) = 0;
-  virtual void EndSetDisplayPixels() = 0;
-  virtual bool SetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, const void* buffer, u32 pitch);
-
   virtual bool GetHostRefreshRate(float* refresh_rate);
 
-  void SetDisplayLinearFiltering(bool enabled) { m_display_linear_filtering = enabled; }
+  /// Enables/disables GPU frame timing.
+  virtual bool SetGPUTimingEnabled(bool enabled);
+
+  /// Returns the amount of GPU time utilized since the last time this method was called.
+  virtual float GetAndResetAccumulatedGPUTime();
+
   void SetDisplayTopMargin(s32 height) { m_display_top_margin = height; }
-  void SetDisplayIntegerScaling(bool enabled) { m_display_integer_scaling = enabled; }
   void SetDisplayAlignment(Alignment alignment) { m_display_alignment = alignment; }
-  void SetDisplayStretch(bool stretch) { m_display_stretch = stretch; }
 
   /// Sets the software cursor to the specified texture. Ownership of the texture is transferred.
   void SetSoftwareCursor(std::unique_ptr<HostDisplayTexture> texture, float scale = 1.0f);
@@ -250,6 +257,8 @@ protected:
   ALWAYS_INLINE bool HasSoftwareCursor() const { return static_cast<bool>(m_cursor_texture); }
   ALWAYS_INLINE bool HasDisplayTexture() const { return (m_display_texture_handle != nullptr); }
 
+  bool IsUsingLinearFiltering() const;
+
   void CalculateDrawRect(s32 window_width, s32 window_height, float* out_left, float* out_top, float* out_width,
                          float* out_height, float* out_left_padding, float* out_top_padding, float* out_scale,
                          float* out_x_scale, bool apply_aspect_ratio = true) const;
@@ -288,8 +297,30 @@ protected:
   std::unique_ptr<HostDisplayTexture> m_cursor_texture;
   float m_cursor_texture_scale = 1.0f;
 
-  bool m_display_linear_filtering = false;
   bool m_display_changed = false;
-  bool m_display_integer_scaling = false;
-  bool m_display_stretch = false;
+  bool m_gpu_timing_enabled = false;
 };
+
+/// Returns a pointer to the current host display abstraction. Assumes AcquireHostDisplay() has been caled.
+extern std::unique_ptr<HostDisplay> g_host_display;
+
+namespace Host {
+std::unique_ptr<HostDisplay> CreateDisplayForAPI(RenderAPI api);
+
+/// Creates the host display. This may create a new window. The API used depends on the current configuration.
+bool AcquireHostDisplay(RenderAPI api);
+
+/// Destroys the host display. This may close the display window.
+void ReleaseHostDisplay();
+
+/// Returns false if the window was completely occluded. If frame_skip is set, the frame won't be
+/// displayed, but the GPU command queue will still be flushed.
+//bool BeginPresentFrame(bool frame_skip);
+
+/// Presents the frame to the display, and renders OSD elements.
+//void EndPresentFrame();
+
+/// Provided by the host; renders the display.
+void RenderDisplay(bool skip_present);
+void InvalidateDisplay();
+} // namespace Host

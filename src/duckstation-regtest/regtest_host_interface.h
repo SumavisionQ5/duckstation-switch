@@ -1,6 +1,6 @@
 #pragma once
 #include "core/host_interface.h"
-#include "regtest_settings_interface.h"
+#include "common/memory_settings_interface.h"
 
 class RegTestHostInterface final : public HostInterface
 {
@@ -31,6 +31,8 @@ public:
   int GetIntSettingValue(const char* section, const char* key, int default_value = 0) override;
   float GetFloatSettingValue(const char* section, const char* key, float default_value = 0.0f) override;
   std::vector<std::string> GetSettingStringList(const char* section, const char* key) override;
+  SettingsInterface* GetSettingsInterface() override;
+  std::lock_guard<std::recursive_mutex> GetSettingsLock() override;
 
   std::string GetBIOSDirectory() override;
 
@@ -38,6 +40,7 @@ public:
 
   void OnSystemPerformanceCountersUpdated() override;
   void OnDisplayInvalidated() override;
+  void OnAchievementsRefreshed() override;
 
 protected:
   bool AcquireHostDisplay() override;
@@ -57,5 +60,6 @@ private:
   void InitializeSettings();
   void UpdateSettings();
 
-  RegTestSettingsInterface m_settings_interface;
+  MemorySettingsInterface m_settings_interface;
+  std::recursive_mutex m_settings_mutex;
 };

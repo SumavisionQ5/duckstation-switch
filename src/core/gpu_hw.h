@@ -33,7 +33,9 @@ public:
   GPU_HW();
   virtual ~GPU_HW();
 
-  virtual bool Initialize(HostDisplay* host_display) override;
+  const Threading::Thread* GetSWThread() const override;
+
+  virtual bool Initialize() override;
   virtual void Reset(bool clear_vram) override;
   virtual bool DoState(StateWrapper& sw, HostDisplayTexture** host_texture, bool update_display) override;
 
@@ -364,7 +366,7 @@ protected:
   u32 m_multisamples = 1;
   u32 m_max_resolution_scale = 1;
   u32 m_max_multisamples = 1;
-  HostDisplay::RenderAPI m_render_api = HostDisplay::RenderAPI::None;
+  RenderAPI m_render_api = RenderAPI::None;
   bool m_true_color = true;
 
   union

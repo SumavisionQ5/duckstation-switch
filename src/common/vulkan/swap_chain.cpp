@@ -18,10 +18,35 @@ Log_SetChannel(Vulkan::SwapChain);
 #endif
 
 #if defined(__APPLE__)
+#include <dispatch/dispatch.h>
 #include <objc/message.h>
+
+static bool IsMainThread()
+{
+  Class clsNSThread = objc_getClass("NSThread");
+  if (!clsNSThread)
+    return false;
+
+  return reinterpret_cast<BOOL (*)(Class, SEL)>(objc_msgSend)(clsNSThread, sel_getUid("isMainThread"));
+}
 
 static bool CreateMetalLayer(WindowInfo* wi)
 {
+  if (!IsMainThread())
+  {
+    struct MainThreadParams
+    {
+      WindowInfo* wi;
+      bool result;
+    };
+    MainThreadParams params = {wi, false};
+    dispatch_sync_f(dispatch_get_main_queue(), &params, [](void* vparams) {
+      MainThreadParams* params = static_cast<MainThreadParams*>(vparams);
+      params->result = CreateMetalLayer(params->wi);
+    });
+    return params.result;
+  }
+
   id view = reinterpret_cast<id>(wi->window_handle);
 
   Class clsCAMetalLayer = objc_getClass("CAMetalLayer");
@@ -32,7 +57,7 @@ static bool CreateMetalLayer(WindowInfo* wi)
   }
 
   // [CAMetalLayer layer]
-  id layer = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(objc_getClass("CAMetalLayer"), sel_getUid("layer"));
+  id layer = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(clsCAMetalLayer, sel_getUid("layer"));
   if (!layer)
   {
     Log_ErrorPrint("Failed to create Metal layer.");
@@ -61,6 +86,12 @@ static bool CreateMetalLayer(WindowInfo* wi)
 
 static void DestroyMetalLayer(WindowInfo* wi)
 {
+  if (!IsMainThread())
+  {
+    dispatch_sync_f(dispatch_get_main_queue(), wi, [](void* wi) { DestroyMetalLayer(static_cast<WindowInfo*>(wi)); });
+    return;
+  }
+
   id view = reinterpret_cast<id>(wi->window_handle);
   id layer = reinterpret_cast<id>(wi->surface_handle);
   if (layer == nil)
@@ -68,7 +99,6 @@ static void DestroyMetalLayer(WindowInfo* wi)
 
   reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(view, sel_getUid("setLayer:"), nil);
   reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(view, sel_getUid("setWantsLayer:"), NO);
-  reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(layer, sel_getUid("release"));
   wi->surface_handle = nullptr;
 }
 
@@ -565,7 +595,7 @@ bool SwapChain::CreateSwapChain()
     return false;
 
   // Select number of images in swap chain, we prefer one buffer in the background to work on
-  u32 image_count = std::max(surface_capabilities.minImageCount + 1u, 2u);
+  u32 image_count = std::max(surface_capabilities.minImageCount, 2u);
 
   // maxImageCount can be zero, in which case there isn't an upper limit on the number of buffers.
   if (surface_capabilities.maxImageCount > 0)

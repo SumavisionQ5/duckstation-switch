@@ -20,6 +20,11 @@ class HostDisplayTexture;
 class TimingEvent;
 class Timers;
 
+namespace Threading
+{
+class Thread;
+}
+
 class GPU
 {
 public:
@@ -74,8 +79,9 @@ public:
   virtual ~GPU();
 
   virtual GPURenderer GetRendererType() const = 0;
+  virtual const Threading::Thread* GetSWThread() const = 0;
 
-  virtual bool Initialize(HostDisplay* host_display);
+  virtual bool Initialize();
   virtual void Reset(bool clear_vram);
   virtual bool DoState(StateWrapper& sw, HostDisplayTexture** save_to_texture, bool update_display);
 
@@ -150,17 +156,23 @@ public:
   float ComputeVerticalFrequency() const;
   float GetDisplayAspectRatio() const;
 
+#ifdef _WIN32
   // gpu_hw_d3d11.cpp
   static std::unique_ptr<GPU> CreateHardwareD3D11Renderer();
 
   // gpu_hw_d3d12.cpp
   static std::unique_ptr<GPU> CreateHardwareD3D12Renderer();
+#endif
 
+#ifdef WITH_OPENGL
   // gpu_hw_opengl.cpp
   static std::unique_ptr<GPU> CreateHardwareOpenGLRenderer();
+#endif
 
+#ifdef WITH_VULKAN
   // gpu_hw_vulkan.cpp
   static std::unique_ptr<GPU> CreateHardwareVulkanRenderer();
+#endif
 
   // gpu_sw.cpp
   static std::unique_ptr<GPU> CreateSoftwareRenderer();
@@ -318,8 +330,6 @@ protected:
 
     AddCommandTicks(std::max(width, height));
   }
-
-  HostDisplay* m_host_display = nullptr;
 
   std::unique_ptr<TimingEvent> m_crtc_tick_event;
   std::unique_ptr<TimingEvent> m_command_tick_event;

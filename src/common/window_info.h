@@ -8,14 +8,12 @@ struct WindowInfo
   {
     Surfaceless,
     Win32,
-    WinRT,
     X11,
     Wayland,
     MacOS,
     Android,
     Display,
-    Libretro,
-    Switch,
+    Switch
   };
 
   enum class SurfaceFormat

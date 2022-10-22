@@ -3,7 +3,7 @@
 #include "common/assert.h"
 #include "common/log.h"
 #include "common/string_util.h"
-#include "common_host_interface.h"
+#include "common_host.h"
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "postprocessing_shadergen.h"
@@ -13,28 +13,35 @@ Log_SetChannel(OpenGLHostDisplay);
 
 namespace FrontendCommon {
 
-class OpenGLHostDisplayTexture : public HostDisplayTexture
+enum : u32
+{
+  TEXTURE_STREAM_BUFFER_SIZE = 16 * 1024 * 1024,
+};
+
+class OpenGLHostDisplayTexture final : public HostDisplayTexture
 {
 public:
-  OpenGLHostDisplayTexture(GL::Texture texture, HostDisplayPixelFormat format)
-    : m_texture(std::move(texture)), m_format(format)
-  {
-  }
-  ~OpenGLHostDisplayTexture() override = default;
+  OpenGLHostDisplayTexture(GL::Texture texture, HostDisplayPixelFormat format);
+  ~OpenGLHostDisplayTexture() override;
 
-  void* GetHandle() const override { return reinterpret_cast<void*>(static_cast<uintptr_t>(m_texture.GetGLId())); }
-  u32 GetWidth() const override { return m_texture.GetWidth(); }
-  u32 GetHeight() const override { return m_texture.GetHeight(); }
-  u32 GetLayers() const override { return 1; }
-  u32 GetLevels() const override { return 1; }
-  u32 GetSamples() const override { return m_texture.GetSamples(); }
-  HostDisplayPixelFormat GetFormat() const override { return m_format; }
+  void* GetHandle() const override;
+  u32 GetWidth() const override;
+  u32 GetHeight() const override;
+  u32 GetLayers() const override;
+  u32 GetLevels() const override;
+  u32 GetSamples() const override;
+  HostDisplayPixelFormat GetFormat() const override;
 
-  GLuint GetGLID() const { return m_texture.GetGLId(); }
+  GLuint GetGLID() const;
+
+  bool BeginUpdate(u32 width, u32 height, void** out_buffer, u32* out_pitch) override;
+  void EndUpdate(u32 x, u32 y, u32 width, u32 height) override;
+  bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch) override;
 
 private:
   GL::Texture m_texture;
   HostDisplayPixelFormat m_format;
+  u32 m_map_offset = 0;
 };
 
 OpenGLHostDisplay::OpenGLHostDisplay() = default;
@@ -44,7 +51,7 @@ OpenGLHostDisplay::~OpenGLHostDisplay()
   AssertMsg(!m_gl_context, "Context should have been destroyed by now");
 }
 
-HostDisplay::RenderAPI OpenGLHostDisplay::GetRenderAPI() const
+RenderAPI OpenGLHostDisplay::GetRenderAPI() const
 {
   return m_gl_context->IsGLES() ? RenderAPI::OpenGLES : RenderAPI::OpenGL;
 }
@@ -105,43 +112,6 @@ std::unique_ptr<HostDisplayTexture> OpenGLHostDisplay::CreateTexture(u32 width, 
   return std::make_unique<OpenGLHostDisplayTexture>(std::move(tex), format);
 }
 
-void OpenGLHostDisplay::UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height,
-                                      const void* texture_data, u32 texture_data_stride)
-{
-  OpenGLHostDisplayTexture* tex = static_cast<OpenGLHostDisplayTexture*>(texture);
-  const auto [gl_internal_format, gl_format, gl_type] =
-    GetPixelFormatMapping(m_gl_context->IsGLES(), texture->GetFormat());
-
-  GLint alignment;
-  if (texture_data_stride & 1)
-    alignment = 1;
-  else if (texture_data_stride & 2)
-    alignment = 2;
-  else
-    alignment = 4;
-
-  GLint old_texture_binding = 0, old_alignment = 0, old_row_length = 0;
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_texture_binding);
-  glBindTexture(GL_TEXTURE_2D, tex->GetGLID());
-
-  glGetIntegerv(GL_UNPACK_ALIGNMENT, &old_alignment);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
-
-  if (!m_use_gles2_draw_path)
-  {
-    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &old_row_length);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, texture_data_stride / GetDisplayPixelFormatSize(texture->GetFormat()));
-  }
-
-  glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, gl_format, gl_type, texture_data);
-
-  if (!m_use_gles2_draw_path)
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, old_row_length);
-
-  glPixelStorei(GL_UNPACK_ALIGNMENT, old_alignment);
-  glBindTexture(GL_TEXTURE_2D, old_texture_binding);
-}
-
 bool OpenGLHostDisplay::DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y,
                                         u32 width, u32 height, void* out_data, u32 out_data_stride)
 {
@@ -174,148 +144,10 @@ bool OpenGLHostDisplay::DownloadTexture(const void* texture_handle, HostDisplayP
   return true;
 }
 
-void OpenGLHostDisplay::BindDisplayPixelsTexture()
-{
-  if (m_display_pixels_texture_id == 0)
-  {
-    glGenTextures(1, &m_display_pixels_texture_id);
-    glBindTexture(GL_TEXTURE_2D, m_display_pixels_texture_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, m_display_linear_filtering ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, m_display_linear_filtering ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);
-    m_display_texture_is_linear_filtered = m_display_linear_filtering;
-  }
-  else
-  {
-    glBindTexture(GL_TEXTURE_2D, m_display_pixels_texture_id);
-  }
-}
-
-void OpenGLHostDisplay::UpdateDisplayPixelsTextureFilter()
-{
-  if (m_display_linear_filtering == m_display_texture_is_linear_filtered)
-    return;
-
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, m_display_linear_filtering ? GL_LINEAR : GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, m_display_linear_filtering ? GL_LINEAR : GL_NEAREST);
-  m_display_texture_is_linear_filtered = m_display_linear_filtering;
-}
-
 bool OpenGLHostDisplay::SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const
 {
   const auto [gl_internal_format, gl_format, gl_type] = GetPixelFormatMapping(m_gl_context->IsGLES(), format);
   return (gl_internal_format != static_cast<GLenum>(0));
-}
-
-bool OpenGLHostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                              u32* out_pitch)
-{
-  const u32 pixel_size = GetDisplayPixelFormatSize(format);
-  const u32 stride = Common::AlignUpPow2(width * pixel_size, 4);
-  const u32 size_required = stride * height * pixel_size;
-
-  if (m_use_pbo_for_pixels)
-  {
-    const u32 buffer_size = Common::AlignUpPow2(size_required * 2, 4 * 1024 * 1024);
-    if (!m_display_pixels_texture_pbo || m_display_pixels_texture_pbo->GetSize() < buffer_size)
-    {
-      m_display_pixels_texture_pbo.reset();
-      m_display_pixels_texture_pbo = GL::StreamBuffer::Create(GL_PIXEL_UNPACK_BUFFER, buffer_size);
-      if (!m_display_pixels_texture_pbo)
-        return false;
-    }
-
-    const auto map = m_display_pixels_texture_pbo->Map(GetDisplayPixelFormatSize(format), size_required);
-    m_display_texture_format = format;
-    m_display_pixels_texture_pbo_map_offset = map.buffer_offset;
-    m_display_pixels_texture_pbo_map_size = size_required;
-    *out_buffer = map.pointer;
-    *out_pitch = stride;
-  }
-  else
-  {
-    if (m_gles_pixels_repack_buffer.size() < size_required)
-      m_gles_pixels_repack_buffer.resize(size_required);
-
-    *out_buffer = m_gles_pixels_repack_buffer.data();
-    *out_pitch = stride;
-  }
-
-  BindDisplayPixelsTexture();
-  SetDisplayTexture(reinterpret_cast<void*>(static_cast<uintptr_t>(m_display_pixels_texture_id)), format, width, height,
-                    0, 0, width, height);
-  return true;
-}
-
-void OpenGLHostDisplay::EndSetDisplayPixels()
-{
-  const u32 width = static_cast<u32>(m_display_texture_view_width);
-  const u32 height = static_cast<u32>(m_display_texture_view_height);
-
-  const auto [gl_internal_format, gl_format, gl_type] =
-    GetPixelFormatMapping(m_gl_context->IsGLES(), m_display_texture_format);
-
-  glBindTexture(GL_TEXTURE_2D, m_display_pixels_texture_id);
-  if (m_use_pbo_for_pixels)
-  {
-    m_display_pixels_texture_pbo->Unmap(m_display_pixels_texture_pbo_map_size);
-    m_display_pixels_texture_pbo->Bind();
-    glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type,
-                 reinterpret_cast<void*>(static_cast<uintptr_t>(m_display_pixels_texture_pbo_map_offset)));
-    m_display_pixels_texture_pbo->Unbind();
-
-    m_display_pixels_texture_pbo_map_offset = 0;
-    m_display_pixels_texture_pbo_map_size = 0;
-  }
-  else
-  {
-    // glTexImage2D should be quicker on Mali...
-    glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type,
-                 m_gles_pixels_repack_buffer.data());
-  }
-
-  glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-bool OpenGLHostDisplay::SetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, const void* buffer,
-                                         u32 pitch)
-{
-  BindDisplayPixelsTexture();
-
-  const auto [gl_internal_format, gl_format, gl_type] = GetPixelFormatMapping(m_gl_context->IsGLES(), format);
-  const u32 pixel_size = GetDisplayPixelFormatSize(format);
-  const bool is_packed_tightly = (pitch == (pixel_size * width));
-
-  // If we have GLES3, we can set row_length.
-  if (!m_use_gles2_draw_path || is_packed_tightly)
-  {
-    if (!is_packed_tightly)
-      glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / pixel_size);
-
-    glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type, buffer);
-
-    if (!is_packed_tightly)
-      glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-  }
-  else
-  {
-    // Otherwise, we need to repack the image.
-    const u32 packed_pitch = width * pixel_size;
-    const u32 repack_size = packed_pitch * height;
-    if (m_gles_pixels_repack_buffer.size() < repack_size)
-      m_gles_pixels_repack_buffer.resize(repack_size);
-    StringUtil::StrideMemCpy(m_gles_pixels_repack_buffer.data(), packed_pitch, buffer, pitch, packed_pitch, height);
-    glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type,
-                 m_gles_pixels_repack_buffer.data());
-  }
-
-  glBindTexture(GL_TEXTURE_2D, 0);
-
-  SetDisplayTexture(reinterpret_cast<void*>(static_cast<uintptr_t>(m_display_pixels_texture_id)), format, width, height,
-                    0, 0, width, height);
-  return true;
 }
 
 void OpenGLHostDisplay::SetVSync(bool enabled)
@@ -418,9 +250,9 @@ bool OpenGLHostDisplay::InitializeRenderDevice(std::string_view shader_cache_dir
   m_use_pbo_for_pixels = !m_use_gles2_draw_path;
   if (GetRenderAPI() == RenderAPI::OpenGLES)
   {
-    // Adreno seems to corrupt textures through PBOs...
+    // Adreno seems to corrupt textures through PBOs... and Mali is slow.
     const char* gl_vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
-    if (std::strstr(gl_vendor, "Qualcomm") || std::strstr(gl_vendor, "Broadcom"))
+    if (std::strstr(gl_vendor, "Qualcomm") || std::strstr(gl_vendor, "ARM") || std::strstr(gl_vendor, "Broadcom"))
       m_use_pbo_for_pixels = false;
   }
 
@@ -435,7 +267,7 @@ bool OpenGLHostDisplay::InitializeRenderDevice(std::string_view shader_cache_dir
       glDebugMessageCallback(GLDebugCallback, nullptr);
 
     glEnable(GL_DEBUG_OUTPUT);
-    // glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
   }
 
   if (!CreateResources())
@@ -520,8 +352,7 @@ HostDisplay::AdapterAndModeList OpenGLHostDisplay::GetAdapterAndModeList()
   {
     for (const GL::Context::FullscreenModeInfo& fmi : m_gl_context->EnumerateFullscreenModes())
     {
-      aml.fullscreen_modes.push_back(
-        CommonHostInterface::GetFullscreenModeString(fmi.width, fmi.height, fmi.refresh_rate));
+      aml.fullscreen_modes.push_back(GetFullscreenModeString(fmi.width, fmi.height, fmi.refresh_rate));
     }
   }
 
@@ -712,12 +543,6 @@ void OpenGLHostDisplay::DestroyResources()
   m_post_processing_ubo.reset();
   m_post_processing_stages.clear();
 
-  if (m_display_pixels_texture_id != 0)
-  {
-    glDeleteTextures(1, &m_display_pixels_texture_id);
-    m_display_pixels_texture_id = 0;
-  }
-
   if (m_display_vao != 0)
   {
     glDeleteVertexArrays(1, &m_display_vao);
@@ -738,9 +563,9 @@ void OpenGLHostDisplay::DestroyResources()
   m_display_program.Destroy();
 }
 
-bool OpenGLHostDisplay::Render()
+bool OpenGLHostDisplay::Render(bool skip_present)
 {
-  if (ShouldSkipDisplayingFrame())
+  if (skip_present || m_window_info.type == WindowInfo::Type::Surfaceless)
   {
     if (ImGui::GetCurrentContext())
       ImGui::Render();
@@ -760,7 +585,14 @@ bool OpenGLHostDisplay::Render()
 
   RenderSoftwareCursor();
 
+  if (m_gpu_timing_enabled)
+    PopTimestampQuery();
+
   m_gl_context->SwapBuffers();
+
+  if (m_gpu_timing_enabled)
+    KickTimestampQuery();
+
   return true;
 }
 
@@ -792,7 +624,7 @@ bool OpenGLHostDisplay::RenderScreenshot(u32 width, u32 height, std::vector<u32>
       RenderDisplay(left, height - top - draw_height, draw_width, draw_height, m_display_texture_handle,
                     m_display_texture_width, m_display_texture_height, m_display_texture_view_x,
                     m_display_texture_view_y, m_display_texture_view_width, m_display_texture_view_height,
-                    m_display_linear_filtering);
+                    IsUsingLinearFiltering());
     }
   }
 
@@ -830,7 +662,7 @@ void OpenGLHostDisplay::RenderDisplay()
 
   RenderDisplay(left, GetWindowHeight() - top - height, width, height, m_display_texture_handle,
                 m_display_texture_width, m_display_texture_height, m_display_texture_view_x, m_display_texture_view_y,
-                m_display_texture_view_width, m_display_texture_view_height, m_display_linear_filtering);
+                m_display_texture_view_width, m_display_texture_view_height, IsUsingLinearFiltering());
 }
 
 static void DrawFullscreenQuadES2(s32 tex_view_x, s32 tex_view_y, s32 tex_view_width, s32 tex_view_height,
@@ -869,10 +701,12 @@ void OpenGLHostDisplay::RenderDisplay(s32 left, s32 bottom, s32 width, s32 heigh
   glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(reinterpret_cast<uintptr_t>(texture_handle)));
   m_display_program.Bind();
 
+  const bool linear = IsUsingLinearFiltering();
+
   if (!m_use_gles2_draw_path)
   {
-    const float position_adjust = m_display_linear_filtering ? 0.5f : 0.0f;
-    const float size_adjust = m_display_linear_filtering ? 1.0f : 0.0f;
+    const float position_adjust = linear ? 0.5f : 0.0f;
+    const float size_adjust = linear ? 1.0f : 0.0f;
     const float flip_adjust = (texture_view_height < 0) ? -1.0f : 1.0f;
     m_display_program.Uniform4f(
       0, (static_cast<float>(texture_view_x) + position_adjust) / static_cast<float>(texture_width),
@@ -886,8 +720,9 @@ void OpenGLHostDisplay::RenderDisplay(s32 left, s32 bottom, s32 width, s32 heigh
   }
   else
   {
-    if (static_cast<GLuint>(reinterpret_cast<uintptr_t>(texture_handle)) == m_display_pixels_texture_id)
-      UpdateDisplayPixelsTextureFilter();
+    // TODO: This sucks.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
 
     DrawFullscreenQuadES2(m_display_texture_view_x, m_display_texture_view_y, m_display_texture_view_width,
                           m_display_texture_view_height, m_display_texture_width, m_display_texture_height);
@@ -947,7 +782,7 @@ bool OpenGLHostDisplay::SetPostProcessingChain(const std::string_view& config)
 
   m_post_processing_stages.clear();
 
-  FrontendCommon::PostProcessingShaderGen shadergen(HostDisplay::RenderAPI::OpenGL, false);
+  FrontendCommon::PostProcessingShaderGen shadergen(RenderAPI::OpenGL, false);
 
   for (u32 i = 0; i < m_post_processing_chain.GetStageCount(); i++)
   {
@@ -1041,7 +876,7 @@ void OpenGLHostDisplay::ApplyPostProcessingChain(GLuint final_target, s32 final_
   {
     RenderDisplay(final_left, target_height - final_top - final_height, final_width, final_height, texture_handle,
                   texture_width, texture_height, texture_view_x, texture_view_y, texture_view_width,
-                  texture_view_height, m_display_linear_filtering);
+                  texture_view_height, IsUsingLinearFiltering());
     return;
   }
 
@@ -1050,7 +885,7 @@ void OpenGLHostDisplay::ApplyPostProcessingChain(GLuint final_target, s32 final_
   glClear(GL_COLOR_BUFFER_BIT);
   RenderDisplay(final_left, target_height - final_top - final_height, final_width, final_height, texture_handle,
                 texture_width, texture_height, texture_view_x, texture_view_y, texture_view_width, texture_view_height,
-                m_display_linear_filtering);
+                IsUsingLinearFiltering());
 
   texture_handle = reinterpret_cast<void*>(static_cast<uintptr_t>(m_post_processing_input_texture.GetGLId()));
   texture_width = m_post_processing_input_texture.GetWidth();
@@ -1097,6 +932,301 @@ void OpenGLHostDisplay::ApplyPostProcessingChain(GLuint final_target, s32 final_
 
   glBindSampler(0, 0);
   m_post_processing_ubo->Unbind();
+}
+
+void OpenGLHostDisplay::CreateTimestampQueries()
+{
+  const bool gles = m_gl_context->IsGLES();
+  const auto GenQueries = gles ? glGenQueriesEXT : glGenQueries;
+
+  GenQueries(static_cast<u32>(m_timestamp_queries.size()), m_timestamp_queries.data());
+  KickTimestampQuery();
+}
+
+void OpenGLHostDisplay::DestroyTimestampQueries()
+{
+  if (m_timestamp_queries[0] == 0)
+    return;
+
+  const bool gles = m_gl_context->IsGLES();
+  const auto DeleteQueries = gles ? glDeleteQueriesEXT : glDeleteQueries;
+
+  if (m_timestamp_query_started)
+  {
+    const auto EndQuery = gles ? glEndQueryEXT : glEndQuery;
+    EndQuery(m_timestamp_queries[m_write_timestamp_query]);
+  }
+
+  DeleteQueries(static_cast<u32>(m_timestamp_queries.size()), m_timestamp_queries.data());
+  m_timestamp_queries.fill(0);
+  m_read_timestamp_query = 0;
+  m_write_timestamp_query = 0;
+  m_waiting_timestamp_queries = 0;
+  m_timestamp_query_started = false;
+}
+
+void OpenGLHostDisplay::PopTimestampQuery()
+{
+  const bool gles = m_gl_context->IsGLES();
+
+  if (gles)
+  {
+    GLint disjoint = 0;
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+    if (disjoint)
+    {
+      Log_VerbosePrintf("GPU timing disjoint, resetting.");
+      if (m_timestamp_query_started)
+        glEndQueryEXT(GL_TIME_ELAPSED);
+
+      m_read_timestamp_query = 0;
+      m_write_timestamp_query = 0;
+      m_waiting_timestamp_queries = 0;
+      m_timestamp_query_started = false;
+    }
+  }
+
+  while (m_waiting_timestamp_queries > 0)
+  {
+    const auto GetQueryObjectiv = gles ? glGetQueryObjectivEXT : glGetQueryObjectiv;
+    const auto GetQueryObjectui64v = gles ? glGetQueryObjectui64vEXT : glGetQueryObjectui64v;
+
+    GLint available = 0;
+    GetQueryObjectiv(m_timestamp_queries[m_read_timestamp_query], GL_QUERY_RESULT_AVAILABLE, &available);
+    DebugAssert(m_read_timestamp_query != m_write_timestamp_query);
+
+    if (!available)
+      break;
+
+    u64 result = 0;
+    GetQueryObjectui64v(m_timestamp_queries[m_read_timestamp_query], GL_QUERY_RESULT, &result);
+    m_accumulated_gpu_time += static_cast<float>(static_cast<double>(result) / 1000000.0);
+    m_read_timestamp_query = (m_read_timestamp_query + 1) % NUM_TIMESTAMP_QUERIES;
+    m_waiting_timestamp_queries--;
+  }
+
+  if (m_timestamp_query_started)
+  {
+    const auto EndQuery = gles ? glEndQueryEXT : glEndQuery;
+    EndQuery(GL_TIME_ELAPSED);
+
+    m_write_timestamp_query = (m_write_timestamp_query + 1) % NUM_TIMESTAMP_QUERIES;
+    m_timestamp_query_started = false;
+    m_waiting_timestamp_queries++;
+  }
+}
+
+void OpenGLHostDisplay::KickTimestampQuery()
+{
+  if (m_timestamp_query_started || m_waiting_timestamp_queries == NUM_TIMESTAMP_QUERIES)
+    return;
+
+  const bool gles = m_gl_context->IsGLES();
+  const auto BeginQuery = gles ? glBeginQueryEXT : glBeginQuery;
+
+  BeginQuery(GL_TIME_ELAPSED, m_timestamp_queries[m_write_timestamp_query]);
+  m_timestamp_query_started = true;
+}
+
+bool OpenGLHostDisplay::SetGPUTimingEnabled(bool enabled)
+{
+  if (m_gpu_timing_enabled == enabled)
+    return true;
+
+  if (enabled && m_gl_context->IsGLES() &&
+      (!GLAD_GL_EXT_disjoint_timer_query || !glGetQueryObjectivEXT || !glGetQueryObjectui64vEXT))
+  {
+    return false;
+  }
+
+  m_gpu_timing_enabled = enabled;
+  if (m_gpu_timing_enabled)
+    CreateTimestampQueries();
+  else
+    DestroyTimestampQueries();
+
+  return true;
+}
+
+float OpenGLHostDisplay::GetAndResetAccumulatedGPUTime()
+{
+  const float value = m_accumulated_gpu_time;
+  m_accumulated_gpu_time = 0.0f;
+  return value;
+}
+
+GL::StreamBuffer* OpenGLHostDisplay::GetTextureStreamBuffer()
+{
+  if (m_use_gles2_draw_path || m_texture_stream_buffer)
+    return m_texture_stream_buffer.get();
+
+  m_texture_stream_buffer = GL::StreamBuffer::Create(GL_PIXEL_UNPACK_BUFFER, TEXTURE_STREAM_BUFFER_SIZE);
+  return m_texture_stream_buffer.get();
+}
+
+OpenGLHostDisplayTexture::OpenGLHostDisplayTexture(GL::Texture texture, HostDisplayPixelFormat format)
+  : m_texture(std::move(texture)), m_format(format)
+{
+}
+
+OpenGLHostDisplayTexture::~OpenGLHostDisplayTexture() = default;
+
+void* OpenGLHostDisplayTexture::GetHandle() const
+{
+  return reinterpret_cast<void*>(static_cast<uintptr_t>(m_texture.GetGLId()));
+}
+
+u32 OpenGLHostDisplayTexture::GetWidth() const
+{
+  return m_texture.GetWidth();
+}
+
+u32 OpenGLHostDisplayTexture::GetHeight() const
+{
+  return m_texture.GetHeight();
+}
+
+u32 OpenGLHostDisplayTexture::GetLayers() const
+{
+  return 1;
+}
+
+u32 OpenGLHostDisplayTexture::GetLevels() const
+{
+  return 1;
+}
+
+u32 OpenGLHostDisplayTexture::GetSamples() const
+{
+  return m_texture.GetSamples();
+}
+
+HostDisplayPixelFormat OpenGLHostDisplayTexture::GetFormat() const
+{
+  return m_format;
+}
+
+GLuint OpenGLHostDisplayTexture::GetGLID() const
+{
+  return m_texture.GetGLId();
+}
+
+bool OpenGLHostDisplayTexture::BeginUpdate(u32 width, u32 height, void** out_buffer, u32* out_pitch)
+{
+  const u32 pixel_size = HostDisplay::GetDisplayPixelFormatSize(m_format);
+  const u32 stride = Common::AlignUpPow2(width * pixel_size, 4);
+  const u32 size_required = stride * height;
+  OpenGLHostDisplay* display = static_cast<OpenGLHostDisplay*>(g_host_display.get());
+  GL::StreamBuffer* buffer = display->UsePBOForUploads() ? display->GetTextureStreamBuffer() : nullptr;
+
+  if (buffer && size_required < buffer->GetSize())
+  {
+    auto map = buffer->Map(4096, size_required);
+    m_map_offset = map.buffer_offset;
+    *out_buffer = map.pointer;
+    *out_pitch = stride;
+  }
+  else
+  {
+    std::vector<u8>& repack_buffer = display->GetTextureRepackBuffer();
+    if (repack_buffer.size() < size_required)
+      repack_buffer.resize(size_required);
+
+    *out_buffer = repack_buffer.data();
+    *out_pitch = stride;
+  }
+
+  return true;
+}
+
+void OpenGLHostDisplayTexture::EndUpdate(u32 x, u32 y, u32 width, u32 height)
+{
+  const u32 pixel_size = HostDisplay::GetDisplayPixelFormatSize(m_format);
+  const u32 stride = Common::AlignUpPow2(width * pixel_size, 4);
+  const u32 size_required = stride * height;
+  OpenGLHostDisplay* display = static_cast<OpenGLHostDisplay*>(g_host_display.get());
+  GL::StreamBuffer* buffer = display->UsePBOForUploads() ? display->GetTextureStreamBuffer() : nullptr;
+
+  const auto [gl_internal_format, gl_format, gl_type] =
+    GetPixelFormatMapping(display->GetGLContext()->IsGLES(), m_format);
+  const bool whole_texture = (!m_texture.UseTextureStorage() && x == 0 && y == 0 && width == m_texture.GetWidth() &&
+                              height == m_texture.GetHeight());
+
+  m_texture.Create(width, height, 1, gl_internal_format, gl_format, gl_type, nullptr, false, false);
+  m_texture.Bind();
+  if (buffer && size_required < buffer->GetSize())
+  {
+    buffer->Unmap(size_required);
+    buffer->Bind();
+
+    if (whole_texture)
+    {
+      glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type,
+                   reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    }
+    else
+    {
+      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, gl_format, gl_type,
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    }
+
+    buffer->Unbind();
+  }
+  else
+  {
+    std::vector<u8>& repack_buffer = display->GetTextureRepackBuffer();
+
+    if (whole_texture)
+      glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type, repack_buffer.data());
+    else
+      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, gl_format, gl_type, repack_buffer.data());
+  }
+}
+
+bool OpenGLHostDisplayTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch)
+{
+  OpenGLHostDisplay* display = static_cast<OpenGLHostDisplay*>(g_host_display.get());
+  const auto [gl_internal_format, gl_format, gl_type] =
+    GetPixelFormatMapping(display->GetGLContext()->IsGLES(), m_format);
+  const u32 pixel_size = HostDisplay::GetDisplayPixelFormatSize(m_format);
+  const bool is_packed_tightly = (pitch == (pixel_size * width));
+
+  const bool whole_texture = (!m_texture.UseTextureStorage() && x == 0 && y == 0 && width == m_texture.GetWidth() &&
+                              height == m_texture.GetHeight());
+  m_texture.Bind();
+
+  // If we have GLES3, we can set row_length.
+  if (!display->UseGLES3DrawPath() || is_packed_tightly)
+  {
+    if (!is_packed_tightly)
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / pixel_size);
+
+    if (whole_texture)
+      glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type, data);
+    else
+      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, gl_format, gl_type, data);
+
+    if (!is_packed_tightly)
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  }
+  else
+  {
+    // Otherwise, we need to repack the image.
+    std::vector<u8>& repack_buffer = display->GetTextureRepackBuffer();
+    const u32 packed_pitch = width * pixel_size;
+    const u32 repack_size = packed_pitch * height;
+    if (repack_buffer.size() < repack_size)
+      repack_buffer.resize(repack_size);
+
+    StringUtil::StrideMemCpy(repack_buffer.data(), packed_pitch, data, pitch, packed_pitch, height);
+
+    if (whole_texture)
+      glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format, width, height, 0, gl_format, gl_type, repack_buffer.data());
+    else
+      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, gl_format, gl_type, repack_buffer.data());
+  }
+
+  return true;
 }
 
 } // namespace FrontendCommon

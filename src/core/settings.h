@@ -1,38 +1,15 @@
 #pragma once
 #include "common/log.h"
+#include "common/settings_interface.h"
 #include "common/string.h"
 #include "types.h"
+#include "util/audio_stream.h"
 #include <array>
 #include <optional>
 #include <string>
 #include <vector>
 
-class SettingsInterface
-{
-public:
-  virtual ~SettingsInterface();
-
-  virtual bool Save() = 0;
-  virtual void Clear() = 0;
-
-  virtual int GetIntValue(const char* section, const char* key, int default_value = 0) = 0;
-  virtual float GetFloatValue(const char* section, const char* key, float default_value = 0.0f) = 0;
-  virtual bool GetBoolValue(const char* section, const char* key, bool default_value = false) = 0;
-  virtual std::string GetStringValue(const char* section, const char* key, const char* default_value = "") = 0;
-
-  virtual void SetIntValue(const char* section, const char* key, int value) = 0;
-  virtual void SetFloatValue(const char* section, const char* key, float value) = 0;
-  virtual void SetBoolValue(const char* section, const char* key, bool value) = 0;
-  virtual void SetStringValue(const char* section, const char* key, const char* value) = 0;
-
-  virtual std::vector<std::string> GetStringList(const char* section, const char* key) = 0;
-  virtual void SetStringList(const char* section, const char* key, const std::vector<std::string>& items) = 0;
-  virtual bool RemoveFromStringList(const char* section, const char* key, const char* item) = 0;
-  virtual bool AddToStringList(const char* section, const char* key, const char* item) = 0;
-
-  virtual void DeleteValue(const char* section, const char* key) = 0;
-  virtual void ClearSection(const char* section) = 0;
-};
+enum class RenderAPI : u32;
 
 struct SettingInfo
 {
@@ -46,13 +23,15 @@ struct SettingInfo
   };
 
   Type type;
-  const char* key;
-  const char* visible_name;
+  const char* name;
+  const char* display_name;
   const char* description;
   const char* default_value;
   const char* min_value;
   const char* max_value;
   const char* step_value;
+  const char* format;
+  float multiplier;
 
   const char* StringDefaultValue() const;
   bool BooleanDefaultValue() const;
@@ -70,9 +49,9 @@ struct Settings
 {
   Settings();
 
-  ConsoleRegion region = ConsoleRegion::Auto;
+  ConsoleRegion region = DEFAULT_CONSOLE_REGION;
 
-  CPUExecutionMode cpu_execution_mode = CPUExecutionMode::Interpreter;
+  CPUExecutionMode cpu_execution_mode = DEFAULT_CPU_EXECUTION_MODE;
   u32 cpu_overclock_numerator = 1;
   u32 cpu_overclock_denominator = 1;
   bool cpu_overclock_enable = false;
@@ -80,23 +59,26 @@ struct Settings
   bool cpu_recompiler_memory_exceptions = false;
   bool cpu_recompiler_block_linking = true;
   bool cpu_recompiler_icache = false;
-  CPUFastmemMode cpu_fastmem_mode = CPUFastmemMode::Disabled;
+  CPUFastmemMode cpu_fastmem_mode = DEFAULT_CPU_FASTMEM_MODE;
 
   float emulation_speed = 1.0f;
   float fast_forward_speed = 0.0f;
   float turbo_speed = 0.0f;
-  bool sync_to_host_refresh_rate = true;
+  bool sync_to_host_refresh_rate = false;
   bool increase_timer_resolution = true;
-  bool inhibit_screensaver = false;
+  bool inhibit_screensaver = true;
   bool start_paused = false;
   bool start_fullscreen = false;
   bool pause_on_focus_loss = false;
   bool pause_on_menu = true;
   bool save_state_on_exit = true;
+  bool create_save_state_backups = DEFAULT_SAVE_STATE_BACKUPS;
+  bool compress_save_states = DEFAULT_SAVE_STATE_COMPRESSION;
   bool confim_power_off = true;
   bool load_devices_from_save_states = false;
+  bool apply_compatibility_settings = true;
   bool apply_game_settings = true;
-  bool auto_load_cheats = false;
+  bool auto_load_cheats = true;
   bool disable_all_enhancements = false;
 
   bool rewind_enable = false;
@@ -104,7 +86,7 @@ struct Settings
   u32 rewind_save_slots = 10;
   u32 runahead_frames = 0;
 
-  GPURenderer gpu_renderer = GPURenderer::Software;
+  GPURenderer gpu_renderer = DEFAULT_GPU_RENDERER;
   std::string gpu_adapter;
   std::string display_post_process_chain;
   u32 gpu_resolution_scale = 1;
@@ -114,10 +96,10 @@ struct Settings
   bool gpu_threaded_presentation = true;
   bool gpu_use_debug_device = false;
   bool gpu_per_sample_shading = false;
-  bool gpu_true_color = false;
-  bool gpu_scaled_dithering = false;
-  GPUTextureFilter gpu_texture_filter = GPUTextureFilter::Nearest;
-  GPUDownsampleMode gpu_downsample_mode = GPUDownsampleMode::Disabled;
+  bool gpu_true_color = true;
+  bool gpu_scaled_dithering = true;
+  GPUTextureFilter gpu_texture_filter = DEFAULT_GPU_TEXTURE_FILTER;
+  GPUDownsampleMode gpu_downsample_mode = DEFAULT_GPU_DOWNSAMPLE_MODE;
   bool gpu_disable_interlacing = true;
   bool gpu_force_ntsc_timings = false;
   bool gpu_widescreen_hack = false;
@@ -128,8 +110,8 @@ struct Settings
   bool gpu_pgxp_cpu = false;
   bool gpu_pgxp_preserve_proj_fp = false;
   bool gpu_pgxp_depth_buffer = false;
-  DisplayCropMode display_crop_mode = DisplayCropMode::None;
-  DisplayAspectRatio display_aspect_ratio = DisplayAspectRatio::Auto;
+  DisplayCropMode display_crop_mode = DEFAULT_DISPLAY_CROP_MODE;
+  DisplayAspectRatio display_aspect_ratio = DEFAULT_DISPLAY_ASPECT_RATIO;
   u16 display_aspect_ratio_custom_numerator = 0;
   u16 display_aspect_ratio_custom_denominator = 0;
   s16 display_active_start_offset = 0;
@@ -144,42 +126,54 @@ struct Settings
   bool display_post_processing = false;
   bool display_show_osd_messages = true;
   bool display_show_fps = false;
-  bool display_show_vps = false;
   bool display_show_speed = false;
   bool display_show_resolution = false;
+  bool display_show_cpu = false;
+  bool display_show_gpu = false;
   bool display_show_status_indicators = true;
+  bool display_show_inputs = false;
   bool display_show_enhancements = false;
   bool display_all_frames = false;
+  bool display_internal_resolution_screenshots = false;
   bool video_sync_enabled = DEFAULT_VSYNC_VALUE;
+  float display_osd_scale = 100.0f;
   float display_max_fps = DEFAULT_DISPLAY_MAX_FPS;
   float gpu_pgxp_tolerance = -1.0f;
-  float gpu_pgxp_depth_clear_threshold = 300.0f / 4096.0f;
+  float gpu_pgxp_depth_clear_threshold = DEFAULT_GPU_PGXP_DEPTH_THRESHOLD;
 
   u8 cdrom_readahead_sectors = DEFAULT_CDROM_READAHEAD_SECTORS;
   bool cdrom_region_check = false;
   bool cdrom_load_image_to_ram = false;
+  bool cdrom_load_image_patches = false;
   bool cdrom_mute_cd_audio = false;
   u32 cdrom_read_speedup = 1;
   u32 cdrom_seek_speedup = 1;
 
-#ifndef __SWITCH__
-  AudioBackend audio_backend = AudioBackend::Cubeb;
-#else
-  AudioBackend audio_backend = AudioBackend::Switch;
-#endif
-  s32 audio_output_volume = 100;
-  s32 audio_fast_forward_volume = 100;
-  u32 audio_buffer_size = 2048;
-  bool audio_resampling = false;
+  AudioBackend audio_backend = DEFAULT_AUDIO_BACKEND;
+  AudioStretchMode audio_stretch_mode = DEFAULT_AUDIO_STRETCH_MODE;
+  std::string audio_driver;
+  u32 audio_output_latency_ms = DEFAULT_AUDIO_OUTPUT_LATENCY_MS;
+  u32 audio_buffer_ms = DEFAULT_AUDIO_BUFFER_MS;
+  u32 audio_output_volume = 100;
+  u32 audio_fast_forward_volume = 100;
   bool audio_output_muted = false;
-  bool audio_sync_enabled = true;
-  bool audio_dump_on_boot = true;
+  bool audio_dump_on_boot = false;
 
   // timing hacks section
-  TickCount dma_max_slice_ticks = 1000;
-  TickCount dma_halt_ticks = 100;
-  u32 gpu_fifo_size = 128;
-  TickCount gpu_max_run_ahead = 128;
+  TickCount dma_max_slice_ticks = DEFAULT_DMA_MAX_SLICE_TICKS;
+  TickCount dma_halt_ticks = DEFAULT_DMA_HALT_TICKS;
+  u32 gpu_fifo_size = DEFAULT_GPU_FIFO_SIZE;
+  TickCount gpu_max_run_ahead = DEFAULT_GPU_MAX_RUN_AHEAD;
+
+#ifdef WITH_CHEEVOS
+  // achievements
+  bool achievements_enabled : 1;
+  bool achievements_test_mode : 1;
+  bool achievements_unofficial_test_mode : 1;
+  bool achievements_use_first_disc_from_playlist : 1;
+  bool achievements_rich_presence : 1;
+  bool achievements_challenge_mode : 1;
+#endif
 
   struct DebugSettings
   {
@@ -221,7 +215,7 @@ struct Settings
   // TODO: Controllers, memory cards, etc.
 
   bool bios_patch_tty_enable = false;
-  bool bios_patch_fast_boot = false;
+  bool bios_patch_fast_boot = DEFAULT_FAST_BOOT_VALUE;
   bool enable_8mb_ram = false;
 
   std::array<ControllerType, NUM_CONTROLLER_AND_CARD_PORTS> controller_types{};
@@ -229,16 +223,15 @@ struct Settings
 
   std::array<MemoryCardType, NUM_CONTROLLER_AND_CARD_PORTS> memory_card_types{};
   std::array<std::string, NUM_CONTROLLER_AND_CARD_PORTS> memory_card_paths{};
-  std::string memory_card_directory;
   bool memory_card_use_playlist_title = true;
 
-  MultitapMode multitap_mode = MultitapMode::Disabled;
+  MultitapMode multitap_mode = DEFAULT_MULTITAP_MODE;
 
   std::array<TinyString, NUM_CONTROLLER_AND_CARD_PORTS> GeneratePortLabels() const;
 
-  LOGLEVEL log_level = LOGLEVEL_INFO;
+  LOGLEVEL log_level = DEFAULT_LOG_LEVEL;
   std::string log_filter;
-  bool log_to_console = false;
+  bool log_to_console = DEFAULT_LOG_TO_CONSOLE;
   bool log_to_debug = false;
   bool log_to_window = false;
   bool log_to_file = false;
@@ -271,12 +264,32 @@ struct Settings
 
   float GetDisplayAspectRatioValue() const;
 
+  ALWAYS_INLINE bool IsPort1MultitapEnabled() const
+  {
+    return (multitap_mode == MultitapMode::Port1Only || multitap_mode == MultitapMode::BothPorts);
+  }
+  ALWAYS_INLINE bool IsPort2MultitapEnabled() const
+  {
+    return (multitap_mode == MultitapMode::Port1Only || multitap_mode == MultitapMode::BothPorts);
+  }
+  ALWAYS_INLINE bool IsMultitapPortEnabled(u32 port) const
+  {
+    return (port == 0) ? IsPort1MultitapEnabled() : IsPort2MultitapEnabled();
+  }
+
   ALWAYS_INLINE static bool IsPerGameMemoryCardType(MemoryCardType type)
   {
     return (type == MemoryCardType::PerGame || type == MemoryCardType::PerGameTitle ||
             type == MemoryCardType::PerGameFileTitle);
   }
   bool HasAnyPerGameMemoryCards() const;
+
+  /// Returns the default path to a memory card.
+  static std::string GetDefaultSharedMemoryCardName(u32 slot);
+  std::string GetSharedMemoryCardPath(u32 slot) const;
+
+  /// Returns the default path to a memory card for a specific game.
+  static std::string GetGameMemoryCardPath(const char* game_code, u32 slot);
 
   static void CPUOverclockPercentToFraction(u32 percent, u32* numerator, u32* denominator);
   static u32 CPUOverclockFractionToPercent(u32 numerator, u32 denominator);
@@ -297,6 +310,8 @@ struct Settings
 
   void Load(SettingsInterface& si);
   void Save(SettingsInterface& si) const;
+
+  void FixIncompatibleSettings(bool display_osd_messages);
 
   static std::optional<LOGLEVEL> ParseLogLevelName(const char* str);
   static const char* GetLogLevelName(LOGLEVEL level);
@@ -321,6 +336,7 @@ struct Settings
   static std::optional<GPURenderer> ParseRendererName(const char* str);
   static const char* GetRendererName(GPURenderer renderer);
   static const char* GetRendererDisplayName(GPURenderer renderer);
+  static RenderAPI GetRenderAPIForRenderer(GPURenderer renderer);
 
   static std::optional<GPUTextureFilter> ParseTextureFilterName(const char* str);
   static const char* GetTextureFilterName(GPUTextureFilter filter);
@@ -354,12 +370,16 @@ struct Settings
   static const char* GetMultitapModeDisplayName(MultitapMode mode);
 
   // Default to D3D11 on Windows as it's more performant and at this point, less buggy.
-#if defined(_WIN32)
+#if defined(_WIN32) && defined(_M_ARM64)
   static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareD3D11;
 #elif defined(__SWITCH__)
   static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::Software;
-#else
+#elif defined(WITH_OPENGL)
   static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareOpenGL;
+#elif defined(WITH_VULKAN)
+  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareVulkan;
+#else
+  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::Software;
 #endif
   static constexpr GPUTextureFilter DEFAULT_GPU_TEXTURE_FILTER = GPUTextureFilter::Nearest;
   static constexpr GPUDownsampleMode DEFAULT_GPU_DOWNSAMPLE_MODE = GPUDownsampleMode::Disabled;
@@ -378,28 +398,40 @@ struct Settings
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::Disabled;
 #endif
 
-#if defined(__ANDROID__)
-  static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::OpenSLES;
-#elif defined(_UWP)
+#if defined(WITH_CUBEB)
+  static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Cubeb;
+#elif defined(_WIN32)
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::XAudio2;
 #elif defined(__SWITCH__)
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Switch;
+#elif defined(__ANDROID__)
+  static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::AAudio;
 #else
-  static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Cubeb;
+  static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Null;
 #endif
 
   static constexpr DisplayCropMode DEFAULT_DISPLAY_CROP_MODE = DisplayCropMode::Overscan;
   static constexpr DisplayAspectRatio DEFAULT_DISPLAY_ASPECT_RATIO = DisplayAspectRatio::Auto;
+  static constexpr float DEFAULT_OSD_SCALE = 100.0f;
 
   static constexpr u8 DEFAULT_CDROM_READAHEAD_SECTORS = 8;
 
-  static constexpr ControllerType DEFAULT_CONTROLLER_1_TYPE = ControllerType::DigitalController;
+  static constexpr ControllerType DEFAULT_CONTROLLER_1_TYPE = ControllerType::AnalogController;
   static constexpr ControllerType DEFAULT_CONTROLLER_2_TYPE = ControllerType::None;
   static constexpr MemoryCardType DEFAULT_MEMORY_CARD_1_TYPE = MemoryCardType::PerGameTitle;
   static constexpr MemoryCardType DEFAULT_MEMORY_CARD_2_TYPE = MemoryCardType::None;
   static constexpr MultitapMode DEFAULT_MULTITAP_MODE = MultitapMode::Disabled;
 
   static constexpr LOGLEVEL DEFAULT_LOG_LEVEL = LOGLEVEL_INFO;
+
+#ifndef __ANDROID__
+  static constexpr u32 DEFAULT_AUDIO_BUFFER_MS = 50;
+  static constexpr u32 DEFAULT_AUDIO_OUTPUT_LATENCY_MS = 20;
+#else
+  static constexpr u32 DEFAULT_AUDIO_BUFFER_MS = 100;
+  static constexpr u32 DEFAULT_AUDIO_OUTPUT_LATENCY_MS = 20;
+#endif
+  static constexpr AudioStretchMode DEFAULT_AUDIO_STRETCH_MODE = AudioStretchMode::TimeStretch;
 
   // Enable console logging by default on Linux platforms.
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -410,14 +442,45 @@ struct Settings
 
   // Android doesn't create settings until they're first opened, so we have to override the defaults here.
 #ifndef __ANDROID__
+  static constexpr bool DEFAULT_SAVE_STATE_COMPRESSION = true;
+  static constexpr bool DEFAULT_SAVE_STATE_BACKUPS = true;
   static constexpr bool DEFAULT_VSYNC_VALUE = false;
   static constexpr bool DEFAULT_FAST_BOOT_VALUE = false;
   static constexpr float DEFAULT_DISPLAY_MAX_FPS = 0.0f;
 #else
-  static constexpr bool DEFAULT_VSYNC_VALUE = true;
+  static constexpr bool DEFAULT_SAVE_STATE_COMPRESSION = true;
+  static constexpr bool DEFAULT_SAVE_STATE_BACKUPS = false;
+  static constexpr bool DEFAULT_VSYNC_VALUE = false;
   static constexpr bool DEFAULT_FAST_BOOT_VALUE = true;
   static constexpr float DEFAULT_DISPLAY_MAX_FPS = 60.0f;
 #endif
 };
 
 extern Settings g_settings;
+
+namespace EmuFolders {
+extern std::string AppRoot;
+extern std::string DataRoot;
+extern std::string Bios;
+extern std::string Cache;
+extern std::string Cheats;
+extern std::string Covers;
+extern std::string Dumps;
+extern std::string GameSettings;
+extern std::string InputProfiles;
+extern std::string MemoryCards;
+extern std::string Resources;
+extern std::string SaveStates;
+extern std::string Screenshots;
+extern std::string Shaders;
+extern std::string Textures;
+
+// Assumes that AppRoot and DataRoot have been initialized.
+void SetDefaults();
+bool EnsureFoldersExist();
+void LoadConfig(SettingsInterface& si);
+void Save(SettingsInterface& si);
+
+/// Updates the variables in the EmuFolders namespace, reloading subsystems if needed.
+void Update();
+} // namespace EmuFolders

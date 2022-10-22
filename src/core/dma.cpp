@@ -2,19 +2,18 @@
 #include "bus.h"
 #include "cdrom.h"
 #include "common/log.h"
-#include "common/state_wrapper.h"
 #include "common/string_util.h"
 #include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "gpu.h"
+#include "host.h"
+#include "imgui.h"
 #include "interrupt_controller.h"
 #include "mdec.h"
 #include "pad.h"
 #include "spu.h"
 #include "system.h"
-#ifdef WITH_IMGUI
-#include "imgui.h"
-#endif
+#include "util/state_wrapper.h"
 Log_SetChannel(DMA);
 
 static u32 GetAddressMask()
@@ -531,7 +530,7 @@ TickCount DMA::TransferMemoryToDevice(Channel channel, u32 address, u32 incremen
     break;
 
     case Channel::SPU:
-      g_spu.DMAWrite(src_pointer, word_count);
+      SPU::DMAWrite(src_pointer, word_count);
       break;
 
     case Channel::MDECin:
@@ -592,7 +591,7 @@ TickCount DMA::TransferDeviceToMemory(Channel channel, u32 address, u32 incremen
       break;
 
     case Channel::SPU:
-      g_spu.DMARead(dest_pointer, word_count);
+      SPU::DMARead(dest_pointer, word_count);
       break;
 
     case Channel::MDECout:
@@ -621,7 +620,6 @@ TickCount DMA::TransferDeviceToMemory(Channel channel, u32 address, u32 incremen
 
 void DMA::DrawDebugStateWindow()
 {
-#ifdef WITH_IMGUI
   static constexpr u32 NUM_COLUMNS = 10;
   static constexpr std::array<const char*, NUM_COLUMNS> column_names = {
     {"#", "Req", "Direction", "Chopping", "Mode", "Busy", "Enable", "Priority", "IRQ", "Flag"}};
@@ -629,7 +627,7 @@ void DMA::DrawDebugStateWindow()
     {"MDECin", "MDECout", "GPU", "CDROM", "SPU", "PIO", "OTC"}};
   static constexpr std::array<const char*, 4> sync_mode_names = {{"Manual", "Request", "LinkedList", "Reserved"}};
 
-  const float framebuffer_scale = ImGui::GetIO().DisplayFramebufferScale.x;
+  const float framebuffer_scale = Host::GetOSDScale();
 
   ImGui::SetNextWindowSize(ImVec2(850.0f * framebuffer_scale, 250.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("DMA State", nullptr))
@@ -697,5 +695,4 @@ void DMA::DrawDebugStateWindow()
 
   ImGui::Columns(1);
   ImGui::End();
-#endif
 }

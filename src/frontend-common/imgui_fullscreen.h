@@ -1,16 +1,19 @@
 #pragma once
 #include "common/types.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+
+class HostDisplayTexture;
 
 namespace ImGuiFullscreen {
 #define HEX_TO_IMVEC4(hex, alpha)                                                                                      \
   ImVec4(static_cast<float>((hex >> 16) & 0xFFu) / 255.0f, static_cast<float>((hex >> 8) & 0xFFu) / 255.0f,            \
          static_cast<float>(hex & 0xFFu) / 255.0f, static_cast<float>(alpha) / 255.0f)
-
-using ResolveTextureHandleCallback = ImTextureID (*)(const std::string& path);
 
 static constexpr float LAYOUT_SCREEN_WIDTH = 1280.0f;
 static constexpr float LAYOUT_SCREEN_HEIGHT = 720.0f;
@@ -29,7 +32,22 @@ extern ImFont* g_large_font;
 extern float g_layout_scale;
 extern float g_layout_padding_left;
 extern float g_layout_padding_top;
-extern float g_menu_bar_size;
+
+extern ImVec4 UIBackgroundColor;
+extern ImVec4 UIBackgroundTextColor;
+extern ImVec4 UIBackgroundLineColor;
+extern ImVec4 UIBackgroundHighlightColor;
+extern ImVec4 UIDisabledColor;
+extern ImVec4 UIPrimaryColor;
+extern ImVec4 UIPrimaryLightColor;
+extern ImVec4 UIPrimaryDarkColor;
+extern ImVec4 UIPrimaryTextColor;
+extern ImVec4 UITextHighlightColor;
+extern ImVec4 UIPrimaryLineColor;
+extern ImVec4 UISecondaryColor;
+extern ImVec4 UISecondaryLightColor;
+extern ImVec4 UISecondaryDarkColor;
+extern ImVec4 UISecondaryTextColor;
 
 static ALWAYS_INLINE float DPIScale(float v)
 {
@@ -77,86 +95,45 @@ static ALWAYS_INLINE ImVec2 LayoutScaleAndOffset(float x, float y)
   return ImVec2(g_layout_padding_left + x * g_layout_scale, g_layout_padding_top + y * g_layout_scale);
 }
 
-static ALWAYS_INLINE ImVec4 UIPrimaryColor()
+static ALWAYS_INLINE ImVec4 ModAlpha(const ImVec4& v, float a)
 {
-  return HEX_TO_IMVEC4(0x212121, 0xff);
+  return ImVec4(v.x, v.y, v.z, a);
 }
 
-static ALWAYS_INLINE ImVec4 UIPrimaryLightColor()
-{
-  return HEX_TO_IMVEC4(0x484848, 0xff);
-}
+/// Centers an image within the specified bounds, scaling up or down as needed.
+ImRect CenterImage(const ImVec2& fit_size, const ImVec2& image_size);
+ImRect CenterImage(const ImRect& fit_rect, const ImVec2& image_size);
 
-static ALWAYS_INLINE ImVec4 UIPrimaryDarkColor()
-{
-  return HEX_TO_IMVEC4(0x484848, 0xff);
-}
+/// Initializes, setting up any state.
+bool Initialize(const char* placeholder_image_path);
 
-static ALWAYS_INLINE ImVec4 UIPrimaryTextColor()
-{
-  return HEX_TO_IMVEC4(0xffffff, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UIPrimaryDisabledTextColor()
-{
-  return HEX_TO_IMVEC4(0xaaaaaa, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UITextHighlightColor()
-{
-  return HEX_TO_IMVEC4(0x90caf9, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UIPrimaryLineColor()
-{
-  return HEX_TO_IMVEC4(0xffffff, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UISecondaryColor()
-{
-  return HEX_TO_IMVEC4(0x1565c0, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UISecondaryLightColor()
-{
-  return HEX_TO_IMVEC4(0x5e92f3, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UISecondaryDarkColor()
-{
-  return HEX_TO_IMVEC4(0x003c8f, 0xff);
-}
-
-static ALWAYS_INLINE ImVec4 UISecondaryTextColor()
-{
-  return HEX_TO_IMVEC4(0xffffff, 0xff);
-}
-
-void SetFontFilename(std::string filename);
-void SetFontData(std::vector<u8> data);
-void SetIconFontFilename(std::string icon_font_filename);
-void SetIconFontData(std::vector<u8> data);
-void SetFontSize(float size_pixels);
-void SetFontGlyphRanges(const ImWchar* glyph_ranges);
-
-/// Changes the menu bar size. Don't forget to call UpdateLayoutScale() and UpdateFonts().
-void SetMenuBarSize(float size);
-
-/// Resolves a texture name to a handle.
-void SetResolveTextureFunction(ResolveTextureHandleCallback callback);
-
-/// Rebuilds fonts to a new scale if needed. Returns true if fonts have changed and the texture needs updating.
-bool UpdateFonts();
-
-/// Removes the fullscreen fonts, leaving only the standard font.
-void ResetFonts();
-
+void SetTheme();
+void SetFonts(ImFont* standard_font, ImFont* medium_font, ImFont* large_font);
 bool UpdateLayoutScale();
+
+/// Shuts down, clearing all state.
+void Shutdown();
+
+/// Texture cache.
+const std::shared_ptr<HostDisplayTexture>& GetPlaceholderTexture();
+std::shared_ptr<HostDisplayTexture> LoadTexture(const std::string_view& path);
+HostDisplayTexture* GetCachedTexture(const std::string_view& name);
+HostDisplayTexture* GetCachedTextureAsync(const std::string_view& name);
+bool InvalidateCachedTexture(const std::string& path);
+void UploadAsyncTextures();
 
 void BeginLayout();
 void EndLayout();
 
-bool IsCancelButtonPressed();
+void QueueResetFocus();
+bool ResetFocusHere();
+bool WantsToCloseMenu();
+void ResetCloseMenuIfNeeded();
+
+void PushPrimaryColor();
+void PopPrimaryColor();
+void PushSecondaryColor();
+void PopSecondaryColor();
 
 void DrawWindowTitle(const char* title);
 
@@ -164,7 +141,7 @@ bool BeginFullscreenColumns(const char* title = nullptr);
 void EndFullscreenColumns();
 
 bool BeginFullscreenColumnWindow(float start, float end, const char* name,
-                                 const ImVec4& background = HEX_TO_IMVEC4(0x212121, 0xFF));
+                                 const ImVec4& background = UIBackgroundColor);
 void EndFullscreenColumnWindow();
 
 bool BeginFullscreenWindow(float left, float top, float width, float height, const char* name,
@@ -199,6 +176,9 @@ bool FloatingButton(const char* text, float x, float y, float width = -1.0f,
 bool ToggleButton(const char* title, const char* summary, bool* v, bool enabled = true,
                   float height = LAYOUT_MENU_BUTTON_HEIGHT, ImFont* font = g_large_font,
                   ImFont* summary_font = g_medium_font);
+bool ThreeWayToggleButton(const char* title, const char* summary, std::optional<bool>* v, bool enabled = true,
+                          float height = LAYOUT_MENU_BUTTON_HEIGHT, ImFont* font = g_large_font,
+                          ImFont* summary_font = g_medium_font);
 bool RangeButton(const char* title, const char* summary, s32* value, s32 min, s32 max, s32 increment,
                  const char* format = "%d", bool enabled = true, float height = LAYOUT_MENU_BUTTON_HEIGHT,
                  ImFont* font = g_large_font, ImFont* summary_font = g_medium_font);
@@ -210,7 +190,7 @@ bool EnumChoiceButtonImpl(const char* title, const char* summary, s32* value_poi
                           bool enabled, float height, ImFont* font, ImFont* summary_font);
 
 template<typename DataType, typename CountType>
-static ALWAYS_INLINE bool EnumChoiceButton(const char* title, const char* summary, DataType* value_pointer,
+ALWAYS_INLINE static bool EnumChoiceButton(const char* title, const char* summary, DataType* value_pointer,
                                            const char* (*to_display_name_function)(DataType value), CountType count,
                                            bool enabled = true, float height = LAYOUT_MENU_BUTTON_HEIGHT,
                                            ImFont* font = g_large_font, ImFont* summary_font = g_medium_font)
@@ -254,6 +234,11 @@ bool IsChoiceDialogOpen();
 void OpenChoiceDialog(const char* title, bool checkable, ChoiceDialogOptions options, ChoiceDialogCallback callback);
 void CloseChoiceDialog();
 
+using InputStringDialogCallback = std::function<void(std::string text)>;
+bool IsInputDialogOpen();
+void OpenInputStringDialog(std::string title, std::string message, std::string caption, std::string ok_button_text, InputStringDialogCallback callback);
+void CloseInputDialog();
+
 float GetNotificationVerticalPosition();
 float GetNotificationVerticalDirection();
 void SetNotificationVerticalPosition(float position, float direction);
@@ -265,4 +250,6 @@ void CloseBackgroundProgressDialog(const char* str_id);
 void AddNotification(float duration, std::string title, std::string text, std::string image_path);
 void ClearNotifications();
 
+void ShowToast(std::string title, std::string message, float duration = 10.0f);
+void ClearToast();
 } // namespace ImGuiFullscreen

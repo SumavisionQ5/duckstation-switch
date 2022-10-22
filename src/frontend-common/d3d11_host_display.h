@@ -54,20 +54,18 @@ public:
   std::unique_ptr<HostDisplayTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
                                                     HostDisplayPixelFormat format, const void* data, u32 data_stride,
                                                     bool dynamic = false) override;
-  void UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* texture_data,
-                     u32 texture_data_stride) override;
   bool DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y, u32 width,
                        u32 height, void* out_data, u32 out_data_stride) override;
   bool SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const override;
-  bool BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                             u32* out_pitch) override;
-  void EndSetDisplayPixels() override;
 
   bool GetHostRefreshRate(float* refresh_rate) override;
 
+  bool SetGPUTimingEnabled(bool enabled) override;
+  float GetAndResetAccumulatedGPUTime() override;
+
   void SetVSync(bool enabled) override;
 
-  bool Render() override;
+  bool Render(bool skip_present) override;
   bool RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
                         HostDisplayPixelFormat* out_format) override;
 
@@ -75,6 +73,7 @@ public:
 
 protected:
   static constexpr u32 DISPLAY_UNIFORM_BUFFER_SIZE = 16;
+  static constexpr u8 NUM_TIMESTAMP_QUERIES = 3;
 
   static AdapterAndModeList GetAdapterAndModeList(IDXGIFactory* dxgi_factory);
 
@@ -111,6 +110,11 @@ protected:
                                 s32 texture_view_x, s32 texture_view_y, s32 texture_view_width, s32 texture_view_height,
                                 u32 target_width, u32 target_height);
 
+  bool CreateTimestampQueries();
+  void DestroyTimestampQueries();
+  void PopTimestampQuery();
+  void KickTimestampQuery();
+
   ComPtr<ID3D11Device> m_device;
   ComPtr<ID3D11DeviceContext> m_context;
 
@@ -128,7 +132,6 @@ protected:
   ComPtr<ID3D11SamplerState> m_point_sampler;
   ComPtr<ID3D11SamplerState> m_linear_sampler;
 
-  D3D11::Texture m_display_pixels_texture;
   D3D11::StreamBuffer m_display_uniform_buffer;
   D3D11::AutoStagingTexture m_readback_staging_texture;
 
@@ -140,6 +143,13 @@ protected:
   PostProcessingChain m_post_processing_chain;
   D3D11::Texture m_post_processing_input_texture;
   std::vector<PostProcessingStage> m_post_processing_stages;
+
+  std::array<std::array<ComPtr<ID3D11Query>, 3>, NUM_TIMESTAMP_QUERIES> m_timestamp_queries = {};
+  u8 m_read_timestamp_query = 0;
+  u8 m_write_timestamp_query = 0;
+  u8 m_waiting_timestamp_queries = 0;
+  bool m_timestamp_query_started = false;
+  float m_accumulated_gpu_time = 0.0f;
 };
 
 } // namespace FrontendCommon

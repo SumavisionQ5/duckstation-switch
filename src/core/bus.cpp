@@ -4,20 +4,20 @@
 #include "common/assert.h"
 #include "common/log.h"
 #include "common/make_array.h"
-#include "common/state_wrapper.h"
 #include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
 #include "dma.h"
 #include "gpu.h"
-#include "host_interface.h"
+#include "host.h"
 #include "interrupt_controller.h"
 #include "mdec.h"
 #include "pad.h"
 #include "sio.h"
 #include "spu.h"
 #include "timers.h"
+#include "util/state_wrapper.h"
 #include <cstdio>
 #include <tuple>
 #include <utility>
@@ -78,6 +78,21 @@ u32 g_ram_size = 0;
 u32 g_ram_mask = 0;
 u8 g_bios[BIOS_SIZE]{}; // 512K BIOS ROM
 
+// Exports for external debugger access
+namespace Exports {
+
+extern "C" {
+#ifdef _WIN32
+_declspec(dllexport) uintptr_t RAM;
+_declspec(dllexport) u32 RAM_SIZE, RAM_MASK;
+#else
+__attribute__((visibility("default"), used)) uintptr_t RAM;
+__attribute__((visibility("default"), used)) u32 RAM_SIZE, RAM_MASK;
+#endif
+}
+
+} // namespace Exports
+
 static std::array<TickCount, 3> m_exp1_access_time = {};
 static std::array<TickCount, 3> m_exp2_access_time = {};
 static std::array<TickCount, 3> m_bios_access_time = {};
@@ -130,7 +145,7 @@ bool Initialize()
 {
   if (!AllocateMemory(g_settings.enable_8mb_ram))
   {
-    g_host_interface->ReportError("Failed to allocate memory");
+    Host::ReportErrorAsync("Error", "Failed to allocate memory");
     return false;
   }
 
@@ -293,6 +308,10 @@ bool AllocateMemory(bool enable_8mb_ram)
   g_ram_size = ram_size;
   m_ram_code_page_count = enable_8mb_ram ? RAM_8MB_CODE_PAGE_COUNT : RAM_2MB_CODE_PAGE_COUNT;
 
+  Exports::RAM = reinterpret_cast<uintptr_t>(g_ram);
+  Exports::RAM_SIZE = g_ram_size;
+  Exports::RAM_MASK = g_ram_mask;
+
   Log_InfoPrintf("RAM is %u bytes at %p", g_ram_size, g_ram);
   return true;
 }
@@ -305,6 +324,10 @@ void ReleaseMemory()
     g_ram = nullptr;
     g_ram_mask = 0;
     g_ram_size = 0;
+
+    Exports::RAM = 0;
+    Exports::RAM_SIZE = 0;
+    Exports::RAM_MASK = 0;
   }
 
   m_memory_arena.Destroy();
@@ -1244,22 +1267,22 @@ ALWAYS_INLINE static TickCount DoAccessSPU(u32 offset, u32& value)
       case MemoryAccessSize::Word:
       {
         // 32-bit reads are read as two 16-bit accesses.
-        const u16 lsb = g_spu.ReadRegister(offset);
-        const u16 msb = g_spu.ReadRegister(offset + 2);
+        const u16 lsb = SPU::ReadRegister(offset);
+        const u16 msb = SPU::ReadRegister(offset + 2);
         value = ZeroExtend32(lsb) | (ZeroExtend32(msb) << 16);
       }
       break;
 
       case MemoryAccessSize::HalfWord:
       {
-        value = ZeroExtend32(g_spu.ReadRegister(offset));
+        value = ZeroExtend32(SPU::ReadRegister(offset));
       }
       break;
 
       case MemoryAccessSize::Byte:
       default:
       {
-        const u16 value16 = g_spu.ReadRegister(FIXUP_HALFWORD_OFFSET(size, offset));
+        const u16 value16 = SPU::ReadRegister(FIXUP_HALFWORD_OFFSET(size, offset));
         value = FIXUP_HALFWORD_READ_VALUE(size, offset, value16);
       }
       break;
@@ -1276,21 +1299,21 @@ ALWAYS_INLINE static TickCount DoAccessSPU(u32 offset, u32& value)
       case MemoryAccessSize::Word:
       {
         DebugAssert(Common::IsAlignedPow2(offset, 2));
-        g_spu.WriteRegister(offset, Truncate16(value));
-        g_spu.WriteRegister(offset + 2, Truncate16(value >> 16));
+        SPU::WriteRegister(offset, Truncate16(value));
+        SPU::WriteRegister(offset + 2, Truncate16(value >> 16));
         break;
       }
 
       case MemoryAccessSize::HalfWord:
       {
         DebugAssert(Common::IsAlignedPow2(offset, 2));
-        g_spu.WriteRegister(offset, Truncate16(value));
+        SPU::WriteRegister(offset, Truncate16(value));
         break;
       }
 
       case MemoryAccessSize::Byte:
       {
-        g_spu.WriteRegister(FIXUP_HALFWORD_OFFSET(size, offset),
+        SPU::WriteRegister(FIXUP_HALFWORD_OFFSET(size, offset),
                             Truncate16(FIXUP_HALFWORD_READ_VALUE(size, offset, value)));
         break;
       }

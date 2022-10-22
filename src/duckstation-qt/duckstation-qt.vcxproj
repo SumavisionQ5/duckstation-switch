@@ -1,7 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="..\..\dep\msvc\vsprops\Configurations.props" />
-
   <ItemGroup>
     <ClCompile Include="aboutdialog.cpp" />
     <ClCompile Include="achievementsettingswidget.cpp" />
@@ -14,34 +13,39 @@
     <ClCompile Include="cheatcodeeditordialog.cpp" />
     <ClCompile Include="collapsiblewidget.cpp" />
     <ClCompile Include="consolesettingswidget.cpp" />
+    <ClCompile Include="controllerbindingwidgets.cpp" />
+    <ClCompile Include="controllerglobalsettingswidget.cpp" />
+    <ClCompile Include="controllersettingsdialog.cpp" />
+    <ClCompile Include="coverdownloaddialog.cpp" />
     <ClCompile Include="emulationsettingswidget.cpp" />
     <ClCompile Include="debuggermodels.cpp" />
     <ClCompile Include="debuggerwindow.cpp" />
     <ClCompile Include="enhancementsettingswidget.cpp" />
+    <ClCompile Include="foldersettingswidget.cpp" />
     <ClCompile Include="gamelistmodel.cpp" />
     <ClCompile Include="gamelistsearchdirectoriesmodel.cpp" />
     <ClCompile Include="generalsettingswidget.cpp" />
     <ClCompile Include="displaysettingswidget.cpp" />
     <ClCompile Include="hotkeysettingswidget.cpp" />
     <ClCompile Include="inputbindingdialog.cpp" />
-    <ClCompile Include="inputbindingmonitor.cpp" />
     <ClCompile Include="inputbindingwidgets.cpp" />
     <ClCompile Include="memoryviewwidget.cpp" />
-    <ClCompile Include="qtdisplaywidget.cpp" />
+    <ClCompile Include="displaywidget.cpp" />
     <ClCompile Include="gamelistsettingswidget.cpp" />
+    <ClCompile Include="gamelistrefreshthread.cpp" />
     <ClCompile Include="gamelistwidget.cpp" />
-    <ClCompile Include="gamepropertiesdialog.cpp" />
+    <ClCompile Include="gamesummarywidget.cpp" />
     <ClCompile Include="gdbconnection.cpp" />
     <ClCompile Include="gdbserver.cpp" />
-    <ClCompile Include="main.cpp" />
     <ClCompile Include="mainwindow.cpp" />
-    <ClCompile Include="controllersettingswidget.cpp" />
     <ClCompile Include="memorycardsettingswidget.cpp" />
     <ClCompile Include="memorycardeditordialog.cpp" />
     <ClCompile Include="postprocessingchainconfigwidget.cpp" />
     <ClCompile Include="postprocessingshaderconfigwidget.cpp" />
     <ClCompile Include="postprocessingsettingswidget.cpp" />
-    <ClCompile Include="qthostinterface.cpp" />
+    <ClCompile Include="qttranslations.cpp" />
+    <ClCompile Include="qthost.cpp" />
+    <ClCompile Include="qtkeycodes.cpp" />
     <ClCompile Include="qtprogresscallback.cpp" />
     <ClCompile Include="qtutils.cpp" />
     <ClCompile Include="settingsdialog.cpp" />
@@ -52,11 +56,11 @@
     <QtMoc Include="biossettingswidget.h" />
     <QtMoc Include="cheatmanagerdialog.h" />
     <QtMoc Include="cheatcodeeditordialog.h" />
-    <QtMoc Include="controllersettingswidget.h" />
+    <QtMoc Include="coverdownloaddialog.h" />
     <QtMoc Include="enhancementsettingswidget.h" />
     <QtMoc Include="memorycardsettingswidget.h" />
     <QtMoc Include="memorycardeditordialog.h" />
-    <QtMoc Include="qtdisplaywidget.h" />
+    <QtMoc Include="displaywidget.h" />
     <QtMoc Include="generalsettingswidget.h" />
     <QtMoc Include="displaysettingswidget.h" />
     <QtMoc Include="hotkeysettingswidget.h" />
@@ -72,22 +76,27 @@
     <QtMoc Include="achievementsettingswidget.h" />
     <QtMoc Include="achievementlogindialog.h" />
     <QtMoc Include="collapsiblewidget.h" />
-    <ClInclude Include="inputbindingmonitor.h" />
+    <QtMoc Include="controllerbindingwidgets.h" />
+    <QtMoc Include="controllerglobalsettingswidget.h" />
+    <QtMoc Include="controllersettingsdialog.h" />
+    <ClInclude Include="controllersettingwidgetbinder.h" />
     <QtMoc Include="memoryviewwidget.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="settingwidgetbinder.h" />
     <QtMoc Include="consolesettingswidget.h" />
     <QtMoc Include="emulationsettingswidget.h" />
     <QtMoc Include="gamelistsettingswidget.h" />
+    <QtMoc Include="gamelistrefreshthread.h" />
     <QtMoc Include="gamelistwidget.h" />
-    <QtMoc Include="gamepropertiesdialog.h" />
+    <QtMoc Include="gamesummarywidget.h" />
     <QtMoc Include="gdbconnection.h" />
     <QtMoc Include="gdbserver.h" />
     <QtMoc Include="postprocessingchainconfigwidget.h" />
     <QtMoc Include="postprocessingshaderconfigwidget.h" />
     <QtMoc Include="postprocessingsettingswidget.h" />
     <QtMoc Include="mainwindow.h" />
-    <QtMoc Include="qthostinterface.h" />
+    <QtMoc Include="qthost.h" />
+    <QtMoc Include="foldersettingswidget.h" />
     <ClInclude Include="qtutils.h" />
     <QtMoc Include="settingsdialog.h" />
   </ItemGroup>
@@ -128,9 +137,6 @@
     <QtUi Include="advancedsettingswidget.ui">
       <FileType>Document</FileType>
     </QtUi>
-    <QtUi Include="gamepropertiesdialog.ui">
-      <FileType>Document</FileType>
-    </QtUi>
     <QtUi Include="postprocessingchainconfigwidget.ui">
       <FileType>Document</FileType>
     </QtUi>
@@ -144,6 +150,69 @@
       <FileType>Document</FileType>
     </QtUi>
     <QtUi Include="cheatcodeeditordialog.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="inputbindingdialog.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="autoupdaterdialog.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="achievementsettingswidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="achievementlogindialog.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="debuggerwindow.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget_analog_controller.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget_digital_controller.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget_analog_joystick.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget_mouse.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget_negcon.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerbindingwidget_guncon.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllerglobalsettingswidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllersettingsdialog.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllermacrowidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="controllermacroeditwidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="emptygamelistwidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="gamelistwidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="gamesummarywidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="foldersettingswidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="coverdownloaddialog.ui">
       <FileType>Document</FileType>
     </QtUi>
   </ItemGroup>
@@ -164,14 +233,20 @@
     <ClCompile Include="$(IntDir)moc_cheatcodeeditordialog.cpp" />
     <ClCompile Include="$(IntDir)moc_collapsiblewidget.cpp" />
     <ClCompile Include="$(IntDir)moc_consolesettingswidget.cpp" />
-    <ClCompile Include="$(IntDir)moc_controllersettingswidget.cpp" />
+    <ClCompile Include="$(IntDir)moc_controllerbindingwidgets.cpp" />
+    <ClCompile Include="$(IntDir)moc_controllerglobalsettingswidget.cpp" />
+    <ClCompile Include="$(IntDir)moc_controllersettingsdialog.cpp" />
+    <ClCompile Include="$(IntDir)moc_coverdownloaddialog.cpp" />
+    <ClCompile Include="$(IntDir)moc_displaywidget.cpp" />
     <ClCompile Include="$(IntDir)moc_emulationsettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_enhancementsettingswidget.cpp" />
+    <ClCompile Include="$(IntDir)moc_foldersettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_gamelistmodel.cpp" />
+    <ClCompile Include="$(IntDir)moc_gamelistrefreshthread.cpp" />
     <ClCompile Include="$(IntDir)moc_gamelistsearchdirectoriesmodel.cpp" />
     <ClCompile Include="$(IntDir)moc_gamelistsettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_gamelistwidget.cpp" />
-    <ClCompile Include="$(IntDir)moc_gamepropertiesdialog.cpp" />
+    <ClCompile Include="$(IntDir)moc_gamesummarywidget.cpp" />
     <ClCompile Include="$(IntDir)moc_gdbconnection.cpp" />
     <ClCompile Include="$(IntDir)moc_gdbserver.cpp" />
     <ClCompile Include="$(IntDir)moc_generalsettingswidget.cpp" />
@@ -188,8 +263,7 @@
     <ClCompile Include="$(IntDir)moc_postprocessingchainconfigwidget.cpp" />
     <ClCompile Include="$(IntDir)moc_postprocessingshaderconfigwidget.cpp" />
     <ClCompile Include="$(IntDir)moc_postprocessingsettingswidget.cpp" />
-    <ClCompile Include="$(IntDir)moc_qtdisplaywidget.cpp" />
-    <ClCompile Include="$(IntDir)moc_qthostinterface.cpp" />
+    <ClCompile Include="$(IntDir)moc_qthost.cpp" />
     <ClCompile Include="$(IntDir)moc_qtprogresscallback.cpp" />
     <ClCompile Include="$(IntDir)moc_settingsdialog.cpp" />
     <ClCompile Include="$(IntDir)qrc_resources.cpp" />
@@ -202,16 +276,6 @@
   </ItemGroup>
   <ItemGroup>
     <Image Include="duckstation-qt.ico" />
-  </ItemGroup>
-  <ItemGroup>
-    <QtUi Include="inputbindingdialog.ui">
-      <FileType>Document</FileType>
-    </QtUi>
-  </ItemGroup>
-  <ItemGroup>
-    <QtUi Include="autoupdaterdialog.ui">
-      <FileType>Document</FileType>
-    </QtUi>
   </ItemGroup>
   <ItemGroup>
     <QtTs Include="translations\duckstation-qt_de.ts">
@@ -255,16 +319,9 @@
     </QtTs>
   </ItemGroup>
   <ItemGroup>
+    <None Include="translations\duckstation-qt_es-es.ts" />
     <None Include="translations\duckstation-qt_tr.ts" />
-    <QtUi Include="achievementsettingswidget.ui">
-      <FileType>Document</FileType>
-    </QtUi>
-    <QtUi Include="achievementlogindialog.ui">
-      <FileType>Document</FileType>
-    </QtUi>
-    <None Include="debuggerwindow.ui" />
   </ItemGroup>
-
   <ItemGroup>
     <CommonDataFiles Include="$(SolutionDir)data\**\*.*">
       <InProject>false</InProject>
@@ -274,23 +331,21 @@
     <Message Text="Copying common data files" Importance="High" />
     <Copy SourceFiles="@(CommonDataFiles)" DestinationFolder="$(BinaryOutputDir)\%(RecursiveDir)" SkipUnchangedFiles="true" />
   </Target>
-
   <PropertyGroup Label="Globals">
     <ProjectGuid>{28F14272-0EC4-41BB-849F-182ADB81AF70}</ProjectGuid>
   </PropertyGroup>
-
   <Import Project="..\..\dep\msvc\vsprops\Win32Application.props" />
   <Import Project="..\..\dep\msvc\vsprops\QtCompile.props" />
-
   <Import Project="..\frontend-common\frontend-common.props" />
-
   <ItemDefinitionGroup>
     <Link>
       <AdditionalDependencies>$(RootBuildDir)frontend-common\frontend-common.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(QtEntryPointLib);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <ClCompile>
+      <DisableSpecificWarnings>4127;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
   </ItemDefinitionGroup>
-
   <Import Project="..\..\dep\msvc\vsprops\Targets.props" />
-
   <Import Project="..\..\dep\msvc\vsprops\QtCompile.targets" />
 </Project>

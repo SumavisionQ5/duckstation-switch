@@ -7,6 +7,11 @@
 #include <memory>
 #include <vector>
 
+namespace Threading
+{
+class Thread;
+}
+
 class HostDisplayTexture;
 
 class GPU_SW final : public GPU
@@ -15,9 +20,12 @@ public:
   GPU_SW();
   ~GPU_SW() override;
 
-  GPURenderer GetRendererType() const override;
+  ALWAYS_INLINE const GPU_SW_Backend& GetBackend() const { return m_backend; }
 
-  bool Initialize(HostDisplay* host_display) override;
+  GPURenderer GetRendererType() const override;
+  const Threading::Thread* GetSWThread() const override;
+
+  bool Initialize() override;
   bool DoState(StateWrapper& sw, HostDisplayTexture** host_texture, bool update_display) override;
   void Reset(bool clear_vram) override;
   void UpdateSettings() override;
@@ -47,9 +55,12 @@ protected:
   void FillBackendCommandParameters(GPUBackendCommand* cmd) const;
   void FillDrawCommand(GPUBackendDrawCommand* cmd, GPURenderCommand rc) const;
 
+  HostDisplayTexture* GetDisplayTexture(u32 width, u32 height, HostDisplayPixelFormat format);
+
   HeapArray<u8, GPU_MAX_DISPLAY_WIDTH * GPU_MAX_DISPLAY_HEIGHT * sizeof(u32)> m_display_texture_buffer;
   HostDisplayPixelFormat m_16bit_display_format = HostDisplayPixelFormat::RGB565;
   HostDisplayPixelFormat m_24bit_display_format = HostDisplayPixelFormat::RGBA8;
+  std::unique_ptr<HostDisplayTexture> m_display_texture;
 
   GPU_SW_Backend m_backend;
 };

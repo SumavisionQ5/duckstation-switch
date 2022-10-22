@@ -4,8 +4,8 @@
 #include "common/d3d11/shader_compiler.h"
 #include "common/log.h"
 #include "common/string_util.h"
-#include "common_host_interface.h"
-#include "core/host_interface.h"
+#include "common_host.h"
+#include "core/host_settings.h"
 #include "core/settings.h"
 #include "core/shader_cache_version.h"
 #include "display_ps.hlsl.h"
@@ -23,7 +23,7 @@ Log_SetChannel(D3D11HostDisplay);
 
 namespace FrontendCommon {
 
-class D3D11HostDisplayTexture : public HostDisplayTexture
+class D3D11HostDisplayTexture final : public HostDisplayTexture
 {
 public:
   D3D11HostDisplayTexture(D3D11::Texture texture, HostDisplayPixelFormat format, bool dynamic)
@@ -39,6 +39,41 @@ public:
   u32 GetLevels() const override { return m_texture.GetLevels(); }
   u32 GetSamples() const override { return m_texture.GetSamples(); }
   HostDisplayPixelFormat GetFormat() const override { return m_format; }
+
+  bool BeginUpdate(u32 width, u32 height, void** out_buffer, u32* out_pitch) override
+  {
+    if (!m_dynamic || m_texture.GetWidth() != width || m_texture.GetHeight() != height)
+      return false;
+
+    D3D11_MAPPED_SUBRESOURCE sr;
+    HRESULT hr = static_cast<ID3D11DeviceContext*>(g_host_display->GetRenderContext())
+                   ->Map(m_texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &sr);
+    if (FAILED(hr))
+    {
+      Log_ErrorPrintf("Map pixels texture failed: %08X", hr);
+      return false;
+    }
+
+    *out_buffer = sr.pData;
+    *out_pitch = sr.RowPitch;
+    return true;
+  }
+
+  void EndUpdate(u32 x, u32 y, u32 width, u32 height)
+  {
+    static_cast<ID3D11DeviceContext*>(g_host_display->GetRenderContext())->Unmap(m_texture, 0);
+  }
+
+  bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch) override
+  {
+    if (m_dynamic)
+      return HostDisplayTexture::Update(x, y, width, height, data, pitch);
+
+    const CD3D11_BOX dst_box(x, y, 0, x + width, y + height, 1);
+    static_cast<ID3D11DeviceContext*>(g_host_display->GetRenderContext())
+      ->UpdateSubresource(m_texture, 0, &dst_box, data, pitch, pitch * height);
+    return true;
+  }
 
   ALWAYS_INLINE ID3D11Texture2D* GetD3DTexture() const { return m_texture.GetD3DTexture(); }
   ALWAYS_INLINE ID3D11ShaderResourceView* GetD3DSRV() const { return m_texture.GetD3DSRV(); }
@@ -59,9 +94,9 @@ D3D11HostDisplay::~D3D11HostDisplay()
   AssertMsg(!m_swap_chain, "Swap chain should have been destroyed by now");
 }
 
-HostDisplay::RenderAPI D3D11HostDisplay::GetRenderAPI() const
+RenderAPI D3D11HostDisplay::GetRenderAPI() const
 {
-  return HostDisplay::RenderAPI::D3D11;
+  return RenderAPI::D3D11;
 }
 
 void* D3D11HostDisplay::GetRenderDevice() const
@@ -107,43 +142,6 @@ std::unique_ptr<HostDisplayTexture> D3D11HostDisplay::CreateTexture(u32 width, u
   return std::make_unique<D3D11HostDisplayTexture>(std::move(tex), format, dynamic);
 }
 
-void D3D11HostDisplay::UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height,
-                                     const void* texture_data, u32 texture_data_stride)
-{
-  D3D11HostDisplayTexture* d3d11_texture = static_cast<D3D11HostDisplayTexture*>(texture);
-  if (!d3d11_texture->IsDynamic())
-  {
-    const CD3D11_BOX dst_box(x, y, 0, x + width, y + height, 1);
-    m_context->UpdateSubresource(d3d11_texture->GetD3DTexture(), 0, &dst_box, texture_data, texture_data_stride,
-                                 texture_data_stride * height);
-  }
-  else
-  {
-    D3D11_MAPPED_SUBRESOURCE sr;
-    HRESULT hr = m_context->Map(d3d11_texture->GetD3DTexture(), 0, D3D11_MAP_WRITE_DISCARD, 0, &sr);
-    if (FAILED(hr))
-      Panic("Failed to map dynamic host display texture");
-
-    char* dst_ptr = static_cast<char*>(sr.pData) + (y * sr.RowPitch) + (x * sizeof(u32));
-    const char* src_ptr = static_cast<const char*>(texture_data);
-    if (sr.RowPitch == texture_data_stride)
-    {
-      std::memcpy(dst_ptr, src_ptr, texture_data_stride * height);
-    }
-    else
-    {
-      for (u32 row = 0; row < height; row++)
-      {
-        std::memcpy(dst_ptr, src_ptr, width * sizeof(u32));
-        src_ptr += texture_data_stride;
-        dst_ptr += sr.RowPitch;
-      }
-    }
-
-    m_context->Unmap(d3d11_texture->GetD3DTexture(), 0);
-  }
-}
-
 bool D3D11HostDisplay::DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y,
                                        u32 width, u32 height, void* out_data, u32 out_data_stride)
 {
@@ -180,43 +178,6 @@ bool D3D11HostDisplay::SupportsDisplayPixelFormat(HostDisplayPixelFormat format)
   UINT support = 0;
   const UINT required = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
   return (SUCCEEDED(m_device->CheckFormatSupport(dfmt, &support)) && ((support & required) == required));
-}
-
-bool D3D11HostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                             u32* out_pitch)
-{
-  ClearDisplayTexture();
-
-  const DXGI_FORMAT dxgi_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
-  if (m_display_pixels_texture.GetWidth() < width || m_display_pixels_texture.GetHeight() < height ||
-      m_display_pixels_texture.GetFormat() != dxgi_format)
-  {
-    if (!m_display_pixels_texture.Create(m_device.Get(), width, height, 1, 1, dxgi_format, D3D11_BIND_SHADER_RESOURCE,
-                                         nullptr, 0, true))
-    {
-      return false;
-    }
-  }
-
-  D3D11_MAPPED_SUBRESOURCE sr;
-  HRESULT hr = m_context->Map(m_display_pixels_texture.GetD3DTexture(), 0, D3D11_MAP_WRITE_DISCARD, 0, &sr);
-  if (FAILED(hr))
-  {
-    Log_ErrorPrintf("Map pixels texture failed: %08X", hr);
-    return false;
-  }
-
-  *out_buffer = sr.pData;
-  *out_pitch = sr.RowPitch;
-
-  SetDisplayTexture(m_display_pixels_texture.GetD3DSRV(), format, m_display_pixels_texture.GetWidth(),
-                    m_display_pixels_texture.GetHeight(), 0, 0, static_cast<u32>(width), static_cast<u32>(height));
-  return true;
-}
-
-void D3D11HostDisplay::EndSetDisplayPixels()
-{
-  m_context->Unmap(m_display_pixels_texture.GetD3DTexture(), 0);
 }
 
 bool D3D11HostDisplay::GetHostRefreshRate(float* refresh_rate)
@@ -326,6 +287,9 @@ bool D3D11HostDisplay::CreateRenderDevice(const WindowInfo& wi, std::string_view
     Log_WarningPrint("Failed to get parent adapter/device/factory");
     return false;
   }
+  ComPtr<IDXGIDevice1> dxgi_device1;
+  if (SUCCEEDED(dxgi_device.As(&dxgi_device1)))
+    dxgi_device1->SetMaximumFrameLatency(1);
 
   DXGI_ADAPTER_DESC adapter_desc;
   if (SUCCEEDED(dxgi_adapter->GetDesc(&adapter_desc)))
@@ -354,15 +318,19 @@ bool D3D11HostDisplay::CreateRenderDevice(const WindowInfo& wi, std::string_view
   }
 
   m_window_info = wi;
+
+  if (m_window_info.type != WindowInfo::Type::Surfaceless && !CreateSwapChain(nullptr))
+  {
+    m_window_info = {};
+    return false;
+  }
+
   return true;
 }
 
 bool D3D11HostDisplay::InitializeRenderDevice(std::string_view shader_cache_directory, bool debug_device,
                                               bool threaded_presentation)
 {
-  if (m_window_info.type != WindowInfo::Type::Surfaceless && !CreateSwapChain(nullptr))
-    return false;
-
   if (!CreateResources())
     return false;
 
@@ -395,8 +363,7 @@ bool D3D11HostDisplay::CreateSwapChain(const DXGI_MODE_DESC* fullscreen_mode)
   if (m_window_info.type != WindowInfo::Type::Win32)
     return false;
 
-  m_using_flip_model_swap_chain =
-    fullscreen_mode || !g_host_interface->GetBoolSettingValue("Display", "UseBlitSwapChain", false);
+  m_using_flip_model_swap_chain = fullscreen_mode || !Host::GetBoolSettingValue("Display", "UseBlitSwapChain", false);
 
   const HWND window_hwnd = reinterpret_cast<HWND>(m_window_info.window_handle);
   RECT client_rc{};
@@ -409,7 +376,7 @@ bool D3D11HostDisplay::CreateSwapChain(const DXGI_MODE_DESC* fullscreen_mode)
   swap_chain_desc.BufferDesc.Height = height;
   swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
   swap_chain_desc.SampleDesc.Count = 1;
-  swap_chain_desc.BufferCount = 3;
+  swap_chain_desc.BufferCount = 2;
   swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
   swap_chain_desc.OutputWindow = window_hwnd;
   swap_chain_desc.Windowed = TRUE;
@@ -739,15 +706,22 @@ bool D3D11HostDisplay::UpdateImGuiFontTexture()
   return true;
 }
 
-bool D3D11HostDisplay::Render()
+bool D3D11HostDisplay::Render(bool skip_present)
 {
-  if (ShouldSkipDisplayingFrame() || !m_swap_chain)
+  if (skip_present || !m_swap_chain)
   {
     if (ImGui::GetCurrentContext())
       ImGui::Render();
 
     return false;
   }
+
+  // When using vsync, the time here seems to include the time for the buffer to become available.
+  // This blows our our GPU usage number considerably, so read the timestamp before the final blit
+  // in this configuration. It does reduce accuracy a little, but better than seeing 100% all of
+  // the time, when it's more like a couple of percent.
+  if (m_vsync && m_gpu_timing_enabled)
+    PopTimestampQuery();
 
   static constexpr std::array<float, 4> clear_color = {};
   m_context->ClearRenderTargetView(m_swap_chain_rtv.Get(), clear_color.data());
@@ -760,10 +734,16 @@ bool D3D11HostDisplay::Render()
 
   RenderSoftwareCursor();
 
+  if (!m_vsync && m_gpu_timing_enabled)
+    PopTimestampQuery();
+
   if (!m_vsync && m_using_allow_tearing)
     m_swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
   else
     m_swap_chain->Present(BoolToUInt32(m_vsync), 0);
+
+  if (m_gpu_timing_enabled)
+    KickTimestampQuery();
 
   return true;
 }
@@ -800,7 +780,7 @@ bool D3D11HostDisplay::RenderScreenshot(u32 width, u32 height, std::vector<u32>*
     {
       RenderDisplay(left, top, draw_width, draw_height, m_display_texture_handle, m_display_texture_width,
                     m_display_texture_height, m_display_texture_view_x, m_display_texture_view_y,
-                    m_display_texture_view_width, m_display_texture_view_height, m_display_linear_filtering);
+                    m_display_texture_view_width, m_display_texture_view_height, IsUsingLinearFiltering());
     }
   }
 
@@ -845,7 +825,7 @@ void D3D11HostDisplay::RenderDisplay()
 
   RenderDisplay(left, top, width, height, m_display_texture_handle, m_display_texture_width, m_display_texture_height,
                 m_display_texture_view_x, m_display_texture_view_y, m_display_texture_view_width,
-                m_display_texture_view_height, m_display_linear_filtering);
+                m_display_texture_view_height, IsUsingLinearFiltering());
 }
 
 void D3D11HostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, void* texture_handle, u32 texture_width,
@@ -858,8 +838,9 @@ void D3D11HostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, v
   m_context->PSSetShaderResources(0, 1, reinterpret_cast<ID3D11ShaderResourceView**>(&texture_handle));
   m_context->PSSetSamplers(0, 1, linear_filter ? m_linear_sampler.GetAddressOf() : m_point_sampler.GetAddressOf());
 
-  const float position_adjust = m_display_linear_filtering ? 0.5f : 0.0f;
-  const float size_adjust = m_display_linear_filtering ? 1.0f : 0.0f;
+  const bool linear = IsUsingLinearFiltering();
+  const float position_adjust = linear ? 0.5f : 0.0f;
+  const float size_adjust = linear ? 1.0f : 0.0f;
   const float uniforms[4] = {
     (static_cast<float>(texture_view_x) + position_adjust) / static_cast<float>(texture_width),
     (static_cast<float>(texture_view_y) + position_adjust) / static_cast<float>(texture_height),
@@ -966,7 +947,7 @@ HostDisplay::AdapterAndModeList D3D11HostDisplay::GetAdapterAndModeList(IDXGIFac
           {
             for (const DXGI_MODE_DESC& mode : modes)
             {
-              adapter_info.fullscreen_modes.push_back(CommonHostInterface::GetFullscreenModeString(
+              adapter_info.fullscreen_modes.push_back(GetFullscreenModeString(
                 mode.Width, mode.Height,
                 static_cast<float>(mode.RefreshRate.Numerator) / static_cast<float>(mode.RefreshRate.Denominator)));
             }
@@ -1017,10 +998,10 @@ bool D3D11HostDisplay::SetPostProcessingChain(const std::string_view& config)
   m_post_processing_stages.clear();
 
   D3D11::ShaderCache shader_cache;
-  shader_cache.Open(g_host_interface->GetShaderCacheBasePath(), m_device->GetFeatureLevel(), SHADER_CACHE_VERSION,
+  shader_cache.Open(EmuFolders::Cache, m_device->GetFeatureLevel(), SHADER_CACHE_VERSION,
                     g_settings.gpu_use_debug_device);
 
-  FrontendCommon::PostProcessingShaderGen shadergen(HostDisplay::RenderAPI::D3D11, true);
+  FrontendCommon::PostProcessingShaderGen shadergen(RenderAPI::D3D11, true);
   u32 max_ubo_size = 0;
 
   for (u32 i = 0; i < m_post_processing_chain.GetStageCount(); i++)
@@ -1096,7 +1077,7 @@ void D3D11HostDisplay::ApplyPostProcessingChain(ID3D11RenderTargetView* final_ta
   if (!CheckPostProcessingRenderTargets(target_width, target_height))
   {
     RenderDisplay(final_left, final_top, final_width, final_height, texture_handle, texture_width, texture_height,
-                  texture_view_x, texture_view_y, texture_view_width, texture_view_height, m_display_linear_filtering);
+                  texture_view_x, texture_view_y, texture_view_width, texture_view_height, IsUsingLinearFiltering());
     return;
   }
 
@@ -1104,7 +1085,7 @@ void D3D11HostDisplay::ApplyPostProcessingChain(ID3D11RenderTargetView* final_ta
   m_context->ClearRenderTargetView(m_post_processing_input_texture.GetD3DRTV(), clear_color.data());
   m_context->OMSetRenderTargets(1, m_post_processing_input_texture.GetD3DRTVArray(), nullptr);
   RenderDisplay(final_left, final_top, final_width, final_height, texture_handle, texture_width, texture_height,
-                texture_view_x, texture_view_y, texture_view_width, texture_view_height, m_display_linear_filtering);
+                texture_view_x, texture_view_y, texture_view_width, texture_view_height, IsUsingLinearFiltering());
 
   texture_handle = m_post_processing_input_texture.GetD3DSRV();
   texture_width = m_post_processing_input_texture.GetWidth();
@@ -1151,6 +1132,125 @@ void D3D11HostDisplay::ApplyPostProcessingChain(ID3D11RenderTargetView* final_ta
 
   ID3D11ShaderResourceView* null_srv = nullptr;
   m_context->PSSetShaderResources(0, 1, &null_srv);
+}
+
+bool D3D11HostDisplay::CreateTimestampQueries()
+{
+  for (u32 i = 0; i < NUM_TIMESTAMP_QUERIES; i++)
+  {
+    for (u32 j = 0; j < 3; j++)
+    {
+      const CD3D11_QUERY_DESC qdesc((j == 0) ? D3D11_QUERY_TIMESTAMP_DISJOINT : D3D11_QUERY_TIMESTAMP);
+      const HRESULT hr = m_device->CreateQuery(&qdesc, m_timestamp_queries[i][j].ReleaseAndGetAddressOf());
+      if (FAILED(hr))
+      {
+        m_timestamp_queries = {};
+        return false;
+      }
+    }
+  }
+
+  KickTimestampQuery();
+  return true;
+}
+
+void D3D11HostDisplay::DestroyTimestampQueries()
+{
+  if (!m_timestamp_queries[0][0])
+    return;
+
+  if (m_timestamp_query_started)
+    m_context->End(m_timestamp_queries[m_write_timestamp_query][1].Get());
+
+  m_timestamp_queries = {};
+  m_read_timestamp_query = 0;
+  m_write_timestamp_query = 0;
+  m_waiting_timestamp_queries = 0;
+  m_timestamp_query_started = 0;
+}
+
+void D3D11HostDisplay::PopTimestampQuery()
+{
+  while (m_waiting_timestamp_queries > 0)
+  {
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint;
+    const HRESULT disjoint_hr = m_context->GetData(m_timestamp_queries[m_read_timestamp_query][0].Get(), &disjoint,
+                                                   sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    if (disjoint_hr != S_OK)
+      break;
+
+    if (disjoint.Disjoint)
+    {
+      Log_VerbosePrintf("GPU timing disjoint, resetting.");
+      m_read_timestamp_query = 0;
+      m_write_timestamp_query = 0;
+      m_waiting_timestamp_queries = 0;
+      m_timestamp_query_started = 0;
+    }
+    else
+    {
+      u64 start = 0, end = 0;
+      const HRESULT start_hr = m_context->GetData(m_timestamp_queries[m_read_timestamp_query][1].Get(), &start,
+                                                  sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      const HRESULT end_hr = m_context->GetData(m_timestamp_queries[m_read_timestamp_query][2].Get(), &end, sizeof(end),
+                                                D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (start_hr == S_OK && end_hr == S_OK)
+      {
+        const float delta =
+          static_cast<float>(static_cast<double>(end - start) / (static_cast<double>(disjoint.Frequency) / 1000.0));
+        m_accumulated_gpu_time += delta;
+        m_read_timestamp_query = (m_read_timestamp_query + 1) % NUM_TIMESTAMP_QUERIES;
+        m_waiting_timestamp_queries--;
+      }
+    }
+  }
+
+  if (m_timestamp_query_started)
+  {
+    m_context->End(m_timestamp_queries[m_write_timestamp_query][2].Get());
+    m_context->End(m_timestamp_queries[m_write_timestamp_query][0].Get());
+    m_write_timestamp_query = (m_write_timestamp_query + 1) % NUM_TIMESTAMP_QUERIES;
+    m_timestamp_query_started = false;
+    m_waiting_timestamp_queries++;
+  }
+}
+
+void D3D11HostDisplay::KickTimestampQuery()
+{
+  if (m_timestamp_query_started || !m_timestamp_queries[0][0] || m_waiting_timestamp_queries == NUM_TIMESTAMP_QUERIES)
+    return;
+
+  m_context->Begin(m_timestamp_queries[m_write_timestamp_query][0].Get());
+  m_context->End(m_timestamp_queries[m_write_timestamp_query][1].Get());
+  m_timestamp_query_started = true;
+}
+
+bool D3D11HostDisplay::SetGPUTimingEnabled(bool enabled)
+{
+  if (m_gpu_timing_enabled == enabled)
+    return true;
+
+  m_gpu_timing_enabled = enabled;
+  if (m_gpu_timing_enabled)
+  {
+    if (!CreateTimestampQueries())
+      return false;
+
+    KickTimestampQuery();
+    return true;
+  }
+  else
+  {
+    DestroyTimestampQueries();
+    return true;
+  }
+}
+
+float D3D11HostDisplay::GetAndResetAccumulatedGPUTime()
+{
+  const float value = m_accumulated_gpu_time;
+  m_accumulated_gpu_time = 0.0f;
+  return value;
 }
 
 } // namespace FrontendCommon

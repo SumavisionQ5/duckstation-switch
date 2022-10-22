@@ -1,10 +1,12 @@
 #pragma once
-#include "common/cd_image.h"
+#include "util/cd_image.h"
 #include "types.h"
 #include <array>
 #include <atomic>
 #include <condition_variable>
 #include <thread>
+
+class ProgressCallback;
 
 class CDROMAsyncReader
 {
@@ -22,14 +24,14 @@ public:
   CDROMAsyncReader();
   ~CDROMAsyncReader();
 
-  const CDImage::LBA GetLastReadSector() const { return m_buffers[m_buffer_front.load()].lba; }
+  CDImage::LBA GetLastReadSector() const { return m_buffers[m_buffer_front.load()].lba; }
   const SectorBuffer& GetSectorBuffer() const { return m_buffers[m_buffer_front.load()].data; }
   const CDImage::SubChannelQ& GetSectorSubQ() const { return m_buffers[m_buffer_front.load()].subq; }
-  const u32 GetBufferedSectorCount() const { return m_buffer_count.load(); }
-  const bool HasBufferedSectors() const { return (m_buffer_count.load() > 0); }
-  const u32 GetReadaheadCount() const { return static_cast<u32>(m_buffers.size()); }
+  u32 GetBufferedSectorCount() const { return m_buffer_count.load(); }
+  bool HasBufferedSectors() const { return (m_buffer_count.load() > 0); }
+  u32 GetReadaheadCount() const { return static_cast<u32>(m_buffers.size()); }
 
-  const bool HasMedia() const { return static_cast<bool>(m_media); }
+  bool HasMedia() const { return static_cast<bool>(m_media); }
   const CDImage* GetMedia() const { return m_media.get(); }
   const std::string& GetMediaFileName() const { return m_media->GetFileName(); }
 
@@ -39,6 +41,9 @@ public:
 
   void SetMedia(std::unique_ptr<CDImage> media);
   std::unique_ptr<CDImage> RemoveMedia();
+
+  /// Precaches image, either to memory, or using the underlying image precache.
+  bool Precache(ProgressCallback* callback);
 
   void QueueReadSector(CDImage::LBA lba);
 

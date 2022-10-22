@@ -1,8 +1,9 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
 project(duckstation C CXX)
 
 message("CMake Version: ${CMAKE_VERSION}")
 message("CMake System Name: ${CMAKE_SYSTEM_NAME}")
+message("Build Type: ${CMAKE_BUILD_TYPE}")
 
 # Pull in modules.
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMakeModules/")
@@ -22,10 +23,12 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14.0" CACHE STRING "")
 
 # Global options.
 if(NOT ANDROID)
-  option(BUILD_NOGUI_FRONTEND "Build the NoGUI frontend" ON)
+  option(BUILD_NOGUI_FRONTEND "Build the NoGUI frontend" OFF)
   option(BUILD_QT_FRONTEND "Build the Qt frontend" ON)
-  option(BUILD_LIBRETRO_CORE "Build a libretro core" OFF)
   option(BUILD_REGTEST "Build regression test runner" OFF)
+  option(ENABLE_CUBEB "Build with Cubeb audio output" ON)
+  option(ENABLE_OPENGL "Build with OpenGL renderer" ON)
+  option(ENABLE_VULKAN "Build with Vulkan renderer" ON)
   option(ENABLE_DISCORD_PRESENCE "Build with Discord Rich Presence support" ON)
   option(ENABLE_CHEEVOS "Build with RetroAchievements support" ON)
   option(USE_SDL2 "Link with SDL2 for controller support" ON)
@@ -42,10 +45,10 @@ endif()
 if((LINUX OR FREEBSD) OR ANDROID OR SWITCH)
   option(USE_EGL "Support EGL OpenGL context creation" ON)
 endif()
-if((LINUX OR FREEBSD) AND NOT ANDROID AND NOT BUILD_LIBRETRO_CORE)
+if((LINUX OR FREEBSD) AND NOT ANDROID)
   option(USE_DRMKMS "Support DRM/KMS OpenGL contexts" OFF)
   option(USE_FBDEV "Support FBDev OpenGL contexts" OFF)
-  option(USE_EVDEV "Support EVDev controller interface" ON)
+  option(USE_EVDEV "Support EVDev controller interface" OFF)
 endif()
 
 # Force EGL when using Wayland
@@ -54,65 +57,18 @@ if(USE_WAYLAND)
 endif()
 
 if(ANDROID)
-  if(BUILD_NOGUI_FRONTEND)
-    message(WARNING "Building for Android, disabling NoGUI frontend")
-    set(BUILD_NOGUI_FRONTEND OFF)
-  endif()
-  if(BUILD_QT_FRONTEND)
-    message(WARNING "Building for Android, disabling Qt frontend")
-    set(BUILD_QT_FRONTEND OFF)
-  endif()
-  if(ENABLE_DISCORD_PRESENCE)
-    message("Building for Android, disabling Discord Presence support")
-    set(ENABLE_DISCORD_PRESENCE OFF)
-  endif()
-  if(USE_SDL2)
-    message("Building for Android, disabling SDL2 support")
-    set(USE_SDL2 OFF)
-  endif()
-  if(USE_X11)
-    set(USE_X11 OFF)
-  endif()
-  if(USE_WAYLAND)
-    set(USE_WAYLAND OFF)
-  endif()
-
-  # Cheevos are always on.
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+  set(BUILD_NOGUI_FRONTEND OFF)
+  set(BUILD_QT_FRONTEND OFF)
+  set(BUILD_REGTEST OFF)
+  set(ENABLE_CUBEB OFF)
+  set(ENABLE_OPENGL ON)
+  set(ENABLE_VULKAN ON)
+  set(ENABLE_DISCORD_PRESENCE OFF)
   set(ENABLE_CHEEVOS ON)
-endif()
-
-
-# Disable platform integration when building for libretro.
-if(BUILD_LIBRETRO_CORE)
-  message("Building libretro core, disabling platform integration.")
-
-  if(USE_EGL)
-    set(USE_EGL OFF)
-  endif()
-  if(BUILD_NOGUI_FRONTEND)
-    set(BUILD_NOGUI_FRONTEND OFF)
-  endif()
-  if(BUILD_QT_FRONTEND)
-    set(BUILD_QT_FRONTEND OFF)
-  endif()
-  if(ENABLE_DISCORD_PRESENCE)
-    set(ENABLE_DISCORD_PRESENCE OFF)
-  endif()
-  if(ENABLE_CHEEVOS)
-    set(ENABLE_CHEEVOS OFF)
-  endif()
-  if(USE_SDL2)
-    set(USE_SDL2 OFF)
-  endif()
-  if(USE_X11)
-    set(USE_X11 OFF)
-  endif()
-  if(USE_WAYLAND)
-    set(USE_WAYLAND OFF)
-  endif()
-
-  # Force PIC when compiling a libretro core.
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  set(USE_SDL2 OFF)
+  set(USE_X11 OFF)
+  set(USE_WAYLAND OFF)
 endif()
 
 
@@ -124,12 +80,12 @@ if(WIN32 AND USE_SDL2)
     set(SDL2_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib64/SDL2.lib")
     set(SDL2MAIN_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib64/SDL2main.lib")
     set(SDL2_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/bin64/SDL2.dll")
-    set(Qt5_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/qt/5.15.0/msvc2017_64/lib/cmake/Qt5")
+    set(Qt6_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/qt/6.1.0/msvc2019_64/lib/cmake/Qt6")
   else()
     set(SDL2_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib32/SDL2.lib")
     set(SDL2MAIN_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib32/SDL2main.lib")
     set(SDL2_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/bin32/SDL2.dll")
-    set(Qt5_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/qt/5.15.0/msvc2017_32/lib/cmake/Qt5")
+    set(Qt6_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/qt/6.1.0/msvc2019_32/lib/cmake/Qt6")
   endif()
 endif()
 
@@ -139,8 +95,11 @@ if(NOT ANDROID)
   if(NOT WIN32 AND USE_SDL2)
     find_package(SDL2 REQUIRED)
   endif()
+  if(NOT WIN32)
+    find_package(CURL REQUIRED)
+  endif()
   if(BUILD_QT_FRONTEND)
-    find_package(Qt5 COMPONENTS Core Gui Widgets Network LinguistTools REQUIRED)
+    find_package(Qt6 COMPONENTS Core Gui Widgets Network LinguistTools REQUIRED)
   endif()
 endif()
 
@@ -154,9 +113,6 @@ if(USE_X11)
   endif()
 endif()
 if(USE_WAYLAND)
-  find_package(ECM REQUIRED NO_MODULE)
-  list(APPEND CMAKE_MODULE_PATH "${ECM_MODULE_PATH}")
-  find_package(Wayland REQUIRED Egl)
   message(STATUS "Wayland support enabled")
 endif()
 if(USE_DRMKMS AND USE_FBDEV)
@@ -176,9 +132,6 @@ if(USE_EVDEV)
 endif()
 if(ENABLE_CHEEVOS)
   message(STATUS "RetroAchievements support enabled")
-  if(NOT WIN32 AND NOT ANDROID)
-    find_package(CURL REQUIRED)
-  endif()
 endif()
 
 
@@ -225,7 +178,7 @@ endif()
 
 
 # Default symbol visibility to hidden, that way we don't go through the PLT for intra-library calls.
-if(ANDROID OR BUILD_LIBRETRO_CORE)
+if(ANDROID)
   set(CMAKE_C_VISIBILITY_PRESET hidden)
   set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
@@ -253,21 +206,24 @@ endif()
 
 
 # Detect processor type.
-if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64" OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "amd64" OR
-   ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "AMD64")
+if("${CMAKE_OSX_ARCHITECTURES}" STREQUAL "arm64")
+  # Cross-compile on macos.
+  set(CPU_ARCH "aarch64")
+elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86_64" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "amd64" OR
+   "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "AMD64")
   if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(CPU_ARCH "x64")
   else()
     # Cross-compiling 32-bit build. 32-bit hosts are not supported.
     set(CPU_ARCH "x86")
   endif()
-elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86" OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "i386" OR
-       ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "i686")
+elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "i386" OR
+       "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "i686")
   set(CPU_ARCH "x86")
-elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64" OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm64")
+elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64")
   set(CPU_ARCH "aarch64")
-elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm" OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "armv7-a" OR
-       ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "armv7l")
+elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "armv7-a" OR
+       "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "armv7l")
   set(CPU_ARCH "aarch32")
   if(ANDROID)
     # Force ARM mode, since apparently ANDROID_ARM_MODE isn't working..
@@ -279,13 +235,12 @@ elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm" OR ${CMAKE_SYSTEM_PROCESSOR} STR
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -marm -march=armv7-a")
   endif()
 else()
-  message(FATAL_ERROR "Unknown system processor: " ${CMAKE_SYSTEM_PROCESSOR})
+  message(FATAL_ERROR "Unknown system processor: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
 
 # Write binaries to a seperate directory.
-if(WIN32 AND NOT BUILD_LIBRETRO_CORE)
-  # For Windows, use the source directory, except for libretro.
+if(WIN32)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin/${CPU_ARCH}")
 else()
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
@@ -312,6 +267,6 @@ enable_testing()
 add_subdirectory(dep)
 add_subdirectory(src)
 
-if(ANDROID AND NOT BUILD_LIBRETRO_CORE)
+if(ANDROID)
   add_subdirectory(android/app/src/cpp)
 endif()

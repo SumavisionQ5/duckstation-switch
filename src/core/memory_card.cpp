@@ -1,11 +1,13 @@
 #include "memory_card.h"
+#include "IconsFontAwesome5.h"
 #include "common/byte_stream.h"
 #include "common/file_system.h"
 #include "common/log.h"
-#include "common/state_wrapper.h"
+#include "common/path.h"
 #include "common/string_util.h"
-#include "host_interface.h"
+#include "host.h"
 #include "system.h"
+#include "util/state_wrapper.h"
 #include <cstdio>
 Log_SetChannel(MemoryCard);
 
@@ -273,8 +275,8 @@ std::unique_ptr<MemoryCard> MemoryCard::Open(std::string_view filename)
   if (!mc->LoadFromFile())
   {
     Log_InfoPrintf("Memory card at '%s' could not be read, formatting.", mc->m_filename.c_str());
-    g_host_interface->AddFormattedOSDMessage(
-      5.0f, g_host_interface->TranslateString("OSDMessage", "Memory card at '%s' could not be read, formatting."),
+    Host::AddFormattedOSDMessage(
+      5.0f, Host::TranslateString("OSDMessage", "Memory card at '%s' could not be read, formatting."),
       mc->m_filename.c_str());
     mc->Format();
   }
@@ -305,21 +307,36 @@ bool MemoryCard::SaveIfChanged(bool display_osd_message)
   if (m_filename.empty())
     return false;
 
+  std::string osd_key;
+  std::string display_name;
+  if (display_osd_message)
+  {
+    osd_key = fmt::format("memory_card_save_{}", m_filename);
+    display_name = FileSystem::GetDisplayNameFromPath(m_filename);
+  }
+
   if (!MemoryCardImage::SaveToFile(m_data, m_filename.c_str()))
   {
     if (display_osd_message)
     {
-      g_host_interface->AddFormattedOSDMessage(
-        20.0f, g_host_interface->TranslateString("OSDMessage", "Failed to save memory card to '%s'"),
-        m_filename.c_str());
+      Host::AddIconOSDMessage(
+        std::move(osd_key), ICON_FA_SD_CARD,
+        fmt::format(Host::TranslateString("OSDMessage", "Failed to save memory card to '{}'.").GetCharArray(),
+                    Path::GetFileName(display_name)),
+        20.0f);
     }
 
     return false;
   }
 
   if (display_osd_message)
-    g_host_interface->AddFormattedOSDMessage(
-      2.0f, g_host_interface->TranslateString("OSDMessage", "Saved memory card to '%s'"), m_filename.c_str());
+  {
+    Host::AddIconOSDMessage(
+      std::move(osd_key), ICON_FA_SD_CARD,
+      fmt::format(Host::TranslateString("OSDMessage", "Saved memory card to '{}'.").GetCharArray(),
+                  Path::GetFileName(display_name)),
+      5.0f);
+  }
 
   return true;
 }

@@ -9,7 +9,7 @@
 #include "controller.h"
 #include "cpu_code_cache.h"
 #include "cpu_core.h"
-#include "host_interface.h"
+#include "host.h"
 #include "system.h"
 #include <cctype>
 #include <iomanip>
@@ -686,17 +686,11 @@ bool CheatList::SaveToPCSXRFile(const char* filename)
 
 bool CheatList::LoadFromPackage(const std::string& game_code)
 {
-  std::unique_ptr<ByteStream> stream =
-    g_host_interface->OpenPackageFile("database/chtdb.txt", BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
-  if (!stream)
+  const std::optional<std::string> db_string(Host::ReadResourceFileToString("chtdb.txt"));
+  if (!db_string.has_value())
     return false;
 
-  std::string db_string = FileSystem::ReadStreamToString(stream.get());
-  stream.reset();
-  if (db_string.empty())
-    return false;
-
-  std::istringstream iss(db_string);
+  std::istringstream iss(db_string.value());
   std::string line;
   while (std::getline(iss, line))
   {
@@ -1492,6 +1486,10 @@ void CheatCode::Apply() const
           case 0x05: // Write the u8 poke value to cht_register[cht_reg_no1]
             cht_register[cht_reg_no1] = Truncate8(poke_value & 0xFFu);
             break;
+          case 0x06: // Read the u8 value from the address (cht_register[cht_reg_no2] + poke_value) to
+                     // cht_register[cht_reg_no1]
+            cht_register[cht_reg_no1] = DoMemoryRead<u8>(cht_register[cht_reg_no2] + poke_value);
+            break;
 
           case 0x40: // Write the u16 from cht_register[cht_reg_no1] to address
             DoMemoryWrite<u16>(inst.value32, Truncate16(cht_register[cht_reg_no1] & 0xFFFFu));
@@ -1515,6 +1513,10 @@ void CheatCode::Apply() const
           case 0x45: // Write the u16 poke value to cht_register[cht_reg_no1]
             cht_register[cht_reg_no1] = Truncate16(poke_value & 0xFFFFu);
             break;
+          case 0x46: // Read the u16 value from the address (cht_register[cht_reg_no2] + poke_value) to
+                     // cht_register[cht_reg_no1]
+            cht_register[cht_reg_no1] = DoMemoryRead<u16>(cht_register[cht_reg_no2] + poke_value);
+            break;
 
           case 0x80: // Write the u32 from cht_register[cht_reg_no1] to address
             DoMemoryWrite<u32>(inst.value32, cht_register[cht_reg_no1]);
@@ -1535,6 +1537,10 @@ void CheatCode::Apply() const
             break;
           case 0x85: // Write the u32 poke value to cht_register[cht_reg_no1]
             cht_register[cht_reg_no1] = poke_value;
+            break;
+          case 0x86: // Read the u32 value from the address (cht_register[cht_reg_no2] + poke_value) to
+                     // cht_register[cht_reg_no1]
+            cht_register[cht_reg_no1] = DoMemoryRead<u32>(cht_register[cht_reg_no2] + poke_value);
             break;
 
           case 0xC0: // Reg3 = Reg2 + Reg1

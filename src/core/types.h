@@ -54,14 +54,17 @@ enum class PGXPMode : u8
 
 enum class GPURenderer : u8
 {
-#ifndef __SWITCH__
 #ifdef _WIN32
   HardwareD3D11,
   HardwareD3D12,
 #endif
+#ifdef WITH_VULKAN
   HardwareVulkan,
+#endif
+#ifdef WITH_OPENGL
   HardwareOpenGL,
-#else
+#endif
+#ifdef __SWITCH__
   HardwareDeko3D,
 #endif
   Software,
@@ -112,17 +115,17 @@ enum class DisplayAspectRatio : u8
 enum class AudioBackend : u8
 {
   Null,
-#ifndef __SWITCH__
+#ifdef WITH_CUBEB
   Cubeb,
+#endif
 #ifdef _WIN32
   XAudio2,
 #endif
-#ifndef ANDROID
-  SDL,
-#else
+#ifdef __ANDROID__
+  AAudio,
   OpenSLES,
 #endif
-#else
+#ifdef __SWITCH__
   Switch,
 #endif
   Count
@@ -134,7 +137,7 @@ enum class ControllerType
   DigitalController,
   AnalogController,
   AnalogJoystick,
-  NamcoGunCon,
+  GunCon,
   PlayStationMouse,
   NeGcon,
   Count

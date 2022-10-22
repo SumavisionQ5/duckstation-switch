@@ -1,15 +1,16 @@
 #include "regtest_host_interface.h"
 #include "common/assert.h"
-#include "common/audio_stream.h"
 #include "common/byte_stream.h"
 #include "common/file_system.h"
 #include "common/log.h"
+#include "common/path.h"
 #include "common/string_util.h"
 #include "core/system.h"
 #include "frontend-common/game_database.h"
 #include "frontend-common/game_settings.h"
 #include "regtest_host_display.h"
 #include "scmversion/scmversion.h"
+#include "util/audio_stream.h"
 #include <cstdio>
 Log_SetChannel(RegTestHostInterface);
 
@@ -105,7 +106,7 @@ void RegTestHostInterface::GetGameInfo(const char* path, CDImage* image, std::st
     *code = System::GetGameCodeForImage(image, true);
   }
 
-  *title = FileSystem::GetFileTitleFromPath(path);
+  *title = Path::GetFileTitle(path);
 }
 
 void RegTestHostInterface::OnRunningGameChanged(const std::string& path, CDImage* image, const std::string& game_code,
@@ -137,6 +138,8 @@ void RegTestHostInterface::OnSystemPerformanceCountersUpdated() {}
 
 void RegTestHostInterface::OnDisplayInvalidated() {}
 
+void RegTestHostInterface::OnAchievementsRefreshed() {}
+
 std::string RegTestHostInterface::GetStringSettingValue(const char* section, const char* key,
                                                         const char* default_value /*= ""*/)
 {
@@ -161,6 +164,16 @@ float RegTestHostInterface::GetFloatSettingValue(const char* section, const char
 std::vector<std::string> RegTestHostInterface::GetSettingStringList(const char* section, const char* key)
 {
   return m_settings_interface.GetStringList(section, key);
+}
+
+SettingsInterface* RegTestHostInterface::GetSettingsInterface()
+{
+  return &m_settings_interface;
+}
+
+std::lock_guard<std::recursive_mutex> RegTestHostInterface::GetSettingsLock()
+{
+  return std::lock_guard<std::recursive_mutex>(m_settings_mutex);
 }
 
 void RegTestHostInterface::UpdateSettings()
@@ -192,7 +205,7 @@ void RegTestHostInterface::LoadGameSettingsDatabase()
     return;
   }
 
-  const std::string data(FileSystem::ReadStreamToString(stream.get()));
+  const std::string data(ByteStream::ReadStreamToString(stream.get()));
   if (data.empty() || !s_game_settings_db.Load(data))
   {
     Log_ErrorPrintf("Failed to load game settings database from '%s'. This could cause compatibility issues.", path);
@@ -226,7 +239,7 @@ std::string RegTestHostInterface::GetBIOSDirectory()
 std::unique_ptr<ByteStream> RegTestHostInterface::OpenPackageFile(const char* path, u32 flags)
 {
   std::string full_path(GetProgramDirectoryRelativePath("%s", path));
-  return ByteStream_OpenFileStream(full_path.c_str(), flags);
+  return ByteStream::OpenFile(full_path.c_str(), flags);
 }
 
 bool RegTestHostInterface::AcquireHostDisplay()

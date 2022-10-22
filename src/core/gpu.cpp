@@ -2,20 +2,18 @@
 #include "common/file_system.h"
 #include "common/heap_array.h"
 #include "common/log.h"
-#include "common/state_wrapper.h"
 #include "common/string_util.h"
 #include "dma.h"
+#include "host.h"
 #include "host_display.h"
-#include "host_interface.h"
+#include "imgui.h"
 #include "interrupt_controller.h"
 #include "settings.h"
 #include "stb_image_write.h"
 #include "system.h"
 #include "timers.h"
+#include "util/state_wrapper.h"
 #include <cmath>
-#ifdef WITH_IMGUI
-#include "imgui.h"
-#endif
 Log_SetChannel(GPU);
 
 std::unique_ptr<GPU> g_gpu;
@@ -24,11 +22,14 @@ const GPU::GP0CommandHandlerTable GPU::s_GP0_command_handler_table = GPU::Genera
 
 GPU::GPU() = default;
 
-GPU::~GPU() = default;
-
-bool GPU::Initialize(HostDisplay* host_display)
+GPU::~GPU()
 {
-  m_host_display = host_display;
+  if (g_host_display)
+    g_host_display->SetGPUTimingEnabled(false);
+}
+
+bool GPU::Initialize()
+{
   m_force_progressive_scan = g_settings.gpu_disable_interlacing;
   m_force_ntsc_timings = g_settings.gpu_force_ntsc_timings;
   m_crtc_tick_event = TimingEvents::CreateTimingEvent(
@@ -43,6 +44,15 @@ bool GPU::Initialize(HostDisplay* host_display)
   m_max_run_ahead = g_settings.gpu_max_run_ahead;
   m_console_is_pal = System::IsPALRegion();
   UpdateCRTCConfig();
+
+  if (g_settings.display_post_processing && !g_settings.display_post_process_chain.empty() &&
+      !g_host_display->SetPostProcessingChain(g_settings.display_post_process_chain))
+  {
+    Host::AddOSDMessage(Host::TranslateStdString("OSDMessage", "Failed to load post processing shader chain."), 20.0f);
+  }
+
+  g_host_display->SetGPUTimingEnabled(g_settings.display_show_gpu);
+
   return true;
 }
 
@@ -61,6 +71,8 @@ void GPU::UpdateSettings()
 
   // Crop mode calls this, so recalculate the display area
   UpdateCRTCDisplayParameters();
+
+  g_host_display->SetGPUTimingEnabled(g_settings.display_show_gpu);
 }
 
 bool GPU::IsHardwareRenderer()
@@ -964,9 +976,9 @@ void GPU::UpdateCommandTickEvent()
 bool GPU::ConvertScreenCoordinatesToBeamTicksAndLines(s32 window_x, s32 window_y, float x_scale, u32* out_tick,
                                                       u32* out_line) const
 {
-  auto [display_x, display_y] = m_host_display->ConvertWindowCoordinatesToDisplayCoordinates(
-    window_x, window_y, m_host_display->GetWindowWidth(), m_host_display->GetWindowHeight(),
-    m_host_display->GetDisplayTopMargin());
+  auto [display_x, display_y] = g_host_display->ConvertWindowCoordinatesToDisplayCoordinates(
+    window_x, window_y, g_host_display->GetWindowWidth(), g_host_display->GetWindowHeight(),
+    g_host_display->GetDisplayTopMargin());
 
   if (x_scale != 1.0f)
   {
@@ -1553,8 +1565,7 @@ bool GPU::DumpVRAMToFile(const char* filename, u32 width, u32 height, u32 stride
 
 void GPU::DrawDebugStateWindow()
 {
-#ifdef WITH_IMGUI
-  const float framebuffer_scale = ImGui::GetIO().DisplayFramebufferScale.x;
+  const float framebuffer_scale = Host::GetOSDScale();
 
   ImGui::SetNextWindowSize(ImVec2(450.0f * framebuffer_scale, 550.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("GPU", nullptr))
@@ -1671,7 +1682,6 @@ void GPU::DrawDebugStateWindow()
   }
 
   ImGui::End();
-#endif
 }
 
 void GPU::DrawRendererStats(bool is_idle_frame) {}
