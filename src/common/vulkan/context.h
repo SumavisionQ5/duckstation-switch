@@ -1,8 +1,3 @@
-// Copyright 2016 Dolphin Emulator Project
-// Copyright 2020 DuckStation Emulator Project
-// Licensed under GPLv2+
-// Refer to the LICENSE file included.
-
 #pragma once
 
 #include "../types.h"
@@ -31,6 +26,12 @@ public:
   enum : u32
   {
     NUM_COMMAND_BUFFERS = 2
+  };
+
+  struct OptionalExtensions
+  {
+    bool vk_ext_memory_budget : 1;
+    bool vk_khr_driver_properties : 1;
   };
 
   ~Context();
@@ -71,6 +72,7 @@ public:
   ALWAYS_INLINE VkInstance GetVulkanInstance() const { return m_instance; }
   ALWAYS_INLINE VkPhysicalDevice GetPhysicalDevice() const { return m_physical_device; }
   ALWAYS_INLINE VkDevice GetDevice() const { return m_device; }
+  ALWAYS_INLINE VmaAllocator GetAllocator() const { return m_allocator; }
   ALWAYS_INLINE VkQueue GetGraphicsQueue() const { return m_graphics_queue; }
   ALWAYS_INLINE u32 GetGraphicsQueueFamilyIndex() const { return m_graphics_queue_family_index; }
   ALWAYS_INLINE VkQueue GetPresentQueue() const { return m_present_queue; }
@@ -86,6 +88,10 @@ public:
   ALWAYS_INLINE const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
   ALWAYS_INLINE const VkPhysicalDeviceFeatures& GetDeviceFeatures() const { return m_device_features; }
   ALWAYS_INLINE const VkPhysicalDeviceLimits& GetDeviceLimits() const { return m_device_properties.limits; }
+  ALWAYS_INLINE const VkPhysicalDeviceDriverProperties& GetDeviceDriverProperties() const
+  {
+    return m_device_driver_properties;
+  }
 
   // Support bits
   ALWAYS_INLINE bool SupportsGeometryShaders() const { return m_device_features.geometryShader == VK_TRUE; }
@@ -117,15 +123,6 @@ public:
     return static_cast<u32>(m_device_properties.limits.optimalBufferCopyRowPitchAlignment);
   }
   ALWAYS_INLINE u32 GetMaxImageDimension2D() const { return m_device_properties.limits.maxImageDimension2D; }
-
-  // Finds a memory type index for the specified memory properties and the bits returned by
-  // vkGetImageMemoryRequirements
-  bool GetMemoryType(u32 bits, VkMemoryPropertyFlags properties, u32* out_type_index);
-  u32 GetMemoryType(u32 bits, VkMemoryPropertyFlags properties);
-
-  // Finds a memory type for upload or readback buffers.
-  u32 GetUploadMemoryType(u32 bits, bool* is_coherent = nullptr);
-  u32 GetReadbackMemoryType(u32 bits, bool* is_coherent = nullptr, bool* is_cached = nullptr);
 
   // Creates a simple render pass.
   VkRenderPass GetRenderPass(VkFormat color_format, VkFormat depth_format, VkSampleCountFlagBits samples,
@@ -178,10 +175,12 @@ public:
   // Schedule a vulkan resource for destruction later on. This will occur when the command buffer
   // is next re-used, and the GPU has finished working with the specified resource.
   void DeferBufferDestruction(VkBuffer object);
+  void DeferBufferDestruction(VkBuffer object, VmaAllocation allocation);
   void DeferBufferViewDestruction(VkBufferView object);
   void DeferDeviceMemoryDestruction(VkDeviceMemory object);
   void DeferFramebufferDestruction(VkFramebuffer object);
   void DeferImageDestruction(VkImage object);
+  void DeferImageDestruction(VkImage object, VmaAllocation allocation);
   void DeferImageViewDestruction(VkImageView object);
   void DeferPipelineDestruction(VkPipeline pipeline);
 
@@ -204,7 +203,10 @@ private:
   bool CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer, const char** required_device_extensions,
                     u32 num_required_device_extensions, const char** required_device_layers,
                     u32 num_required_device_layers, const VkPhysicalDeviceFeatures* required_features);
+  void ProcessDeviceExtensions();
 
+  bool CreateAllocator();
+  void DestroyAllocator();
   bool CreateCommandBuffers();
   void DestroyCommandBuffers();
   bool CreateGlobalDescriptorPool();
@@ -239,6 +241,7 @@ private:
   VkInstance m_instance = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
   VkDevice m_device = VK_NULL_HANDLE;
+  VmaAllocator m_allocator = VK_NULL_HANDLE;
 
   VkCommandBuffer m_current_command_buffer = VK_NULL_HANDLE;
 
@@ -290,6 +293,8 @@ private:
   VkPhysicalDeviceFeatures m_device_features = {};
   VkPhysicalDeviceProperties m_device_properties = {};
   VkPhysicalDeviceMemoryProperties m_device_memory_properties = {};
+  VkPhysicalDeviceDriverPropertiesKHR m_device_driver_properties = {};
+  OptionalExtensions m_optional_extensions = {};
 };
 
 } // namespace Vulkan

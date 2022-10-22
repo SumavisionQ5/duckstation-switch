@@ -1,19 +1,14 @@
-// Copyright 2016 Dolphin Emulator Project
-// Copyright 2020 DuckStation Emulator Project
-// Licensed under GPLv2+
-// Refer to the LICENSE file included.
-
 #pragma once
 
 #include "../string.h"
 #include "../types.h"
+#include "context.h"
 #include "loader.h"
 #include <algorithm>
 #include <array>
 #include <cstdarg>
 #include <string_view>
-namespace Vulkan {
-namespace Util {
+namespace Vulkan::Util {
 
 inline constexpr u32 MakeRGBA8Color(float r, float g, float b, float a)
 {
@@ -59,6 +54,9 @@ void SetViewportAndScissor(VkCommandBuffer command_buffer, int x, int y, int wid
 void BufferMemoryBarrier(VkCommandBuffer command_buffer, VkBuffer buffer, VkAccessFlags src_access_mask,
                          VkAccessFlags dst_access_mask, VkDeviceSize offset, VkDeviceSize size,
                          VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask);
+
+// Adds a structure to a chain.
+void AddPointerToChain(void* head, const void* ptr);
 
 // Create a shader module from the specified SPIR-V.
 VkShaderModule CreateShaderModule(const u32* spv, size_t spv_word_count);
@@ -160,6 +158,20 @@ inline void SetObjectName(VkDevice device, T object_handle, const char* format, 
   SetObjectName(device, reinterpret_cast<void*>((typename VkObjectTypeMap<T>::type)object_handle),
                 VkObjectTypeMap<T>::value, format, ap);
   va_end(ap);
+#endif
+}
+
+template<>
+inline void SetObjectName(VkDevice device, VmaAllocation object_handle, const char* format, ...)
+{
+#ifdef ENABLE_VULKAN_DEBUG_OBJECTS
+  std::va_list ap;
+  SmallString str;
+  va_start(ap, format);
+  str.FormatVA(format, ap);
+  va_end(ap);
+
+  vmaSetAllocationName(g_vulkan_context->GetAllocator(), object_handle, str);
 #endif
 }
 
@@ -286,6 +298,4 @@ private:
 };
 #endif
 
-} // namespace Util
-
-} // namespace Vulkan
+} // namespace Vulkan::Util

@@ -15,6 +15,8 @@ add_library(common
   fifo_queue.h
   file_system.cpp
   file_system.h
+  gpu_texture.cpp
+  gpu_texture.h
   image.cpp
   image.h
   hash_combine.h
@@ -106,8 +108,6 @@ if(WIN32)
     d3d11/shader_cache.h
     d3d11/shader_compiler.cpp
     d3d11/shader_compiler.h
-    d3d11/staging_texture.cpp
-    d3d11/staging_texture.h
     d3d11/stream_buffer.cpp
     d3d11/stream_buffer.h
     d3d11/texture.cpp
@@ -258,10 +258,6 @@ if(ENABLE_VULKAN)
     vulkan/shader_cache.h
     vulkan/shader_compiler.cpp
     vulkan/shader_compiler.h
-    vulkan/staging_buffer.cpp
-    vulkan/staging_buffer.h
-    vulkan/staging_texture.cpp
-    vulkan/staging_texture.h
     vulkan/stream_buffer.cpp
     vulkan/stream_buffer.h
     vulkan/swap_chain.cpp

@@ -222,6 +222,7 @@ void Settings::Load(SettingsInterface& si)
   gpu_pgxp_enable = si.GetBoolValue("GPU", "PGXPEnable", false);
   gpu_pgxp_culling = si.GetBoolValue("GPU", "PGXPCulling", true);
   gpu_pgxp_texture_correction = si.GetBoolValue("GPU", "PGXPTextureCorrection", true);
+  gpu_pgxp_color_correction = si.GetBoolValue("GPU", "PGXPColorCorrection", false);
   gpu_pgxp_vertex_cache = si.GetBoolValue("GPU", "PGXPVertexCache", false);
   gpu_pgxp_cpu = si.GetBoolValue("GPU", "PGXPCPU", false);
   gpu_pgxp_preserve_proj_fp = si.GetBoolValue("GPU", "PGXPPreserveProjFP", false);
@@ -241,6 +242,10 @@ void Settings::Load(SettingsInterface& si)
     std::clamp<int>(si.GetIntValue("Display", "CustomAspectRatioNumerator", 4), 1, std::numeric_limits<u16>::max()));
   display_aspect_ratio_custom_denominator = static_cast<u16>(
     std::clamp<int>(si.GetIntValue("Display", "CustomAspectRatioDenominator", 3), 1, std::numeric_limits<u16>::max()));
+  display_alignment =
+    ParseDisplayAlignment(
+      si.GetStringValue("Display", "Alignment", GetDisplayAlignmentName(DEFAULT_DISPLAY_ALIGNMENT)).c_str())
+      .value_or(DEFAULT_DISPLAY_ALIGNMENT);
   display_force_4_3_for_24bit = si.GetBoolValue("Display", "Force4_3For24Bit", false);
   display_active_start_offset = static_cast<s16>(si.GetIntValue("Display", "ActiveStartOffset", 0));
   display_active_end_offset = static_cast<s16>(si.GetIntValue("Display", "ActiveEndOffset", 0));
@@ -344,6 +349,9 @@ void Settings::Load(SettingsInterface& si)
   achievements_use_first_disc_from_playlist = si.GetBoolValue("Cheevos", "UseFirstDiscFromPlaylist", true);
   achievements_rich_presence = si.GetBoolValue("Cheevos", "RichPresence", true);
   achievements_challenge_mode = si.GetBoolValue("Cheevos", "ChallengeMode", false);
+  achievements_leaderboards = si.GetBoolValue("Cheevos", "Leaderboards", true);
+  achievements_sound_effects = si.GetBoolValue("Cheevos", "SoundEffects", true);
+  achievements_primed_indicators = si.GetBoolValue("Cheevos", "PrimedIndicators", true);
 
   log_level = ParseLogLevelName(si.GetStringValue("Logging", "LogLevel", GetLogLevelName(DEFAULT_LOG_LEVEL)).c_str())
                 .value_or(DEFAULT_LOG_LEVEL);
@@ -435,6 +443,7 @@ void Settings::Save(SettingsInterface& si) const
   si.SetBoolValue("GPU", "PGXPEnable", gpu_pgxp_enable);
   si.SetBoolValue("GPU", "PGXPCulling", gpu_pgxp_culling);
   si.SetBoolValue("GPU", "PGXPTextureCorrection", gpu_pgxp_texture_correction);
+  si.SetBoolValue("GPU", "PGXPColorCorrection", gpu_pgxp_color_correction);
   si.SetBoolValue("GPU", "PGXPVertexCache", gpu_pgxp_vertex_cache);
   si.SetBoolValue("GPU", "PGXPCPU", gpu_pgxp_cpu);
   si.SetBoolValue("GPU", "PGXPPreserveProjFP", gpu_pgxp_preserve_proj_fp);
@@ -449,6 +458,7 @@ void Settings::Save(SettingsInterface& si) const
   si.SetIntValue("Display", "LineEndOffset", display_line_end_offset);
   si.SetBoolValue("Display", "Force4_3For24Bit", display_force_4_3_for_24bit);
   si.SetStringValue("Display", "AspectRatio", GetDisplayAspectRatioName(display_aspect_ratio));
+  si.SetStringValue("Display", "Alignment", GetDisplayAlignmentName(display_alignment));
   si.SetIntValue("Display", "CustomAspectRatioNumerator", display_aspect_ratio_custom_numerator);
   si.GetIntValue("Display", "CustomAspectRatioDenominator", display_aspect_ratio_custom_denominator);
   si.SetBoolValue("Display", "LinearFiltering", display_linear_filtering);
@@ -501,10 +511,7 @@ void Settings::Save(SettingsInterface& si) const
   si.SetBoolValue("BIOS", "PatchFastBoot", bios_patch_fast_boot);
 
   for (u32 i = 0; i < NUM_CONTROLLER_AND_CARD_PORTS; i++)
-  {
-    si.SetStringValue(TinyString::FromFormat("Controller%u", i + 1u), "Type",
-                      GetControllerTypeName(controller_types[i]));
-  }
+    si.SetStringValue(Controller::GetSettingsSection(i).c_str(), "Type", GetControllerTypeName(controller_types[i]));
 
   si.SetStringValue("MemoryCards", "Card1Type", GetMemoryCardTypeName(memory_card_types[0]));
   si.SetStringValue("MemoryCards", "Card2Type", GetMemoryCardTypeName(memory_card_types[1]));
@@ -528,6 +535,9 @@ void Settings::Save(SettingsInterface& si) const
   si.SetBoolValue("Cheevos", "UseFirstDiscFromPlaylist", achievements_use_first_disc_from_playlist);
   si.SetBoolValue("Cheevos", "RichPresence", achievements_rich_presence);
   si.SetBoolValue("Cheevos", "ChallengeMode", achievements_challenge_mode);
+  si.SetBoolValue("Cheevos", "Leaderboards", achievements_leaderboards);
+  si.SetBoolValue("Cheevos", "SoundEffects", achievements_sound_effects);
+  si.SetBoolValue("Cheevos", "PrimedIndicators", achievements_primed_indicators);
 
   si.SetStringValue("Logging", "LogLevel", GetLogLevelName(log_level));
   si.SetStringValue("Logging", "LogFilter", log_filter.c_str());
@@ -603,7 +613,8 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
     {
       if (display_osd_messages)
       {
-        Host::AddOSDMessage(
+        Host::AddKeyedOSDMessage(
+          "pgxp_disabled_sw",
           Host::TranslateStdString("OSDMessage", "PGXP is incompatible with the software renderer, disabling PGXP."),
           10.0f);
       }
@@ -622,11 +633,27 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
 #if defined(__ANDROID__) && defined(__arm__) && !defined(__aarch64__) && !defined(_M_ARM64)
   if (g_settings.rewind_enable)
   {
-    Host::AddOSDMessage(Host::TranslateStdString("OSDMessage", "Rewind is not supported on 32-bit ARM for Android."),
-                        30.0f);
+    Host::AddKeyedOSDMessage(
+      "rewind_disabled_android",
+      Host::TranslateStdString("OSDMessage", "Rewind is not supported on 32-bit ARM for Android."), 30.0f);
     g_settings.rewind_enable = false;
   }
+  if (g_settings.IsRunaheadEnabled())
+  {
+    Host::AddKeyedOSDMessage(
+      "rewind_disabled_android",
+      Host::TranslateStdString("OSDMessage", "Runahead is not supported on 32-bit ARM for Android."), 30.0f);
+    g_settings.runahead_frames = 0;
+  }
 #endif
+
+  if (g_settings.IsRunaheadEnabled() && g_settings.rewind_enable)
+  {
+    Host::AddKeyedOSDMessage("rewind_disabled_android",
+                             Host::TranslateStdString("OSDMessage", "Rewind is disabled because runahead is enabled."),
+                             10.0f);
+    g_settings.rewind_enable = false;
+  }
 
   // if challenge mode is enabled, disable things like rewind since they use save states
   if (Achievements::ChallengeModeActive())
@@ -880,11 +907,12 @@ RenderAPI Settings::GetRenderAPIForRenderer(GPURenderer renderer)
 
 static constexpr auto s_texture_filter_names =
   make_array("Nearest", "Bilinear", "BilinearBinAlpha", "JINC2", "JINC2BinAlpha", "xBR", "xBRBinAlpha");
-static constexpr auto s_texture_filter_display_names =
-  make_array(TRANSLATABLE("GPUTextureFilter", "Nearest-Neighbor"), TRANSLATABLE("GPUTextureFilter", "Bilinear"),
-             TRANSLATABLE("GPUTextureFilter", "Bilinear (No Edge Blending)"), TRANSLATABLE("GPUTextureFilter", "JINC2"),
-             TRANSLATABLE("GPUTextureFilter", "JINC2 (No Edge Blending)"), TRANSLATABLE("GPUTextureFilter", "xBR"),
-             TRANSLATABLE("GPUTextureFilter", "xBR (No Edge Blending)"));
+static constexpr auto s_texture_filter_display_names = make_array(
+  TRANSLATABLE("GPUTextureFilter", "Nearest-Neighbor"), TRANSLATABLE("GPUTextureFilter", "Bilinear"),
+  TRANSLATABLE("GPUTextureFilter", "Bilinear (No Edge Blending)"), TRANSLATABLE("GPUTextureFilter", "JINC2 (Slow)"),
+  TRANSLATABLE("GPUTextureFilter", "JINC2 (Slow, No Edge Blending)"),
+  TRANSLATABLE("GPUTextureFilter", "xBR (Very Slow)"),
+  TRANSLATABLE("GPUTextureFilter", "xBR (Very Slow, No Edge Blending)"));
 
 std::optional<GPUTextureFilter> Settings::ParseTextureFilterName(const char* str)
 {
@@ -1002,9 +1030,8 @@ float Settings::GetDisplayAspectRatioValue() const
       if (!g_host_display)
         return s_display_aspect_ratio_values[static_cast<int>(DEFAULT_DISPLAY_ASPECT_RATIO)];
 
-      const u32 width = g_host_display->GetWindowWidth();
-      const u32 height = g_host_display->GetWindowHeight() - g_host_display->GetDisplayTopMargin();
-      return static_cast<float>(width) / static_cast<float>(height);
+      return static_cast<float>(g_host_display->GetWindowWidth()) /
+             static_cast<float>(g_host_display->GetWindowHeight());
     }
 
     case DisplayAspectRatio::Custom:
@@ -1018,6 +1045,36 @@ float Settings::GetDisplayAspectRatioValue() const
       return s_display_aspect_ratio_values[static_cast<int>(display_aspect_ratio)];
     }
   }
+}
+
+static std::array<const char*, static_cast<size_t>(DisplayAlignment::Count)> s_display_alignment_names = {
+  {"LeftOrTop", "Center", "RightOrBottom"}};
+static std::array<const char*, static_cast<size_t>(DisplayAlignment::Count)> s_display_alignment_display_names = {
+  {TRANSLATABLE("DisplayAlignment", "Left / Top"), TRANSLATABLE("DisplayAlignment", "Center"),
+   TRANSLATABLE("DisplayAlignment", "Right / Bottom")}};
+
+std::optional<DisplayAlignment> Settings::ParseDisplayAlignment(const char* str)
+{
+  int index = 0;
+  for (const char* name : s_display_alignment_names)
+  {
+    if (StringUtil::Strcasecmp(name, str) == 0)
+      return static_cast<DisplayAlignment>(index);
+
+    index++;
+  }
+
+  return std::nullopt;
+}
+
+const char* Settings::GetDisplayAlignmentName(DisplayAlignment alignment)
+{
+  return s_display_alignment_names[static_cast<int>(alignment)];
+}
+
+const char* Settings::GetDisplayAlignmentDisplayName(DisplayAlignment alignment)
+{
+  return s_display_alignment_display_names[static_cast<int>(alignment)];
 }
 
 static constexpr const char* s_audio_backend_names[] = {
@@ -1112,8 +1169,8 @@ static std::array<const char*, 6> s_memory_card_type_names = {
   {"None", "Shared", "PerGame", "PerGameTitle", "PerGameFileTitle", "NonPersistent"}};
 static std::array<const char*, 6> s_memory_card_type_display_names = {
   {TRANSLATABLE("MemoryCardType", "No Memory Card"), TRANSLATABLE("MemoryCardType", "Shared Between All Games"),
-   TRANSLATABLE("MemoryCardType", "Separate Card Per Game (Game Code)"),
-   TRANSLATABLE("MemoryCardType", "Separate Card Per Game (Game Title)"),
+   TRANSLATABLE("MemoryCardType", "Separate Card Per Game (Serial)"),
+   TRANSLATABLE("MemoryCardType", "Separate Card Per Game (Title)"),
    TRANSLATABLE("MemoryCardType", "Separate Card Per Game (File Title)"),
    TRANSLATABLE("MemoryCardType", "Non-Persistent Card (Do Not Save)")}};
 
@@ -1160,9 +1217,9 @@ std::string Settings::GetSharedMemoryCardPath(u32 slot) const
   return ret;
 }
 
-std::string Settings::GetGameMemoryCardPath(const char* game_code, u32 slot)
+std::string Settings::GetGameMemoryCardPath(const char* serial, u32 slot)
 {
-  return Path::Combine(EmuFolders::MemoryCards, fmt::format("{}_{}.mcd", game_code, slot + 1));
+  return Path::Combine(EmuFolders::MemoryCards, fmt::format("{}_{}.mcd", serial, slot + 1));
 }
 
 static std::array<const char*, 4> s_multitap_enable_mode_names = {{"Disabled", "Port1Only", "Port2Only", "BothPorts"}};

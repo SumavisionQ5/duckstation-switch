@@ -4,12 +4,15 @@
 #include <memory>
 #include <string>
 
-class HostDisplayTexture;
+class GPUTexture;
+
+struct Settings;
 
 namespace FullscreenUI {
 bool Initialize();
 bool IsInitialized();
 bool HasActiveWindow();
+void CheckForConfigChanges(const Settings& old_settings);
 void OnSystemStarted();
 void OnSystemPaused();
 void OnSystemResumed();
@@ -32,6 +35,8 @@ class ProgressCallback final : public BaseProgressCallback
 public:
   ProgressCallback(std::string name);
   ~ProgressCallback() override;
+
+  ALWAYS_INLINE const std::string& GetName() const { return m_name; }
 
   void PushState() override;
   void PopState() override;

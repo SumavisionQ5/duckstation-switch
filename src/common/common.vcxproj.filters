@@ -20,9 +20,6 @@
     <ClInclude Include="d3d11\texture.h">
       <Filter>d3d11</Filter>
     </ClInclude>
-    <ClInclude Include="d3d11\staging_texture.h">
-      <Filter>d3d11</Filter>
-    </ClInclude>
     <ClInclude Include="d3d11\shader_compiler.h">
       <Filter>d3d11</Filter>
     </ClInclude>
@@ -55,9 +52,6 @@
     <ClInclude Include="vulkan\texture.h">
       <Filter>vulkan</Filter>
     </ClInclude>
-    <ClInclude Include="vulkan\staging_buffer.h">
-      <Filter>vulkan</Filter>
-    </ClInclude>
     <ClInclude Include="vulkan\stream_buffer.h">
       <Filter>vulkan</Filter>
     </ClInclude>
@@ -68,9 +62,6 @@
       <Filter>vulkan</Filter>
     </ClInclude>
     <ClInclude Include="vulkan\swap_chain.h">
-      <Filter>vulkan</Filter>
-    </ClInclude>
-    <ClInclude Include="vulkan\staging_texture.h">
       <Filter>vulkan</Filter>
     </ClInclude>
     <ClInclude Include="dimensional_array.h" />
@@ -138,6 +129,7 @@
     <ClInclude Include="scoped_guard.h" />
     <ClInclude Include="build_timestamp.h" />
     <ClInclude Include="sha1_digest.h" />
+    <ClInclude Include="gpu_texture.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="gl\program.cpp">
@@ -150,9 +142,6 @@
       <Filter>gl</Filter>
     </ClCompile>
     <ClCompile Include="d3d11\texture.cpp">
-      <Filter>d3d11</Filter>
-    </ClCompile>
-    <ClCompile Include="d3d11\staging_texture.cpp">
       <Filter>d3d11</Filter>
     </ClCompile>
     <ClCompile Include="d3d11\stream_buffer.cpp">
@@ -188,9 +177,6 @@
     <ClCompile Include="vulkan\context.cpp">
       <Filter>vulkan</Filter>
     </ClCompile>
-    <ClCompile Include="vulkan\staging_buffer.cpp">
-      <Filter>vulkan</Filter>
-    </ClCompile>
     <ClCompile Include="vulkan\stream_buffer.cpp">
       <Filter>vulkan</Filter>
     </ClCompile>
@@ -201,9 +187,6 @@
       <Filter>vulkan</Filter>
     </ClCompile>
     <ClCompile Include="vulkan\swap_chain.cpp">
-      <Filter>vulkan</Filter>
-    </ClCompile>
-    <ClCompile Include="vulkan\staging_texture.cpp">
       <Filter>vulkan</Filter>
     </ClCompile>
     <ClCompile Include="vulkan\builders.cpp">
@@ -251,6 +234,7 @@
     <ClCompile Include="memory_settings_interface.cpp" />
     <ClCompile Include="threading.cpp" />
     <ClCompile Include="sha1_digest.cpp" />
+    <ClCompile Include="gpu_texture.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="bitfield.natvis" />

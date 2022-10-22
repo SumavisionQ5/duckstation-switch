@@ -162,8 +162,7 @@ bool MainWindow::createDisplay(bool fullscreen, bool render_to_main)
 
   g_emu_thread->connectDisplaySignals(m_display_widget);
 
-  if (!g_host_display->CreateRenderDevice(wi.value(), g_settings.gpu_adapter, g_settings.gpu_use_debug_device,
-                                          g_settings.gpu_threaded_presentation))
+  if (!g_host_display->CreateRenderDevice(wi.value()))
   {
     QMessageBox::critical(this, tr("Error"), tr("Failed to create host display device context."));
     destroyDisplayWidget(true);
@@ -543,6 +542,10 @@ void MainWindow::onSystemDestroyed()
   updateEmulationActions(false, false, Achievements::ChallengeModeActive());
   switchToGameListView();
 
+  // reload played time
+  if (m_game_list_widget->isShowingGameList())
+    m_game_list_widget->refresh(false);
+
   if (m_cheat_manager_dialog)
   {
     delete m_cheat_manager_dialog;
@@ -556,10 +559,10 @@ void MainWindow::onSystemDestroyed()
   }
 }
 
-void MainWindow::onRunningGameChanged(const QString& filename, const QString& game_code, const QString& game_title)
+void MainWindow::onRunningGameChanged(const QString& filename, const QString& game_serial, const QString& game_title)
 {
   m_current_game_title = game_title.toStdString();
-  m_current_game_code = game_code.toStdString();
+  m_current_game_serial = game_serial.toStdString();
 
   updateWindowTitle();
   // updateSaveStateMenus(path, serial, crc);
@@ -770,10 +773,10 @@ static QString FormatTimestampForSaveStateMenu(u64 timestamp)
   return qtime.toString(QLocale::system().dateTimeFormat(QLocale::ShortFormat));
 }
 
-void MainWindow::populateLoadStateMenu(const char* game_code, QMenu* menu)
+void MainWindow::populateLoadStateMenu(const char* game_serial, QMenu* menu)
 {
-  auto add_slot = [this, game_code, menu](const QString& title, const QString& empty_title, bool global, s32 slot) {
-    std::optional<SaveStateInfo> ssi = System::GetSaveStateInfo(global ? nullptr : game_code, slot);
+  auto add_slot = [this, game_serial, menu](const QString& title, const QString& empty_title, bool global, s32 slot) {
+    std::optional<SaveStateInfo> ssi = System::GetSaveStateInfo(global ? nullptr : game_serial, slot);
 
     const QString menu_title =
       ssi.has_value() ? title.arg(slot).arg(FormatTimestampForSaveStateMenu(ssi->timestamp)) : empty_title.arg(slot);
@@ -802,7 +805,7 @@ void MainWindow::populateLoadStateMenu(const char* game_code, QMenu* menu)
   connect(load_from_state, &QAction::triggered, g_emu_thread, &EmuThread::undoLoadState);
   menu->addSeparator();
 
-  if (game_code && std::strlen(game_code) > 0)
+  if (game_serial && std::strlen(game_serial) > 0)
   {
     for (u32 slot = 1; slot <= System::PER_GAME_SAVE_STATE_SLOTS; slot++)
       add_slot(tr("Game Save %1 (%2)"), tr("Game Save %1 (Empty)"), false, static_cast<s32>(slot));
@@ -814,10 +817,10 @@ void MainWindow::populateLoadStateMenu(const char* game_code, QMenu* menu)
     add_slot(tr("Global Save %1 (%2)"), tr("Global Save %1 (Empty)"), true, static_cast<s32>(slot));
 }
 
-void MainWindow::populateSaveStateMenu(const char* game_code, QMenu* menu)
+void MainWindow::populateSaveStateMenu(const char* game_serial, QMenu* menu)
 {
-  auto add_slot = [game_code, menu](const QString& title, const QString& empty_title, bool global, s32 slot) {
-    std::optional<SaveStateInfo> ssi = System::GetSaveStateInfo(global ? nullptr : game_code, slot);
+  auto add_slot = [game_serial, menu](const QString& title, const QString& empty_title, bool global, s32 slot) {
+    std::optional<SaveStateInfo> ssi = System::GetSaveStateInfo(global ? nullptr : game_serial, slot);
 
     const QString menu_title =
       ssi.has_value() ? title.arg(slot).arg(FormatTimestampForSaveStateMenu(ssi->timestamp)) : empty_title.arg(slot);
@@ -841,7 +844,7 @@ void MainWindow::populateSaveStateMenu(const char* game_code, QMenu* menu)
   });
   menu->addSeparator();
 
-  if (game_code && std::strlen(game_code) > 0)
+  if (game_serial && std::strlen(game_serial) > 0)
   {
     for (u32 slot = 1; slot <= System::PER_GAME_SAVE_STATE_SLOTS; slot++)
       add_slot(tr("Game Save %1 (%2)"), tr("Game Save %1 (Empty)"), false, static_cast<s32>(slot));
@@ -1094,12 +1097,12 @@ void MainWindow::onChangeDiscMenuAboutToHide()
 
 void MainWindow::onLoadStateMenuAboutToShow()
 {
-  populateLoadStateMenu(m_current_game_code.c_str(), m_ui.menuLoadState);
+  populateLoadStateMenu(m_current_game_serial.c_str(), m_ui.menuLoadState);
 }
 
 void MainWindow::onSaveStateMenuAboutToShow()
 {
-  populateSaveStateMenu(m_current_game_code.c_str(), m_ui.menuSaveState);
+  populateSaveStateMenu(m_current_game_serial.c_str(), m_ui.menuSaveState);
 }
 
 void MainWindow::onCheatsMenuAboutToShow()
@@ -1119,18 +1122,21 @@ void MainWindow::onRemoveDiscActionTriggered()
 void MainWindow::onViewToolbarActionToggled(bool checked)
 {
   Host::SetBaseBoolSettingValue("UI", "ShowToolbar", checked);
+  Host::CommitBaseSettingChanges();
   m_ui.toolBar->setVisible(checked);
 }
 
 void MainWindow::onViewLockToolbarActionToggled(bool checked)
 {
   Host::SetBaseBoolSettingValue("UI", "LockToolbar", checked);
+  Host::CommitBaseSettingChanges();
   m_ui.toolBar->setMovable(!checked);
 }
 
 void MainWindow::onViewStatusBarActionToggled(bool checked)
 {
   Host::SetBaseBoolSettingValue("UI", "ShowStatusBar", checked);
+  Host::CommitBaseSettingChanges();
   m_ui.statusBar->setVisible(checked);
 }
 
@@ -1158,7 +1164,7 @@ void MainWindow::onViewGamePropertiesActionTriggered()
     return;
 
   const std::string& path = System::GetRunningPath();
-  const std::string& serial = System::GetRunningCode();
+  const std::string& serial = System::GetRunningSerial();
   if (path.empty() || serial.empty())
     return;
 
@@ -1343,7 +1349,7 @@ void MainWindow::setGameListEntryCoverImage(const GameList::Entry* entry)
   }
 
   QString new_filename =
-    QString::fromStdString(GameList::GetNewCoverImagePathForEntry(entry, filename.toStdString().c_str()));
+    QString::fromStdString(GameList::GetNewCoverImagePathForEntry(entry, filename.toStdString().c_str(), false));
   if (new_filename.isEmpty())
     return;
 
@@ -1426,7 +1432,8 @@ void MainWindow::setupAdditionalUi()
       qApp->translate("CPUExecutionMode", Settings::GetCPUExecutionModeDisplayName(mode)));
     action->setCheckable(true);
     connect(action, &QAction::triggered, [this, mode]() {
-      Host::SetBaseBoolSettingValue("CPU", "ExecutionMode", Settings::GetCPUExecutionModeName(mode));
+      Host::SetBaseStringSettingValue("CPU", "ExecutionMode", Settings::GetCPUExecutionModeName(mode));
+      Host::CommitBaseSettingChanges();
       g_emu_thread->applySettings();
       updateDebugMenuCPUExecutionMode();
     });
@@ -1441,6 +1448,7 @@ void MainWindow::setupAdditionalUi()
     action->setCheckable(true);
     connect(action, &QAction::triggered, [this, renderer]() {
       Host::SetBaseStringSettingValue("GPU", "Renderer", Settings::GetRendererName(renderer));
+      Host::CommitBaseSettingChanges();
       g_emu_thread->applySettings();
       updateDebugMenuGPURenderer();
     });
@@ -1455,6 +1463,7 @@ void MainWindow::setupAdditionalUi()
     action->setCheckable(true);
     connect(action, &QAction::triggered, [this, crop_mode]() {
       Host::SetBaseStringSettingValue("Display", "CropMode", Settings::GetDisplayCropModeName(crop_mode));
+      Host::CommitBaseSettingChanges();
       g_emu_thread->applySettings();
       updateDebugMenuCropMode();
     });
@@ -1484,6 +1493,7 @@ void MainWindow::setupAdditionalUi()
     connect(action, &QAction::triggered, [this, action]() {
       const QString new_language = action->data().toString();
       Host::SetBaseStringSettingValue("Main", "Language", new_language.toUtf8().constData());
+      Host::CommitBaseSettingChanges();
       QtHost::InstallTranslator();
       recreate();
     });
@@ -1786,8 +1796,10 @@ void MainWindow::connectSignals()
   connect(m_ui.actionRemoveDisc, &QAction::triggered, this, &MainWindow::onRemoveDiscActionTriggered);
   connect(m_ui.actionAddGameDirectory, &QAction::triggered,
           [this]() { getSettingsDialog()->getGameListSettingsWidget()->addSearchDirectory(this); });
-  connect(m_ui.actionPowerOff, &QAction::triggered, this, [this]() { requestShutdown(true, true); });
-  connect(m_ui.actionPowerOffWithoutSaving, &QAction::triggered, this, [this]() { requestShutdown(false, false); });
+  connect(m_ui.actionPowerOff, &QAction::triggered, this,
+          [this]() { requestShutdown(true, true, g_settings.save_state_on_exit); });
+  connect(m_ui.actionPowerOffWithoutSaving, &QAction::triggered, this,
+          [this]() { requestShutdown(false, false, false); });
   connect(m_ui.actionReset, &QAction::triggered, g_emu_thread, &EmuThread::resetSystem);
   connect(m_ui.actionPause, &QAction::toggled, [](bool active) { g_emu_thread->setSystemPaused(active); });
   connect(m_ui.actionScreenshot, &QAction::triggered, g_emu_thread, &EmuThread::saveScreenshot);
@@ -1950,6 +1962,7 @@ void MainWindow::addThemeToMenu(const QString& name, const QString& key)
 void MainWindow::setTheme(const QString& theme)
 {
   Host::SetBaseStringSettingValue("UI", "Theme", theme.toUtf8().constData());
+  Host::CommitBaseSettingChanges();
   updateApplicationTheme();
   updateMenuSelectedTheme();
   m_game_list_widget->reloadCommonImages();
@@ -2097,7 +2110,10 @@ void MainWindow::saveGeometryToConfig()
   const QByteArray geometry_b64 = geometry.toBase64();
   const std::string old_geometry_b64 = Host::GetBaseStringSettingValue("UI", "MainWindowGeometry");
   if (old_geometry_b64 != geometry_b64.constData())
+  {
     Host::SetBaseStringSettingValue("UI", "MainWindowGeometry", geometry_b64.constData());
+    Host::CommitBaseSettingChanges();
+  }
 }
 
 void MainWindow::restoreGeometryFromConfig()
@@ -2114,7 +2130,10 @@ void MainWindow::saveDisplayWindowGeometryToConfig()
   const QByteArray geometry_b64 = geometry.toBase64();
   const std::string old_geometry_b64 = Host::GetBaseStringSettingValue("UI", "DisplayWindowGeometry");
   if (old_geometry_b64 != geometry_b64.constData())
+  {
     Host::SetBaseStringSettingValue("UI", "DisplayWindowGeometry", geometry_b64.constData());
+    Host::CommitBaseSettingChanges();
+  }
 }
 
 void MainWindow::restoreDisplayWindowGeometryFromConfig()
@@ -2353,14 +2372,14 @@ void MainWindow::runOnUIThread(const std::function<void()>& func)
 }
 
 bool MainWindow::requestShutdown(bool allow_confirm /* = true */, bool allow_save_to_state /* = true */,
-                                 bool block_until_done /* = false */)
+                                 bool save_state /* = true */, bool block_until_done /* = false */)
 {
   if (!s_system_valid)
     return true;
 
   // If we don't have a serial, we can't save state.
-  allow_save_to_state &= !m_current_game_code.empty();
-  bool save_state = allow_save_to_state && g_settings.save_state_on_exit;
+  allow_save_to_state &= !m_current_game_serial.empty();
+  save_state &= allow_save_to_state;
 
   // Only confirm on UI thread because we need to display a msgbox.
   if (!m_is_closing && allow_confirm && g_settings.confim_power_off)
@@ -2373,7 +2392,7 @@ bool MainWindow::requestShutdown(bool allow_confirm /* = true */, bool allow_sav
     msgbox.setText("Are you sure you want to shut down the virtual machine?");
 
     QCheckBox* save_cb = new QCheckBox(tr("Save State For Resume"), &msgbox);
-    save_cb->setChecked(save_state);
+    save_cb->setChecked(allow_save_to_state && save_state);
     save_cb->setEnabled(allow_save_to_state);
     msgbox.setCheckBox(save_cb);
     msgbox.addButton(QMessageBox::Yes);
@@ -2420,7 +2439,7 @@ bool MainWindow::requestShutdown(bool allow_confirm /* = true */, bool allow_sav
 void MainWindow::requestExit(bool allow_save_to_state /* = true */)
 {
   // this is block, because otherwise closeEvent() will also prompt
-  if (!requestShutdown(true, allow_save_to_state, true))
+  if (!requestShutdown(true, allow_save_to_state, g_settings.save_state_on_exit))
     return;
 
   // We could use close here, but if we're not visible (e.g. quitting from fullscreen), closing the window
@@ -2443,6 +2462,7 @@ void MainWindow::onCheckForUpdatesActionTriggered()
 {
   // Wipe out the last version, that way it displays the update if we've previously skipped it.
   Host::DeleteBaseSettingValue("AutoUpdater", "LastVersion");
+  Host::CommitBaseSettingChanges();
   checkForUpdates(true);
 }
 
@@ -2553,6 +2573,7 @@ void MainWindow::onToolsCheatManagerTriggered()
 
       connect(cb, &QCheckBox::stateChanged, [](int state) {
         Host::SetBaseBoolSettingValue("UI", "DisplayCheatWarning", (state != Qt::CheckState::Checked));
+        Host::CommitBaseSettingChanges();
       });
 
       if (mb.exec() == QMessageBox::No)

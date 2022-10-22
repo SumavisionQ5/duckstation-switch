@@ -177,6 +177,7 @@ void ControllerBindingWidget::onTypeChanged()
   {
     Host::SetBaseStringSettingValue(m_config_section.c_str(), "Type",
                                     Settings::GetControllerTypeName(m_controller_type));
+    Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
   }
 
@@ -260,8 +261,10 @@ void ControllerBindingWidget::doDeviceAutomaticBinding(const QString& device)
     InputManager::GetGenericBindingMapping(device.toStdString());
   if (mapping.empty())
   {
-    QMessageBox::critical(QtUtils::GetRootWidget(this), tr("Automatic Mapping"),
-                          tr("No generic bindings were generated for device '%1'").arg(device));
+    QMessageBox::critical(
+      QtUtils::GetRootWidget(this), tr("Automatic Mapping"),
+      tr("No generic bindings were generated for device '%1'. The controller/source may not support automatic mapping.")
+        .arg(device));
     return;
   }
 
@@ -553,14 +556,47 @@ void ControllerCustomSettingsWidget::createSettingWidgets(ControllerBindingWidge
       }
       break;
 
+      case SettingInfo::Type::IntegerList:
+      {
+        QComboBox* cb = new QComboBox(this);
+        cb->setObjectName(QString::fromUtf8(si.name));
+        for (u32 j = 0; si.options[j] != nullptr; j++)
+          cb->addItem(qApp->translate(cinfo->name, si.options[j]));
+        SettingWidgetBinder::BindWidgetToIntSetting(sif, cb, section, std::move(key_name), si.IntegerDefaultValue(),
+                                                    si.IntegerMinValue());
+        layout->addWidget(new QLabel(qApp->translate(cinfo->name, si.display_name), this), current_row, 0);
+        layout->addWidget(cb, current_row, 1, 1, 3);
+        current_row++;
+      }
+      break;
+
       case SettingInfo::Type::Float:
       {
         QDoubleSpinBox* sb = new QDoubleSpinBox(this);
         sb->setObjectName(QString::fromUtf8(si.name));
-        sb->setMinimum(si.FloatMinValue());
-        sb->setMaximum(si.FloatMaxValue());
-        sb->setSingleStep(si.FloatStepValue());
-        SettingWidgetBinder::BindWidgetToFloatSetting(sif, sb, section, std::move(key_name), si.FloatDefaultValue());
+        if (si.multiplier != 0.0f && si.multiplier != 1.0f)
+        {
+          const float multiplier = si.multiplier;
+          sb->setMinimum(si.FloatMinValue() * multiplier);
+          sb->setMaximum(si.FloatMaxValue() * multiplier);
+          sb->setSingleStep(si.FloatStepValue() * multiplier);
+          if (std::abs(si.multiplier - 100.0f) < 0.01f)
+          {
+            sb->setDecimals(0);
+            sb->setSuffix(QStringLiteral("%"));
+          }
+
+          SettingWidgetBinder::BindWidgetToNormalizedSetting(sif, sb, section, std::move(key_name), si.multiplier,
+                                                             si.FloatDefaultValue() * multiplier);
+        }
+        else
+        {
+          sb->setMinimum(si.FloatMinValue());
+          sb->setMaximum(si.FloatMaxValue());
+          sb->setSingleStep(si.FloatStepValue());
+
+          SettingWidgetBinder::BindWidgetToFloatSetting(sif, sb, section, std::move(key_name), si.FloatDefaultValue());
+        }
         layout->addWidget(new QLabel(qApp->translate(cinfo->name, si.display_name), this), current_row, 0);
         layout->addWidget(sb, current_row, 1, 1, 3);
         current_row++;
@@ -638,11 +674,24 @@ void ControllerCustomSettingsWidget::restoreDefaults()
       }
       break;
 
+      case SettingInfo::Type::IntegerList:
+      {
+        QComboBox* widget = findChild<QComboBox*>(QString::fromStdString(si.name));
+        if (widget)
+          widget->setCurrentIndex(si.IntegerDefaultValue() - si.IntegerMinValue());
+      }
+      break;
+
       case SettingInfo::Type::Float:
       {
         QDoubleSpinBox* widget = findChild<QDoubleSpinBox*>(QString::fromStdString(si.name));
         if (widget)
-          widget->setValue(si.FloatDefaultValue());
+        {
+          if (si.multiplier != 0.0f && si.multiplier != 1.0f)
+            widget->setValue(si.FloatDefaultValue() * si.multiplier);
+          else
+            widget->setValue(si.FloatDefaultValue());
+        }
       }
       break;
 

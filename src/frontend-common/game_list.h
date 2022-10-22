@@ -1,8 +1,10 @@
 #pragma once
+#include "common/string.h"
 #include "core/game_database.h"
 #include "core/types.h"
 #include "util/cd_image.h"
 #include <ctime>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -34,6 +36,8 @@ struct Entry
   std::string developer;
   u64 total_size = 0;
   std::time_t last_modified_time = 0;
+  std::time_t last_played_time = 0;
+  std::time_t total_played_time = 0;
 
   u64 release_date = 0;
   u32 supported_controllers = ~static_cast<u32>(0);
@@ -72,11 +76,24 @@ bool IsGameListLoaded();
 /// If only_cache is set, no new files will be scanned, only those present in the cache.
 void Refresh(bool invalidate_cache, bool only_cache = false, ProgressCallback* progress = nullptr);
 
+/// Add played time for the specified serial.
+void AddPlayedTimeForSerial(const std::string& serial, std::time_t last_time, std::time_t add_time);
+
+/// Formats a timestamp to something human readable (e.g. Today, Yesterday, 10/11/12).
+TinyString FormatTimestamp(std::time_t timestamp);
+
+/// Formats a timespan to something human readable (e.g. 1h2m3s).
+TinyString FormatTimespan(std::time_t timespan);
+
 std::string GetCoverImagePathForEntry(const Entry* entry);
 std::string GetCoverImagePath(const std::string& path, const std::string& serial, const std::string& title);
-std::string GetNewCoverImagePathForEntry(const Entry* entry, const char* new_filename);
+std::string GetNewCoverImagePathForEntry(const Entry* entry, const char* new_filename, bool use_serial);
 
-bool DownloadCovers(const std::vector<std::string>& url_templates, ProgressCallback* progress = nullptr);
+/// Downloads covers using the specified URL templates. By default, covers are saved by title, but this can be changed
+/// with the use_serial parameter. save_callback optionall takes the entry and the path the new cover is saved to.
+bool DownloadCovers(const std::vector<std::string>& url_templates, bool use_serial = false,
+                    ProgressCallback* progress = nullptr,
+                    std::function<void(const Entry*, std::string)> save_callback = {});
 }; // namespace GameList
 
 namespace Host {
@@ -85,8 +102,4 @@ void RefreshGameListAsync(bool invalidate_cache);
 
 /// Cancels game list refresh, if there is one in progress.
 void CancelGameListRefresh();
-
-void DownloadCoversAsync(std::vector<std::string> url_templates);
-void CancelCoversDownload();
-void CoversChanged();
 } // namespace Host

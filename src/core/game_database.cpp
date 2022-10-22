@@ -28,10 +28,11 @@ namespace GameDatabase {
 enum : u32
 {
   GAME_DATABASE_CACHE_SIGNATURE = 0x45434C48,
-  GAME_DATABASE_CACHE_VERSION = 1
+  GAME_DATABASE_CACHE_VERSION = 2,
 };
 
 static Entry* GetMutableEntry(const std::string_view& serial);
+static const Entry* GetEntryForId(const std::string_view& code);
 
 static bool LoadFromCache();
 static bool SaveToCache();
@@ -56,7 +57,8 @@ std::array<std::pair<const char*, const char*>, static_cast<u32>(GameDatabase::T
   {"DisableWidescreen", TRANSLATABLE("GameSettingsTrait", "Disable Widescreen")},
   {"DisablePGXP", TRANSLATABLE("GameSettingsTrait", "Disable PGXP")},
   {"DisablePGXPCulling", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Culling")},
-  {"DisablePGXPTextureCorrection", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Texture Correction")},
+  {"DisablePGXPTextureCorrection", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Perspective Correct Textures")},
+  {"DisablePGXPColorCorrection", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Perspective Correct Colors")},
   {"DisablePGXPDepthBuffer", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Depth Buffer")},
   {"ForcePGXPVertexCache", TRANSLATABLE("GameSettingsTrait", "Force PGXP Vertex Cache")},
   {"ForcePGXPCPUMode", TRANSLATABLE("GameSettingsTrait", "Force PGXP CPU Mode")},
@@ -104,7 +106,7 @@ void GameDatabase::Unload()
   s_loaded = false;
 }
 
-const GameDatabase::Entry* GameDatabase::GetEntryForCode(const std::string_view& code)
+const GameDatabase::Entry* GameDatabase::GetEntryForId(const std::string_view& code)
 {
   EnsureLoaded();
 
@@ -139,24 +141,23 @@ std::string GameDatabase::GetSerialForPath(const char* path)
 
 const GameDatabase::Entry* GameDatabase::GetEntryForDisc(CDImage* image)
 {
-  std::string exe_name_code(System::GetGameCodeForImage(image, false));
-  if (!exe_name_code.empty())
+  std::string id(System::GetGameIdFromImage(image, false));
+  if (!id.empty())
   {
-    const Entry* entry = GetEntryForCode(exe_name_code);
+    const Entry* entry = GetEntryForId(id);
     if (entry)
       return entry;
   }
 
-  std::string exe_hash_code(System::GetGameHashCodeForImage(image));
-  if (!exe_hash_code.empty())
+  std::string hash_id(System::GetGameHashIdFromImage(image));
+  if (!hash_id.empty())
   {
-    const Entry* entry = GetEntryForCode(exe_hash_code);
+    const Entry* entry = GetEntryForId(hash_id);
     if (entry)
       return entry;
   }
 
-  Log_WarningPrintf("No entry found for disc (exe code: '%s', hash code: '%s')", exe_name_code.c_str(),
-                    exe_hash_code.c_str());
+  Log_WarningPrintf("No entry found for disc (exe code: '%s', hash code: '%s')", id.c_str(), hash_id.c_str());
   return nullptr;
 }
 
@@ -364,10 +365,25 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     {
       Host::AddKeyedOSDMessage(
         "gamedb_disable_pgxp_texture",
-        Host::TranslateStdString("OSDMessage", "PGXP texture correction disabled by game settings."), osd_duration);
+        Host::TranslateStdString("OSDMessage", "PGXP perspective corrected textures disabled by game settings."),
+        osd_duration);
     }
 
     settings.gpu_pgxp_texture_correction = false;
+  }
+
+  if (HasTrait(Trait::DisablePGXPColorCorrection))
+  {
+    if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_texture_correction &&
+        settings.gpu_pgxp_color_correction)
+    {
+      Host::AddKeyedOSDMessage(
+        "gamedb_disable_pgxp_texture",
+        Host::TranslateStdString("OSDMessage", "PGXP perspective corrected colors disabled by game settings."),
+        osd_duration);
+    }
+
+    settings.gpu_pgxp_color_correction = false;
   }
 
   if (HasTrait(Trait::ForcePGXPVertexCache))
@@ -831,7 +847,7 @@ bool GameDatabase::ParseJsonEntry(Entry* entry, const rapidjson::Value& value)
         if (!ctype.has_value())
         {
           Log_WarningPrintf("Invalid controller type '%s'", controller.GetString());
-          return false;
+          continue;
         }
 
         if (first)

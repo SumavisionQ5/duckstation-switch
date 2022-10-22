@@ -1,6 +1,5 @@
 #pragma once
 #include "common/d3d11/shader_cache.h"
-#include "common/d3d11/staging_texture.h"
 #include "common/d3d11/stream_buffer.h"
 #include "common/d3d11/texture.h"
 #include "gpu_hw.h"
@@ -24,7 +23,7 @@ public:
 
   bool Initialize() override;
   void Reset(bool clear_vram) override;
-  bool DoState(StateWrapper& sw, HostDisplayTexture** host_texture, bool update_display) override;
+  bool DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_display) override;
 
   void ResetGraphicsAPIState() override;
   void RestoreGraphicsAPIState() override;
@@ -94,8 +93,6 @@ private:
   D3D11::StreamBuffer m_uniform_stream_buffer;
 
   D3D11::StreamBuffer m_texture_stream_buffer;
-
-  D3D11::StagingTexture m_vram_readback_texture;
 
   ComPtr<ID3D11ShaderResourceView> m_texture_stream_buffer_srv_r16ui;
 

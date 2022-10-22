@@ -104,7 +104,7 @@ cd ..
 # Build arm64, but don't install it, instead just add the arm64 binary into the existing x64 dylib.
 mkdir build-arm64
 cd build-arm64
-CFLAGS="-arch arm64" ../configure --host x86_64-apple-darwin --prefix "$INSTALLDIR" --with-secure-transport
+CFLAGS="-arch arm64" ../configure --host x86_64-apple-darwin --prefix "$INSTALLDIR" --with-secure-transport --without-brotli
 make "-j$NPROCS"
 lipo -create "$INSTALLDIR/lib/libcurl.4.dylib" "lib/.libs/libcurl.4.dylib" -o "$INSTALLDIR/lib/libcurl.4.dylib"
 cd ../..
@@ -123,7 +123,7 @@ tar xf "qtbase-everywhere-src-$QT.tar.xz"
 cd "qtbase-everywhere-src-$QT"
 mkdir build
 cd build
-cmake -G Ninja -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_PREFIX_PATH="$INSTALLDIR" -DCMAKE_INSTALL_PREFIX="$INSTALLDIR" -DCMAKE_BUILD_TYPE=Release -DFEATURE_optimize_size=ON -DFEATURE_dbus=OFF -DFEATURE_framework=OFF -DFEATURE_icu=OFF -DFEATURE_opengl=OFF -DFEATURE_printsupport=OFF -DFEATURE_sql=OFF ..
+cmake -G Ninja -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_PREFIX_PATH="$INSTALLDIR" -DCMAKE_INSTALL_PREFIX="$INSTALLDIR" -DCMAKE_BUILD_TYPE=Release -DFEATURE_optimize_size=ON -DFEATURE_dbus=OFF -DFEATURE_framework=OFF -DFEATURE_icu=OFF -DFEATURE_opengl=OFF -DFEATURE_printsupport=OFF -DFEATURE_sql=OFF -DFEATURE_gssapi=OFF ..
 cmake --build . --parallel
 cmake --install .
 cd ../../

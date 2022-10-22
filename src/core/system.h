@@ -45,7 +45,7 @@ struct SaveStateInfo
 struct ExtendedSaveStateInfo
 {
   std::string title;
-  std::string game_code;
+  std::string serial;
   std::string media_path;
   std::time_t timestamp;
 
@@ -98,10 +98,10 @@ ConsoleRegion GetConsoleRegionForDiscRegion(DiscRegion region);
 std::string GetExecutableNameForImage(CDImage* cdi);
 bool ReadExecutableFromImage(CDImage* cdi, std::string* out_executable_name, std::vector<u8>* out_executable_data);
 
-std::string GetGameHashCodeForImage(CDImage* cdi);
-std::string GetGameCodeForImage(CDImage* cdi, bool fallback_to_hash);
-std::string GetGameCodeForPath(const char* image_path, bool fallback_to_hash);
-DiscRegion GetRegionForCode(std::string_view code);
+std::string GetGameHashIdFromImage(CDImage* cdi);
+std::string GetGameIdFromImage(CDImage* cdi, bool fallback_to_hash);
+std::string GetGameSerialForPath(const char* image_path, bool fallback_to_hash);
+DiscRegion GetRegionForSerial(std::string_view serial);
 DiscRegion GetRegionFromSystemArea(CDImage* cdi);
 DiscRegion GetRegionForImage(CDImage* cdi);
 DiscRegion GetRegionForExe(const char* path);
@@ -138,7 +138,8 @@ ALWAYS_INLINE_RELEASE TickCount ScaleTicksToOverclock(TickCount ticks)
   if (!g_settings.cpu_overclock_active)
     return ticks;
 
-  return static_cast<TickCount>((static_cast<u64>(static_cast<u32>(ticks)) * g_settings.cpu_overclock_numerator) /
+  return static_cast<TickCount>(((static_cast<u64>(static_cast<u32>(ticks)) * g_settings.cpu_overclock_numerator) +
+                                 (g_settings.cpu_overclock_denominator - 1)) /
                                 g_settings.cpu_overclock_denominator);
 }
 
@@ -167,8 +168,9 @@ void FrameDone();
 void IncrementInternalFrameNumber();
 
 const std::string& GetRunningPath();
-const std::string& GetRunningCode();
+const std::string& GetRunningSerial();
 const std::string& GetRunningTitle();
+bool IsRunningBIOS();
 
 // TODO: Move to PerformanceMetrics
 float GetFPS();
@@ -315,7 +317,7 @@ void DoFrameStep();
 void DoToggleCheats();
 
 /// Returns the path to a save state file. Specifying an index of -1 is the "resume" save state.
-std::string GetGameSaveStateFileName(const std::string_view& game_code, s32 slot);
+std::string GetGameSaveStateFileName(const std::string_view& serial, s32 slot);
 
 /// Returns the path to a save state file. Specifying an index of -1 is the "resume" save state.
 std::string GetGlobalSaveStateFileName(s32 slot);
@@ -339,16 +341,16 @@ std::optional<ExtendedSaveStateInfo> GetUndoSaveStateInfo();
 bool UndoLoadState();
 
 /// Returns a list of save states for the specified game code.
-std::vector<SaveStateInfo> GetAvailableSaveStates(const char* game_code);
+std::vector<SaveStateInfo> GetAvailableSaveStates(const char* serial);
 
-/// Returns save state info if present. If game_code is null or empty, assumes global state.
-std::optional<SaveStateInfo> GetSaveStateInfo(const char* game_code, s32 slot);
+/// Returns save state info if present. If serial is null or empty, assumes global state.
+std::optional<SaveStateInfo> GetSaveStateInfo(const char* serial, s32 slot);
 
 /// Returns save state info from opened save state stream.
 std::optional<ExtendedSaveStateInfo> GetExtendedSaveStateInfo(const char* path);
 
 /// Deletes save states for the specified game code. If resume is set, the resume state is deleted too.
-void DeleteSaveStates(const char* game_code, bool resume);
+void DeleteSaveStates(const char* serial, bool resume);
 
 /// Returns intended output volume considering fast forwarding.
 s32 GetAudioOutputVolume();
@@ -472,7 +474,7 @@ void RequestResizeHostDisplay(s32 width, s32 height);
 void RequestExit(bool save_state_if_running);
 
 /// Requests shut down of the current virtual machine.
-void RequestSystemShutdown(bool allow_confirm, bool allow_save_state);
+void RequestSystemShutdown(bool allow_confirm, bool save_state);
 
 /// Returns true if the hosting application is currently fullscreen.
 bool IsFullscreen();

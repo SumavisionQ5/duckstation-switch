@@ -32,49 +32,43 @@ struct CommandInfo
 };
 
 static std::array<CommandInfo, 255> s_command_info = {{
-  {"Sync", 0},       {"Getstat", 0},   {"Setloc", 3},  {"Play", 0},     {"Forward", 0}, {"Backward", 0},
-  {"ReadN", 0},      {"MotorOn", 0},   {"Stop", 0},    {"Pause", 0},    {"Reset", 0},   {"Mute", 0},
-  {"Demute", 0},     {"Setfilter", 2}, {"Setmode", 1}, {"Getparam", 0}, {"GetlocL", 0}, {"GetlocP", 0},
-  {"SetSession", 1}, {"GetTN", 0},     {"GetTD", 1},   {"SeekL", 0},    {"SeekP", 0},   {"SetClock", 0},
-  {"GetClock", 0},   {"Test", 1},      {"GetID", 0},   {"ReadS", 0},    {"Init", 0},    {"GetQ", 2},
-  {"ReadTOC", 0},    {"VideoCD", 6},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},
-  {"Unknown", 0},    {"Unknown", 0},   {nullptr, 0} // Unknown
+  {"Sync", 0},    {"Getstat", 0}, {"Setloc", 3},   {"Play", 0},     {"Forward", 0}, {"Backward", 0}, {"ReadN", 0},
+  {"Standby", 0}, {"Stop", 0},    {"Pause", 0},    {"Init", 0},     {"Mute", 0},    {"Demute", 0},   {"Setfilter", 2},
+  {"Setmode", 1}, {"Getmode", 0}, {"GetlocL", 0},  {"GetlocP", 0},  {"ReadT", 1},   {"GetTN", 0},    {"GetTD", 1},
+  {"SeekL", 0},   {"SeekP", 0},   {"SetClock", 0}, {"GetClock", 0}, {"Test", 1},    {"GetID", 0},    {"ReadS", 0},
+  {"Reset", 0},   {"GetQ", 2},    {"ReadTOC", 0},  {"VideoCD", 6},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},  {"Unknown", 0}, {"Unknown", 0},  {"Unknown", 0},
+  {"Unknown", 0}, {"Unknown", 0}, {nullptr, 0} // Unknown
 }};
 
 CDROM g_cdrom;
@@ -213,21 +207,11 @@ void CDROM::SoftReset(TickCount ticks_late)
 
   if (HasMedia())
   {
-    const TickCount toc_read_ticks = GetTicksForTOCRead();
     const TickCount speed_change_ticks = was_double_speed ? GetTicksForSpeedChange() : 0;
     const TickCount seek_ticks = (m_current_lba != 0) ? GetTicksForSeek(0) : 0;
-    const TickCount total_ticks = toc_read_ticks + speed_change_ticks + seek_ticks - ticks_late;
-
-    if (was_double_speed)
-    {
-      Log_DevPrintf("CDROM was double speed on reset, switching to single speed in %d ticks, reading TOC in %d ticks, "
-                    "seeking in %d ticks",
-                    speed_change_ticks, toc_read_ticks, seek_ticks);
-    }
-    else
-    {
-      Log_DevPrintf("CDROM reading TOC on reset in %d ticks and seeking in %d ticks", toc_read_ticks, seek_ticks);
-    }
+    const TickCount total_ticks = std::max<TickCount>(speed_change_ticks + seek_ticks, INIT_TICKS) - ticks_late;
+    Log_DevPrintf("CDROM init total disc ticks = %d (speed change = %d, seek = %d)", total_ticks, speed_change_ticks,
+                  seek_ticks);
 
     if (m_current_lba != 0)
     {
@@ -764,9 +748,9 @@ bool CDROM::HasPendingDiscEvent() const
 
 TickCount CDROM::GetAckDelayForCommand(Command command)
 {
-  if (command == Command::Init)
+  if (command == Command::Reset)
   {
-    // Init takes longer.
+    // Full reset takes longer.
     return 120000;
   }
 
@@ -1167,10 +1151,10 @@ void CDROM::ExecuteCommand(TickCount ticks_late)
       return;
     }
 
-    case Command::SetSession:
+    case Command::ReadT:
     {
       const u8 session = m_param_fifo.Peek(0);
-      Log_DebugPrintf("CDROM SetSession command, session=%u", session);
+      Log_DebugPrintf("CDROM ReadT command, session=%u", session);
 
       if (!CanReadMedia() || m_drive_state == DriveState::Reading || m_drive_state == DriveState::Playing)
       {
@@ -1349,24 +1333,25 @@ void CDROM::ExecuteCommand(TickCount ticks_late)
       return;
     }
 
-    case Command::Reset:
+    case Command::Init:
     {
-      Log_DebugPrintf("CDROM reset command");
-      SendACKAndStat();
+      Log_DebugPrintf("CDROM init command");
 
-      if (m_command_second_response == Command::Reset)
+      if (m_command_second_response == Command::Init)
       {
         // still pending
         EndCommand();
         return;
       }
 
+      SendACKAndStat();
+
       if (IsSeeking())
         UpdatePositionWhileSeeking();
 
       SoftReset(ticks_late);
 
-      QueueCommandSecondResponse(Command::Reset, RESET_TICKS);
+      QueueCommandSecondResponse(Command::Init, INIT_TICKS);
       return;
     }
     break;
@@ -1529,9 +1514,9 @@ void CDROM::ExecuteCommand(TickCount ticks_late)
     }
     break;
 
-    case Command::Getparam:
+    case Command::Getmode:
     {
-      Log_DebugPrintf("CDROM Getparam command");
+      Log_DebugPrintf("CDROM Getmode command");
 
       m_response_fifo.Push(m_secondary_status.bits);
       m_response_fifo.Push(m_mode.bits);
@@ -1665,7 +1650,7 @@ void CDROM::ExecuteCommandSecondResponse(TickCount ticks_late)
 
     case Command::ReadTOC:
     case Command::Pause:
-    case Command::Reset:
+    case Command::Init:
     case Command::MotorOn:
     case Command::Stop:
       DoStatSecondResponse();

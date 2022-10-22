@@ -36,25 +36,25 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.displayCropMode, "Display", "CropMode",
                                                &Settings::ParseDisplayCropMode, &Settings::GetDisplayCropModeName,
                                                Settings::DEFAULT_DISPLAY_CROP_MODE);
-  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.gpuDownsampleMode, "GPU", "DownsampleMode",
-                                               &Settings::ParseDownsampleModeName, &Settings::GetDownsampleModeName,
-                                               Settings::DEFAULT_GPU_DOWNSAMPLE_MODE);
+  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.displayAlignment, "Display", "Alignment",
+                                               &Settings::ParseDisplayAlignment, &Settings::GetDisplayAlignmentName,
+                                               Settings::DEFAULT_DISPLAY_ALIGNMENT);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayLinearFiltering, "Display", "LinearFiltering", true);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayIntegerScaling, "Display", "IntegerScaling", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayStretch, "Display", "Stretch", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.internalResolutionScreenshots, "Display",
                                                "InternalResolutionScreenshots", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vsync, "Display", "VSync", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayAllFrames, "Display", "DisplayAllFrames", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.gpuThread, "GPU", "UseThread", true);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.threadedPresentation, "GPU", "ThreadedPresentation", true);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.syncToHostRefreshRate, "Main", "SyncToHostRefreshRate", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showOSDMessages, "Display", "ShowOSDMessages", true);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showFPS, "Display", "ShowFPS", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showSpeed, "Display", "ShowSpeed", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showResolution, "Display", "ShowResolution", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showCPU, "Display", "ShowCPU", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showGPU, "Display", "ShowGPU", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showInput, "Display", "ShowInputs", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showSettings, "Display", "ShowEnhancements", false);
 
   connect(m_ui.renderer, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &DisplaySettingsWidget::populateGPUAdaptersAndResolutions);
@@ -96,9 +96,9 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
        "not display correctly with the \"All Borders\" setting. \"Only Overscan\" offers a good "
        "compromise between stability and hiding black borders."));
   dialog->registerWidgetHelp(
-    m_ui.gpuDownsampleMode, tr("Downsampling"), tr("Disabled"),
-    tr("Downsamples the rendered image prior to displaying it. Can improve overall image quality in mixed 2D/3D games, "
-       "but should be disabled for pure 3D games. Only applies to the hardware renderers."));
+    m_ui.displayAlignment, tr("Position"),
+    qApp->translate("DisplayCropMode", Settings::GetDisplayAlignmentDisplayName(Settings::DEFAULT_DISPLAY_ALIGNMENT)),
+    tr("Determines the position on the screen when black borders must be added."));
   dialog->registerWidgetHelp(m_ui.displayLinearFiltering, tr("Linear Upscaling"), tr("Checked"),
                              tr("Uses bilinear texture filtering when displaying the console's framebuffer to the "
                                 "screen. <br>Disabling filtering "
@@ -119,23 +119,12 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
     m_ui.vsync, tr("VSync"), tr("Checked"),
     tr("Enable this option to match DuckStation's refresh rate with your current monitor or screen. "
        "VSync is automatically disabled when it is not possible (e.g. running at non-100% speed)."));
-  dialog->registerWidgetHelp(m_ui.displayAllFrames, tr("Optimal Frame Pacing"), tr("Unchecked"),
-                             tr("Enable this option will ensure every frame the console renders is displayed to the "
-                                "screen, for optimal frame pacing. If you are having difficulties maintaining full "
-                                "speed, or are getting audio glitches, try disabling this option."));
   dialog->registerWidgetHelp(m_ui.threadedPresentation, tr("Threaded Presentation"), tr("Checked"),
                              tr("Presents frames on a background thread when fast forwarding or vsync is disabled. "
                                 "This can measurably improve performance in the Vulkan renderer."));
   dialog->registerWidgetHelp(m_ui.gpuThread, tr("Threaded Rendering"), tr("Checked"),
                              tr("Uses a second thread for drawing graphics. Currently only available for the software "
                                 "renderer, but can provide a significant speed improvement, and is safe to use."));
-  dialog->registerWidgetHelp(
-    m_ui.syncToHostRefreshRate, tr("Sync To Host Refresh Rate"), tr("Unchecked"),
-    tr("Adjusts the emulation speed so the console's refresh rate matches the host's refresh rate when both VSync and "
-       "Audio Resampling settings are enabled. This results in the smoothest animations possible, at the cost of "
-       "potentially increasing the emulation speed by less than 1%. Sync To Host Refresh Rate will not take effect if "
-       "the console's refresh rate is too far from the host's refresh rate. Users with variable refresh rate displays "
-       "should disable this option."));
   dialog->registerWidgetHelp(m_ui.showOSDMessages, tr("Show OSD Messages"), tr("Checked"),
                              tr("Shows on-screen-display messages when events occur such as save states being "
                                 "created/loaded, screenshots being taken, etc."));
@@ -147,19 +136,22 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
   dialog->registerWidgetHelp(m_ui.showResolution, tr("Show Resolution"), tr("Unchecked"),
                              tr("Shows the resolution of the game in the top-right corner of the display."));
   dialog->registerWidgetHelp(
+    m_ui.showCPU, tr("Show CPU Usage"), tr("Unchecked"),
+    tr("Shows the host's CPU usage based on threads in the top-right corner of the display. This does not display the "
+       "emulated system CPU's usage. If a value close to 100% is being displayed, this means your host's CPU is likely "
+       "the bottleneck. In this case, you should reduce enhancement-related settings such as overclocking."));
+  dialog->registerWidgetHelp(
     m_ui.showInput, tr("Show Controller Input"), tr("Unchecked"),
     tr("Shows the current controller state of the system in the bottom-left corner of the display."));
 
 #ifdef _WIN32
-  {
-    QCheckBox* cb = new QCheckBox(tr("Use Blit Swap Chain"), m_ui.basicGroupBox);
-    SettingWidgetBinder::BindWidgetToBoolSetting(sif, cb, "Display", "UseBlitSwapChain", false);
-    m_ui.basicCheckboxGridLayout->addWidget(cb, 2, 1, 1, 1);
-    dialog->registerWidgetHelp(cb, tr("Use Blit Swap Chain"), tr("Unchecked"),
-                               tr("Uses a blit presentation model instead of flipping when using the Direct3D 11 "
-                                  "renderer. This usually results in slower performance, but may be required for some "
-                                  "streaming applications, or to uncap framerates on some systems."));
-  }
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.blitSwapChain, "Display", "UseBlitSwapChain", false);
+  dialog->registerWidgetHelp(m_ui.blitSwapChain, tr("Use Blit Swap Chain"), tr("Unchecked"),
+                             tr("Uses a blit presentation model instead of flipping when using the Direct3D 11 "
+                                "renderer. This usually results in slower performance, but may be required for some "
+                                "streaming applications, or to uncap framerates on some systems."));
+#else
+  m_ui.blitSwapChain->setEnabled(false);
 #endif
 }
 
@@ -185,10 +177,10 @@ void DisplaySettingsWidget::setupAdditionalUi()
       qApp->translate("DisplayCropMode", Settings::GetDisplayCropModeDisplayName(static_cast<DisplayCropMode>(i))));
   }
 
-  for (u32 i = 0; i < static_cast<u32>(GPUDownsampleMode::Count); i++)
+  for (u32 i = 0; i < static_cast<u32>(DisplayAlignment::Count); i++)
   {
-    m_ui.gpuDownsampleMode->addItem(
-      qApp->translate("GPUDownsampleMode", Settings::GetDownsampleModeDisplayName(static_cast<GPUDownsampleMode>(i))));
+    m_ui.displayAlignment->addItem(
+      qApp->translate("DisplayAlignment", Settings::GetDisplayAlignmentDisplayName(static_cast<DisplayAlignment>(i))));
   }
 }
 
@@ -201,16 +193,16 @@ void DisplaySettingsWidget::populateGPUAdaptersAndResolutions()
   {
 #ifdef _WIN32
     case GPURenderer::HardwareD3D11:
-      aml = FrontendCommon::D3D11HostDisplay::StaticGetAdapterAndModeList();
+      aml = D3D11HostDisplay::StaticGetAdapterAndModeList();
       break;
 
     case GPURenderer::HardwareD3D12:
-      aml = FrontendCommon::D3D12HostDisplay::StaticGetAdapterAndModeList();
+      aml = D3D12HostDisplay::StaticGetAdapterAndModeList();
       break;
 #endif
 #ifdef WITH_VULKAN
     case GPURenderer::HardwareVulkan:
-      aml = FrontendCommon::VulkanHostDisplay::StaticGetAdapterAndModeList(nullptr);
+      aml = VulkanHostDisplay::StaticGetAdapterAndModeList(nullptr);
       threaded_presentation_supported = true;
       break;
 #endif

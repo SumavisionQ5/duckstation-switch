@@ -105,24 +105,27 @@
 
 // GL includes
 #include "common/gl/loader.h"
+#include "common/gl/texture.h"
+#include "common/log.h"
+Log_SetChannel(ImGui_ImplOpenGL3);
 
 // OpenGL Data
 struct ImGui_ImplOpenGL3_Data
 {
-    GLuint          GlVersion;               // Extracted at runtime using GL_MAJOR_VERSION, GL_MINOR_VERSION queries (e.g. 320 for GL 3.2)
-    char            GlslVersionString[32];   // Specified by user or detected based on compile time GL settings.
-    GLuint          FontTexture;
-    GLuint          ShaderHandle;
-    GLint           AttribLocationTex;       // Uniforms location
-    GLint           AttribLocationProjMtx;
-    GLuint          AttribLocationVtxPos;    // Vertex attributes location
-    GLuint          AttribLocationVtxUV;
-    GLuint          AttribLocationVtxColor;
-    unsigned int    VboHandle, ElementsHandle, VaoHandle;
-    GLsizeiptr      VertexBufferSize;
-    GLsizeiptr      IndexBufferSize;
+    GLuint          GlVersion = 0;               // Extracted at runtime using GL_MAJOR_VERSION, GL_MINOR_VERSION queries (e.g. 320 for GL 3.2)
+    char            GlslVersionString[32] = {};   // Specified by user or detected based on compile time GL settings.
+    GL::Texture     FontTexture;
+    GLuint          ShaderHandle = 0;
+    GLint           AttribLocationTex = 0;       // Uniforms location
+    GLint           AttribLocationProjMtx = 0;
+    GLuint          AttribLocationVtxPos = 0;    // Vertex attributes location
+    GLuint          AttribLocationVtxUV = 0;
+    GLuint          AttribLocationVtxColor = 0;
+    unsigned int    VboHandle = 0, ElementsHandle = 0, VaoHandle = 0;
+    GLsizeiptr      VertexBufferSize = 0;
+    GLsizeiptr      IndexBufferSize = 0;
 
-    ImGui_ImplOpenGL3_Data() { memset((void*)this, 0, sizeof(*this)); }
+    ImGui_ImplOpenGL3_Data() = default;
 };
 
 // Backend data stored in io.BackendRendererUserData to allow support for multiple Dear ImGui contexts
@@ -167,6 +170,13 @@ bool    ImGui_ImplOpenGL3_Init(const char* glsl_version)
     IM_ASSERT((int)strlen(glsl_version) + 2 < IM_ARRAYSIZE(bd->GlslVersionString));
     strcpy(bd->GlslVersionString, glsl_version);
     strcat(bd->GlslVersionString, "\n");
+
+    if (!glDrawElementsBaseVertex)
+    {
+      Log_ErrorPrintf("Missing glDrawElementsBaseVertex()");
+      return false;
+    }
+
     return ImGui_ImplOpenGL3_CreateDeviceObjects();
 }
 
@@ -292,7 +302,9 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
                 glScissor((int)clip_min.x, (int)((float)fb_height - clip_max.y), (int)(clip_max.x - clip_min.x), (int)(clip_max.y - clip_min.y));
 
                 // Bind texture, Draw
-                glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)pcmd->GetTexID());
+                const GL::Texture* tex = static_cast<const GL::Texture*>(pcmd->GetTexID());
+                if (tex)
+                  tex->Bind();
                 glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)pcmd->ElemCount, sizeof(ImDrawIdx) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, (void*)(intptr_t)(pcmd->IdxOffset * sizeof(ImDrawIdx)), (GLint)pcmd->VtxOffset);
             }
         }
@@ -313,32 +325,19 @@ bool ImGui_ImplOpenGL3_CreateFontsTexture()
 
     // Upload texture to graphics system
     // (Bilinear sampling is required by default. Set 'io.Fonts->Flags |= ImFontAtlasFlags_NoBakedLines' or 'style.AntiAliasedLinesUseTex = false' to allow point/nearest sampling)
-    if (bd->FontTexture == 0)
-      glGenTextures(1, &bd->FontTexture);
-
-    glBindTexture(GL_TEXTURE_2D, bd->FontTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    bd->FontTexture.Create(width, height, 1, 1, 1, GPUTexture::Format::RGBA8, pixels);
+    bd->FontTexture.SetLinearFilter(true);
 
     // Store our identifier
-    io.Fonts->SetTexID((ImTextureID)(intptr_t)bd->FontTexture);
+    io.Fonts->SetTexID(&bd->FontTexture);
     return true;
 }
 
 void ImGui_ImplOpenGL3_DestroyFontsTexture()
 {
-    ImGuiIO& io = ImGui::GetIO();
     ImGui_ImplOpenGL3_Data* bd = ImGui_ImplOpenGL3_GetBackendData();
-    if (bd->FontTexture)
-    {
-        glDeleteTextures(1, &bd->FontTexture);
-        io.Fonts->SetTexID(0);
-        bd->FontTexture = 0;
-    }
+    if (bd->FontTexture.IsValid())
+      bd->FontTexture.Destroy();
 }
 
 // If you get an error please report on github. You may try different GL context version or GLSL version. See GL<>GLSL version table at the top of this file.

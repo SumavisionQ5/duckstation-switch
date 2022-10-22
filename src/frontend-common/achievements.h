@@ -13,7 +13,7 @@ class CDImage;
 class StateWrapper;
 
 namespace Achievements {
-enum class AchievementCategory : u32
+enum class AchievementCategory : u8
 {
   Local = 0,
   Core = 3,
@@ -36,6 +36,7 @@ struct Achievement
   AchievementCategory category;
   bool locked;
   bool active;
+  bool primed;
 };
 
 struct Leaderboard
@@ -50,6 +51,7 @@ struct LeaderboardEntry
 {
   std::string user;
   std::string formatted_score;
+  time_t submitted;
   u32 rank;
   bool is_self;
 };
@@ -71,6 +73,7 @@ static ALWAYS_INLINE bool IsUsingRAIntegration()
 bool IsActive();
 bool IsLoggedIn();
 bool ChallengeModeActive();
+bool LeaderboardsActive();
 bool IsTestModeActive();
 bool IsUnofficialTestModeActive();
 bool IsRichPresenceEnabled();
@@ -85,13 +88,13 @@ void Initialize();
 void UpdateSettings(const Settings& old_config);
 
 /// Called when the system is being reset. If it returns false, the reset should be aborted.
-bool Reset();
+bool ConfirmSystemReset();
 
 /// Called when the system is being shut down. If Shutdown() returns false, the shutdown should be aborted.
-bool Shutdown();
+bool OnSystemShutdown();
 
 /// Called when the system is being paused and resumed.
-void OnPaused(bool paused);
+void OnSystemPaused(bool paused);
 
 /// Called once a frame at vsync time on the CPU thread.
 void FrameUpdate();
@@ -116,7 +119,7 @@ void Logout();
 void GameChanged(const std::string& path, CDImage* image);
 
 /// Re-enables hardcode mode if it is enabled in the settings.
-void ResetChallengeMode();
+bool ResetChallengeMode();
 
 /// Forces hardcore mode off until next reset.
 void DisableChallengeMode();
@@ -141,15 +144,14 @@ std::optional<bool> TryEnumerateLeaderboardEntries(u32 id, std::function<bool(co
 const Leaderboard* GetLeaderboardByID(u32 id);
 u32 GetLeaderboardCount();
 bool IsLeaderboardTimeType(const Leaderboard& leaderboard);
+u32 GetPrimedAchievementCount();
 
 const Achievement* GetAchievementByID(u32 id);
 std::pair<u32, u32> GetAchievementProgress(const Achievement& achievement);
-std::string GetAchievementProgressText(const Achievement& achievement);
-const std::string& GetAchievementBadgePath(const Achievement& achievement, bool download_if_missing = true);
+TinyString GetAchievementProgressText(const Achievement& achievement);
+const std::string& GetAchievementBadgePath(const Achievement& achievement, bool download_if_missing = true,
+                                           bool force_unlocked_icon = false);
 std::string GetAchievementBadgeURL(const Achievement& achievement);
-
-void UnlockAchievement(u32 achievement_id, bool add_notification = true);
-void SubmitLeaderboard(u32 leaderboard_id, int value);
 
 #ifdef WITH_RAINTEGRATION
 void SwitchToRAIntegration();

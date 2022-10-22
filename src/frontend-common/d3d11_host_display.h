@@ -1,7 +1,7 @@
 #pragma once
-#include "common/d3d11/staging_texture.h"
 #include "common/d3d11/stream_buffer.h"
 #include "common/d3d11/texture.h"
+#include "common/timer.h"
 #include "common/window_info.h"
 #include "common/windows_headers.h"
 #include "core/host_display.h"
@@ -13,8 +13,6 @@
 #include <string_view>
 #include <vector>
 #include <wrl/client.h>
-
-namespace FrontendCommon {
 
 class D3D11HostDisplay final : public HostDisplay
 {
@@ -32,11 +30,8 @@ public:
   bool HasRenderDevice() const override;
   bool HasRenderSurface() const override;
 
-  bool CreateRenderDevice(const WindowInfo& wi, std::string_view adapter_name, bool debug_device,
-                          bool threaded_presentation) override;
-  bool InitializeRenderDevice(std::string_view shader_cache_directory, bool debug_device,
-                              bool threaded_presentation) override;
-  void DestroyRenderDevice() override;
+  bool CreateRenderDevice(const WindowInfo& wi) override;
+  bool InitializeRenderDevice() override;
 
   bool MakeRenderContextCurrent() override;
   bool DoneRenderContextCurrent() override;
@@ -51,12 +46,15 @@ public:
 
   bool SetPostProcessingChain(const std::string_view& config) override;
 
-  std::unique_ptr<HostDisplayTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                                    HostDisplayPixelFormat format, const void* data, u32 data_stride,
-                                                    bool dynamic = false) override;
-  bool DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y, u32 width,
-                       u32 height, void* out_data, u32 out_data_stride) override;
-  bool SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const override;
+  std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
+                                            GPUTexture::Format format, const void* data, u32 data_stride,
+                                            bool dynamic = false) override;
+  bool BeginTextureUpdate(GPUTexture* texture, u32 width, u32 height, void** out_buffer, u32* out_pitch) override;
+  void EndTextureUpdate(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height) override;
+  bool UpdateTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch) override;
+  bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
+                       u32 out_data_stride) override;
+  bool SupportsTextureFormat(GPUTexture::Format format) const override;
 
   bool GetHostRefreshRate(float* refresh_rate) override;
 
@@ -67,7 +65,7 @@ public:
 
   bool Render(bool skip_present) override;
   bool RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
-                        HostDisplayPixelFormat* out_format) override;
+                        GPUTexture::Format* out_format) override;
 
   static AdapterAndModeList StaticGetAdapterAndModeList();
 
@@ -76,6 +74,9 @@ protected:
   static constexpr u8 NUM_TIMESTAMP_QUERIES = 3;
 
   static AdapterAndModeList GetAdapterAndModeList(IDXGIFactory* dxgi_factory);
+
+  bool CheckStagingBufferSize(u32 width, u32 height, DXGI_FORMAT format);
+  void DestroyStagingBuffer();
 
   bool CreateResources() override;
   void DestroyResources() override;
@@ -91,10 +92,9 @@ protected:
   void RenderSoftwareCursor();
   void RenderImGui();
 
-  void RenderDisplay(s32 left, s32 top, s32 width, s32 height, void* texture_handle, u32 texture_width,
-                     s32 texture_height, s32 texture_view_x, s32 texture_view_y, s32 texture_view_width,
-                     s32 texture_view_height, bool linear_filter);
-  void RenderSoftwareCursor(s32 left, s32 top, s32 width, s32 height, HostDisplayTexture* texture_handle);
+  void RenderDisplay(s32 left, s32 top, s32 width, s32 height, D3D11::Texture* texture, s32 texture_view_x,
+                     s32 texture_view_y, s32 texture_view_width, s32 texture_view_height, bool linear_filter);
+  void RenderSoftwareCursor(s32 left, s32 top, s32 width, s32 height, GPUTexture* texture_handle);
 
   struct PostProcessingStage
   {
@@ -106,9 +106,8 @@ protected:
 
   bool CheckPostProcessingRenderTargets(u32 target_width, u32 target_height);
   void ApplyPostProcessingChain(ID3D11RenderTargetView* final_target, s32 final_left, s32 final_top, s32 final_width,
-                                s32 final_height, void* texture_handle, u32 texture_width, s32 texture_height,
-                                s32 texture_view_x, s32 texture_view_y, s32 texture_view_width, s32 texture_view_height,
-                                u32 target_width, u32 target_height);
+                                s32 final_height, D3D11::Texture* texture, s32 texture_view_x, s32 texture_view_y,
+                                s32 texture_view_width, s32 texture_view_height, u32 target_width, u32 target_height);
 
   bool CreateTimestampQueries();
   void DestroyTimestampQueries();
@@ -131,18 +130,23 @@ protected:
   ComPtr<ID3D11PixelShader> m_display_alpha_pixel_shader;
   ComPtr<ID3D11SamplerState> m_point_sampler;
   ComPtr<ID3D11SamplerState> m_linear_sampler;
+  ComPtr<ID3D11SamplerState> m_border_sampler;
 
   D3D11::StreamBuffer m_display_uniform_buffer;
-  D3D11::AutoStagingTexture m_readback_staging_texture;
+  ComPtr<ID3D11Texture2D> m_readback_staging_texture;
+  DXGI_FORMAT m_readback_staging_texture_format = DXGI_FORMAT_UNKNOWN;
+  u32 m_readback_staging_texture_width = 0;
+  u32 m_readback_staging_texture_height = 0;
 
   bool m_allow_tearing_supported = false;
   bool m_using_flip_model_swap_chain = true;
   bool m_using_allow_tearing = false;
   bool m_vsync = true;
 
-  PostProcessingChain m_post_processing_chain;
+  FrontendCommon::PostProcessingChain m_post_processing_chain;
   D3D11::Texture m_post_processing_input_texture;
   std::vector<PostProcessingStage> m_post_processing_stages;
+  Common::Timer m_post_processing_timer;
 
   std::array<std::array<ComPtr<ID3D11Query>, 3>, NUM_TIMESTAMP_QUERIES> m_timestamp_queries = {};
   u8 m_read_timestamp_query = 0;
@@ -151,5 +155,3 @@ protected:
   bool m_timestamp_query_started = false;
   float m_accumulated_gpu_time = 0.0f;
 };
-
-} // namespace FrontendCommon

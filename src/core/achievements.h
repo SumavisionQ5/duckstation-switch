@@ -9,12 +9,13 @@ namespace Achievements {
 #ifdef WITH_CHEEVOS
 
 // Implemented in Host.
-extern bool Reset();
+extern bool ConfirmSystemReset();
+extern void ResetRuntime();
 extern bool DoState(StateWrapper& sw);
 extern void GameChanged(const std::string& path, CDImage* image);
 
 /// Re-enables hardcode mode if it is enabled in the settings.
-extern void ResetChallengeMode();
+extern bool ResetChallengeMode();
 
 /// Forces hardcore mode off until next reset.
 extern void DisableChallengeMode();
@@ -28,10 +29,11 @@ extern bool ChallengeModeActive();
 #else
 
 // Make noops when compiling without cheevos.
-static inline bool Reset()
+static inline bool ConfirmSystemReset()
 {
   return true;
 }
+static inline void ResetRuntime() {}
 static inline bool DoState(StateWrapper& sw)
 {
   return true;
@@ -41,7 +43,10 @@ static constexpr inline bool ChallengeModeActive()
   return false;
 }
 
-static inline void ResetChallengeMode() {}
+static inline bool ResetChallengeMode()
+{
+  return false;
+}
 
 static inline void DisableChallengeMode() {}
 

@@ -732,16 +732,13 @@ bool EmuThread::acquireHostDisplay(RenderAPI api)
     return false;
   }
 
-  if (!g_host_display->MakeRenderContextCurrent() ||
-      !g_host_display->InitializeRenderDevice(EmuFolders::Cache, g_settings.gpu_use_debug_device,
-                                              g_settings.gpu_threaded_presentation) ||
+  if (!g_host_display->MakeRenderContextCurrent() || !g_host_display->InitializeRenderDevice() ||
       !ImGuiManager::Initialize() || !CommonHost::CreateHostDisplayResources())
   {
     ImGuiManager::Shutdown();
     CommonHost::ReleaseHostDisplayResources();
-    g_host_display->DestroyRenderDevice();
-    emit destroyDisplayRequested();
     g_host_display.reset();
+    emit destroyDisplayRequested();
     return false;
   }
 
@@ -811,9 +808,8 @@ void EmuThread::releaseHostDisplay()
 
   CommonHost::ReleaseHostDisplayResources();
   ImGuiManager::Shutdown();
-  g_host_display->DestroyRenderDevice();
-  emit destroyDisplayRequested();
   g_host_display.reset();
+  emit destroyDisplayRequested();
   m_is_fullscreen = false;
 }
 
@@ -1078,21 +1074,6 @@ void Host::CancelGameListRefresh()
   QMetaObject::invokeMethod(g_main_window, "cancelGameListRefresh", Qt::BlockingQueuedConnection);
 }
 
-void Host::DownloadCoversAsync(std::vector<std::string> url_templates)
-{
-  //
-}
-
-void Host::CancelCoversDownload()
-{
-  //
-}
-
-void Host::CoversChanged()
-{
-  //
-}
-
 void EmuThread::loadState(const QString& filename)
 {
   if (!isOnThread())
@@ -1113,11 +1094,11 @@ void EmuThread::loadState(bool global, qint32 slot)
   }
 
   // shouldn't even get here if we don't have a running game
-  if (!global && System::GetRunningCode().empty())
+  if (!global && System::GetRunningSerial().empty())
     return;
 
   bootOrLoadState(global ? System::GetGlobalSaveStateFileName(slot) :
-                           System::GetGameSaveStateFileName(System::GetRunningCode(), slot));
+                           System::GetGameSaveStateFileName(System::GetRunningSerial(), slot));
 }
 
 void EmuThread::saveState(const QString& filename, bool block_until_done /* = false */)
@@ -1144,11 +1125,11 @@ void EmuThread::saveState(bool global, qint32 slot, bool block_until_done /* = f
     return;
   }
 
-  if (!global && System::GetRunningCode().empty())
+  if (!global && System::GetRunningSerial().empty())
     return;
 
   System::SaveState((global ? System::GetGlobalSaveStateFileName(slot) :
-                              System::GetGameSaveStateFileName(System::GetRunningCode(), slot))
+                              System::GetGameSaveStateFileName(System::GetRunningSerial(), slot))
                       .c_str(),
                     g_settings.create_save_state_backups);
 }
@@ -1579,68 +1560,6 @@ std::optional<std::time_t> Host::GetResourceFileTimestamp(const char* filename)
   return sd.ModificationTime;
 }
 
-void Host::SetBaseBoolSettingValue(const char* section, const char* key, bool value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetBoolValue(section, key, value);
-  QtHost::QueueSettingsSave();
-}
-
-void Host::SetBaseIntSettingValue(const char* section, const char* key, int value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetIntValue(section, key, value);
-  QtHost::QueueSettingsSave();
-}
-
-void Host::SetBaseFloatSettingValue(const char* section, const char* key, float value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetFloatValue(section, key, value);
-  QtHost::QueueSettingsSave();
-}
-
-void Host::SetBaseStringSettingValue(const char* section, const char* key, const char* value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetStringValue(section, key, value);
-  QtHost::QueueSettingsSave();
-}
-
-void Host::SetBaseStringListSettingValue(const char* section, const char* key, const std::vector<std::string>& values)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetStringList(section, key, values);
-  QtHost::QueueSettingsSave();
-}
-
-bool Host::AddValueToBaseStringListSetting(const char* section, const char* key, const char* value)
-{
-  auto lock = Host::GetSettingsLock();
-  if (!s_base_settings_interface->AddToStringList(section, key, value))
-    return false;
-
-  QtHost::QueueSettingsSave();
-  return true;
-}
-
-bool Host::RemoveValueFromBaseStringListSetting(const char* section, const char* key, const char* value)
-{
-  auto lock = Host::GetSettingsLock();
-  if (!s_base_settings_interface->RemoveFromStringList(section, key, value))
-    return false;
-
-  QtHost::QueueSettingsSave();
-  return true;
-}
-
-void Host::DeleteBaseSettingValue(const char* section, const char* key)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->DeleteValue(section, key);
-  QtHost::QueueSettingsSave();
-}
-
 void Host::CommitBaseSettingChanges()
 {
   if (g_emu_thread->isOnThread())
@@ -1793,13 +1712,13 @@ void QtHost::QueueSettingsSave()
   s_settings_save_timer->start(SETTINGS_SAVE_DELAY);
 }
 
-void Host::RequestSystemShutdown(bool allow_confirm, bool allow_save_state)
+void Host::RequestSystemShutdown(bool allow_confirm, bool save_state)
 {
   if (!System::IsValid())
     return;
 
   QMetaObject::invokeMethod(g_main_window, "requestShutdown", Qt::QueuedConnection, Q_ARG(bool, allow_confirm),
-                            Q_ARG(bool, allow_save_state), Q_ARG(bool, false));
+                            Q_ARG(bool, true), Q_ARG(bool, save_state), Q_ARG(bool, false));
 }
 
 void Host::RequestExit(bool save_state_if_running)
@@ -1886,6 +1805,14 @@ void QtHost::HookSignals()
 {
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
+
+#ifdef __linux__
+  // Ignore SIGCHLD by default on Linux, since we kick off aplay asynchronously.
+  struct sigaction sa_chld = {};
+  sigemptyset(&sa_chld.sa_mask);
+  sa_chld.sa_flags = SA_SIGINFO | SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT;
+  sigaction(SIGCHLD, &sa_chld, nullptr);
+#endif
 }
 
 void QtHost::InitializeEarlyConsole()

@@ -23,6 +23,11 @@ ControllerType AnalogController::GetType() const
   return ControllerType::AnalogController;
 }
 
+bool AnalogController::InAnalogMode() const
+{
+  return m_analog_mode;
+}
+
 void AnalogController::Reset()
 {
   m_command = Command::Idle;
@@ -45,7 +50,7 @@ void AnalogController::Reset()
 
   if (m_force_analog_on_reset)
   {
-    if (g_settings.controller_disable_analog_mode_forcing)
+    if (g_settings.controller_disable_analog_mode_forcing || System::IsRunningBIOS())
     {
       Host::AddIconOSDMessage(
         fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
@@ -136,7 +141,7 @@ void AnalogController::SetBindState(u32 index, float value)
   if (index == static_cast<s32>(Button::Analog))
   {
     // analog toggle
-    if (value >= 0.5f)
+    if (value >= m_button_deadzone)
     {
       if (m_command == Command::Idle)
         ProcessAnalogModeToggle();
@@ -152,8 +157,7 @@ void AnalogController::SetBindState(u32 index, float value)
     if (sub_index >= static_cast<u32>(m_half_axis_state.size()))
       return;
 
-    value = ApplyAnalogDeadzoneSensitivity(m_analog_deadzone, m_analog_sensitivity, value);
-    const u8 u8_value = static_cast<u8>(std::clamp(value * 255.0f, 0.0f, 255.0f));
+    const u8 u8_value = static_cast<u8>(std::clamp(value * m_analog_sensitivity * 255.0f, 0.0f, 255.0f));
     if (u8_value == m_half_axis_state[sub_index])
       return;
 
@@ -163,31 +167,73 @@ void AnalogController::SetBindState(u32 index, float value)
 #define MERGE(pos, neg)                                                                                                \
   ((m_half_axis_state[static_cast<u32>(pos)] != 0) ? (127u + ((m_half_axis_state[static_cast<u32>(pos)] + 1u) / 2u)) : \
                                                      (127u - (m_half_axis_state[static_cast<u32>(neg)] / 2u)))
-
     switch (static_cast<HalfAxis>(sub_index))
     {
       case HalfAxis::LLeft:
       case HalfAxis::LRight:
-        m_axis_state[static_cast<u8>(Axis::LeftX)] = MERGE(HalfAxis::LRight, HalfAxis::LLeft);
+        m_axis_state[static_cast<u8>(Axis::LeftX)] = ((m_invert_left_stick & 1u) != 0u) ?
+                                                       MERGE(HalfAxis::LLeft, HalfAxis::LRight) :
+                                                       MERGE(HalfAxis::LRight, HalfAxis::LLeft);
         break;
 
       case HalfAxis::LDown:
       case HalfAxis::LUp:
-        m_axis_state[static_cast<u8>(Axis::LeftY)] = MERGE(HalfAxis::LDown, HalfAxis::LUp);
+        m_axis_state[static_cast<u8>(Axis::LeftY)] = ((m_invert_left_stick & 2u) != 0u) ?
+                                                       MERGE(HalfAxis::LUp, HalfAxis::LDown) :
+                                                       MERGE(HalfAxis::LDown, HalfAxis::LUp);
         break;
 
       case HalfAxis::RLeft:
       case HalfAxis::RRight:
-        m_axis_state[static_cast<u8>(Axis::RightX)] = MERGE(HalfAxis::RRight, HalfAxis::RLeft);
+        m_axis_state[static_cast<u8>(Axis::RightX)] = ((m_invert_right_stick & 1u) != 0u) ?
+                                                        MERGE(HalfAxis::RLeft, HalfAxis::RRight) :
+                                                        MERGE(HalfAxis::RRight, HalfAxis::RLeft);
         break;
 
       case HalfAxis::RDown:
       case HalfAxis::RUp:
-        m_axis_state[static_cast<u8>(Axis::RightY)] = MERGE(HalfAxis::RDown, HalfAxis::RUp);
+        m_axis_state[static_cast<u8>(Axis::RightY)] = ((m_invert_right_stick & 2u) != 0u) ?
+                                                        MERGE(HalfAxis::RUp, HalfAxis::RDown) :
+                                                        MERGE(HalfAxis::RDown, HalfAxis::RUp);
         break;
 
       default:
         break;
+    }
+
+    if (m_analog_deadzone > 0.0f)
+    {
+#define MERGE_F(pos, neg)                                                                                              \
+  ((m_half_axis_state[static_cast<u32>(pos)] != 0) ?                                                                   \
+     (static_cast<float>(m_half_axis_state[static_cast<u32>(pos)]) / 255.0f) :                                         \
+     (static_cast<float>(m_half_axis_state[static_cast<u32>(neg)]) / -255.0f))
+
+      float pos_x, pos_y;
+      if (static_cast<HalfAxis>(sub_index) < HalfAxis::RLeft)
+      {
+        pos_x = ((m_invert_left_stick & 1u) != 0u) ? MERGE_F(HalfAxis::LLeft, HalfAxis::LRight) :
+                                                     MERGE_F(HalfAxis::LRight, HalfAxis::LLeft);
+        pos_y = ((m_invert_left_stick & 2u) != 0u) ? MERGE_F(HalfAxis::LUp, HalfAxis::LDown) :
+                                                     MERGE_F(HalfAxis::LDown, HalfAxis::LUp);
+      }
+      else
+      {
+        pos_x = ((m_invert_right_stick & 1u) != 0u) ? MERGE_F(HalfAxis::RLeft, HalfAxis::RRight) :
+                                                      MERGE_F(HalfAxis::RRight, HalfAxis::RLeft);
+        ;
+        pos_y = ((m_invert_right_stick & 2u) != 0u) ? MERGE_F(HalfAxis::RUp, HalfAxis::RDown) :
+                                                      MERGE_F(HalfAxis::RDown, HalfAxis::RUp);
+      }
+
+      if (InCircularDeadzone(m_analog_deadzone, pos_x, pos_y))
+      {
+        // Set to 127 (center).
+        if (static_cast<HalfAxis>(sub_index) < HalfAxis::RLeft)
+          m_axis_state[static_cast<u8>(Axis::LeftX)] = m_axis_state[static_cast<u8>(Axis::LeftY)] = 127;
+        else
+          m_axis_state[static_cast<u8>(Axis::RightX)] = m_axis_state[static_cast<u8>(Axis::RightY)] = 127;
+      }
+#undef MERGE_F
     }
 
 #undef MERGE
@@ -197,7 +243,7 @@ void AnalogController::SetBindState(u32 index, float value)
 
   const u16 bit = u16(1) << static_cast<u8>(index);
 
-  if (value >= 0.5f)
+  if (value >= m_button_deadzone)
   {
     if (m_button_state & bit)
       System::SetRunaheadReplayFlag();
@@ -779,6 +825,11 @@ static const Controller::ControllerBindingInfo s_binding_info[] = {
 #undef BUTTON
 };
 
+static const char* s_invert_settings[] = {TRANSLATABLE("AnalogController", "Not Inverted"),
+                                          TRANSLATABLE("AnalogController", "Invert Left/Right"),
+                                          TRANSLATABLE("AnalogController", "Invert Up/Down"),
+                                          TRANSLATABLE("AnalogController", "Invert Left/Right + Up/Down"), nullptr};
+
 static const SettingInfo s_settings[] = {
   {SettingInfo::Type::Boolean, "ForceAnalogOnReset", TRANSLATABLE("AnalogController", "Force Analog Mode on Reset"),
    TRANSLATABLE("AnalogController", "Forces the controller to analog mode when the console is reset/powered on. May "
@@ -792,17 +843,25 @@ static const SettingInfo s_settings[] = {
   {SettingInfo::Type::Float, "AnalogDeadzone", TRANSLATABLE("AnalogController", "Analog Deadzone"),
    TRANSLATABLE("AnalogController",
                 "Sets the analog stick deadzone, i.e. the fraction of the stick movement which will be ignored."),
-   "0.00f", "0.00f", "1.00f", "0.01f", "%.0f%%", 100.0f},
+   "0.00f", "0.00f", "1.00f", "0.01f", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "AnalogSensitivity", TRANSLATABLE("AnalogController", "Analog Sensitivity"),
    TRANSLATABLE(
      "AnalogController",
      "Sets the analog stick axis scaling factor. A value between 130% and 140% is recommended when using recent "
      "controllers, e.g. DualShock 4, Xbox One Controller."),
-   "1.33f", "0.01f", "2.00f", "0.01f", "%.0f%%", 100.0f},
+   "1.33f", "0.01f", "2.00f", "0.01f", "%.0f%%", nullptr, 100.0f},
+  {SettingInfo::Type::Float, "ButtonDeadzone", "Button/Trigger Deadzone",
+   "Sets the deadzone for activating buttons/triggers, i.e. the fraction of the trigger which will be ignored.", "0.25",
+   "0.00", "1.00", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Integer, "VibrationBias", TRANSLATABLE("AnalogController", "Vibration Bias"),
    TRANSLATABLE("AnalogController", "Sets the rumble bias value. If rumble in some games is too weak or not "
                                     "functioning, try increasing this value."),
-   "8", "0", "255", "1", "%d", 1.0f}};
+   "8", "0", "255", "1", "%d", nullptr, 1.0f},
+  {SettingInfo::Type::IntegerList, "InvertLeftStick", "Invert Left Stick",
+   "Inverts the direction of the left analog stick.", "0", "0", "3", nullptr, nullptr, s_invert_settings, 0.0f},
+  {SettingInfo::Type::IntegerList, "InvertRightStick", "Invert Right Stick",
+   "Inverts the direction of the right analog stick.", "0", "0", "3", nullptr, nullptr, s_invert_settings, 0.0f},
+};
 
 const Controller::ControllerInfo AnalogController::INFO = {ControllerType::AnalogController,
                                                            "AnalogController",
@@ -821,5 +880,8 @@ void AnalogController::LoadSettings(SettingsInterface& si, const char* section)
   m_analog_deadzone = std::clamp(si.GetFloatValue(section, "AnalogDeadzone", DEFAULT_STICK_DEADZONE), 0.0f, 1.0f);
   m_analog_sensitivity =
     std::clamp(si.GetFloatValue(section, "AnalogSensitivity", DEFAULT_STICK_SENSITIVITY), 0.01f, 3.0f);
+  m_button_deadzone = std::clamp(si.GetFloatValue(section, "ButtonDeadzone", DEFAULT_BUTTON_DEADZONE), 0.0f, 1.0f);
   m_rumble_bias = static_cast<u8>(std::min<u32>(si.GetIntValue(section, "VibrationBias", 8), 255));
+  m_invert_left_stick = static_cast<u8>(si.GetIntValue(section, "InvertLeftStick", 0));
+  m_invert_right_stick = static_cast<u8>(si.GetIntValue(section, "InvertRightStick", 0));
 }

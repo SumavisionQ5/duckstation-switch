@@ -376,68 +376,6 @@ void Host::CheckForSettingsChanges(const Settings& old_settings)
   CommonHost::CheckForSettingsChanges(old_settings);
 }
 
-void Host::SetBaseBoolSettingValue(const char* section, const char* key, bool value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetBoolValue(section, key, value);
-  NoGUIHost::SaveSettings();
-}
-
-void Host::SetBaseIntSettingValue(const char* section, const char* key, int value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetIntValue(section, key, value);
-  NoGUIHost::SaveSettings();
-}
-
-void Host::SetBaseFloatSettingValue(const char* section, const char* key, float value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetFloatValue(section, key, value);
-  NoGUIHost::SaveSettings();
-}
-
-void Host::SetBaseStringSettingValue(const char* section, const char* key, const char* value)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetStringValue(section, key, value);
-  NoGUIHost::SaveSettings();
-}
-
-void Host::SetBaseStringListSettingValue(const char* section, const char* key, const std::vector<std::string>& values)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->SetStringList(section, key, values);
-  NoGUIHost::SaveSettings();
-}
-
-bool Host::AddValueToBaseStringListSetting(const char* section, const char* key, const char* value)
-{
-  auto lock = Host::GetSettingsLock();
-  if (!s_base_settings_interface->AddToStringList(section, key, value))
-    return false;
-
-  NoGUIHost::SaveSettings();
-  return true;
-}
-
-bool Host::RemoveValueFromBaseStringListSetting(const char* section, const char* key, const char* value)
-{
-  auto lock = Host::GetSettingsLock();
-  if (!s_base_settings_interface->RemoveFromStringList(section, key, value))
-    return false;
-
-  NoGUIHost::SaveSettings();
-  return true;
-}
-
-void Host::DeleteBaseSettingValue(const char* section, const char* key)
-{
-  auto lock = Host::GetSettingsLock();
-  s_base_settings_interface->DeleteValue(section, key);
-  NoGUIHost::SaveSettings();
-}
-
 void Host::CommitBaseSettingChanges()
 {
   NoGUIHost::SaveSettings();
@@ -711,14 +649,8 @@ bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
       if (wi.has_value())
       {
         g_host_display = Host::CreateDisplayForAPI(api);
-        if (g_host_display)
-        {
-          if (!g_host_display->CreateRenderDevice(wi.value(), g_settings.gpu_adapter, g_settings.gpu_use_debug_device,
-                                                  g_settings.gpu_threaded_presentation))
-          {
-            g_host_display.reset();
-          }
-        }
+        if (g_host_display && !g_host_display->CreateRenderDevice(wi.value()))
+          g_host_display.reset();
       }
 
       if (g_host_display)
@@ -738,15 +670,13 @@ bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
     return false;
   }
 
-  if (!g_host_display->MakeRenderContextCurrent() ||
-      !g_host_display->InitializeRenderDevice(EmuFolders::Cache, g_settings.gpu_use_debug_device,
-                                              g_settings.gpu_threaded_presentation) ||
+  if (!g_host_display->MakeRenderContextCurrent() || !g_host_display->InitializeRenderDevice() ||
       !ImGuiManager::Initialize() || !CommonHost::CreateHostDisplayResources())
   {
     ImGuiManager::Shutdown();
     CommonHost::ReleaseHostDisplayResources();
-    g_host_display->DestroyRenderDevice();
     g_host_display.reset();
+    g_nogui_window->DestroyPlatformWindow();
     return false;
   }
 
@@ -780,7 +710,6 @@ void NoGUIHost::ReleaseHostDisplay()
 
   CommonHost::ReleaseHostDisplayResources();
   ImGuiManager::Shutdown();
-  g_host_display->DestroyRenderDevice();
   g_host_display.reset();
   g_nogui_window->ExecuteInMessageLoop([]() {
     g_nogui_window->DestroyPlatformWindow();
@@ -1008,23 +937,6 @@ void Host::CancelGameListRefresh()
   NoGUIHost::CancelAsyncOp();
 }
 
-void Host::DownloadCoversAsync(std::vector<std::string> url_templates)
-{
-  NoGUIHost::StartAsyncOp([url_templates = std::move(url_templates)](ProgressCallback* progress) {
-    GameList::DownloadCovers(url_templates, progress);
-  });
-}
-
-void Host::CancelCoversDownload()
-{
-  NoGUIHost::CancelAsyncOp();
-}
-
-void Host::CoversChanged()
-{
-  Host::RunOnCPUThread([]() { FullscreenUI::InvalidateCoverCache(); });
-}
-
 bool Host::IsFullscreen()
 {
   return s_is_fullscreen;
@@ -1055,12 +967,12 @@ void Host::RequestExit(bool save_state_if_running)
   s_running.store(false, std::memory_order_release);
 }
 
-void Host::RequestSystemShutdown(bool allow_confirm, bool allow_save_state)
+void Host::RequestSystemShutdown(bool allow_confirm, bool save_state)
 {
   // TODO: Confirm
   if (System::IsValid())
   {
-    Host::RunOnCPUThread([allow_save_state]() { System::ShutdownSystem(allow_save_state); });
+    Host::RunOnCPUThread([save_state]() { System::ShutdownSystem(save_state); });
   }
 }
 

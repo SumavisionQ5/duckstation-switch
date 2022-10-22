@@ -60,6 +60,7 @@ public:
   /// Default stick deadzone/sensitivity.
   static constexpr float DEFAULT_STICK_DEADZONE = 0.0f;
   static constexpr float DEFAULT_STICK_SENSITIVITY = 1.33f;
+  static constexpr float DEFAULT_BUTTON_DEADZONE = 0.25f;
 
   Controller(u32 index);
   virtual ~Controller();
@@ -84,6 +85,9 @@ public:
 
   /// Returns a bitmask of the current button states, 1 = on.
   virtual u32 GetButtonStateBits() const;
+
+  /// Returns true if the controller supports analog mode, and it is active.
+  virtual bool InAnalogMode() const;
 
   /// Returns analog input bytes packed as a u32. Values are specific to controller type.
   virtual std::optional<u32> GetAnalogInputBytes() const;
@@ -135,6 +139,9 @@ public:
   {
     return (value < deadzone) ? 0.0f : ((value - deadzone) / (1.0f - deadzone) * sensitivity);
   }
+
+  /// Returns true if the specified coordinates are inside a circular deadzone.
+  static bool InCircularDeadzone(float deadzone, float pos_x, float pos_y);
 
 protected:
   u32 m_index;

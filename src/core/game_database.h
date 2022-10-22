@@ -37,6 +37,7 @@ enum class Trait : u32
   DisablePGXP,
   DisablePGXPCulling,
   DisablePGXPTextureCorrection,
+  DisablePGXPColorCorrection,
   DisablePGXPDepthBuffer,
   ForcePGXPVertexCache,
   ForcePGXPCPUMode,
@@ -85,7 +86,6 @@ void Unload();
 
 const Entry* GetEntryForDisc(CDImage* image);
 const Entry* GetEntryForSerial(const std::string_view& serial);
-const Entry* GetEntryForCode(const std::string_view& code);
 std::string GetSerialForDisc(CDImage* image);
 std::string GetSerialForPath(const char* path);
 

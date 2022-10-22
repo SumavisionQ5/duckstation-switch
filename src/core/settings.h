@@ -17,6 +17,7 @@ struct SettingInfo
   {
     Boolean,
     Integer,
+    IntegerList,
     Float,
     String,
     Path,
@@ -31,6 +32,7 @@ struct SettingInfo
   const char* max_value;
   const char* step_value;
   const char* format;
+  const char** options;
   float multiplier;
 
   const char* StringDefaultValue() const;
@@ -106,12 +108,14 @@ struct Settings
   bool gpu_pgxp_enable = false;
   bool gpu_pgxp_culling = true;
   bool gpu_pgxp_texture_correction = true;
+  bool gpu_pgxp_color_correction = false;
   bool gpu_pgxp_vertex_cache = false;
   bool gpu_pgxp_cpu = false;
   bool gpu_pgxp_preserve_proj_fp = false;
   bool gpu_pgxp_depth_buffer = false;
   DisplayCropMode display_crop_mode = DEFAULT_DISPLAY_CROP_MODE;
   DisplayAspectRatio display_aspect_ratio = DEFAULT_DISPLAY_ASPECT_RATIO;
+  DisplayAlignment display_alignment = DEFAULT_DISPLAY_ALIGNMENT;
   u16 display_aspect_ratio_custom_numerator = 0;
   u16 display_aspect_ratio_custom_denominator = 0;
   s16 display_active_start_offset = 0;
@@ -167,12 +171,15 @@ struct Settings
 
 #ifdef WITH_CHEEVOS
   // achievements
-  bool achievements_enabled : 1;
-  bool achievements_test_mode : 1;
-  bool achievements_unofficial_test_mode : 1;
-  bool achievements_use_first_disc_from_playlist : 1;
-  bool achievements_rich_presence : 1;
-  bool achievements_challenge_mode : 1;
+  bool achievements_enabled = false;
+  bool achievements_test_mode = false;
+  bool achievements_unofficial_test_mode = false;
+  bool achievements_use_first_disc_from_playlist = true;
+  bool achievements_rich_presence = true;
+  bool achievements_challenge_mode = false;
+  bool achievements_leaderboards = true;
+  bool achievements_sound_effects = true;
+  bool achievements_primed_indicators = true;
 #endif
 
   struct DebugSettings
@@ -236,20 +243,44 @@ struct Settings
   bool log_to_window = false;
   bool log_to_file = false;
 
-  ALWAYS_INLINE bool IsUsingCodeCache() const { return (cpu_execution_mode != CPUExecutionMode::Interpreter); }
-  ALWAYS_INLINE bool IsUsingRecompiler() const { return (cpu_execution_mode == CPUExecutionMode::Recompiler); }
-  ALWAYS_INLINE bool IsUsingSoftwareRenderer() const { return (gpu_renderer == GPURenderer::Software); }
-  ALWAYS_INLINE bool IsRunaheadEnabled() const { return (runahead_frames > 0); }
+  ALWAYS_INLINE bool IsUsingCodeCache() const
+  {
+    return (cpu_execution_mode != CPUExecutionMode::Interpreter);
+  }
+  ALWAYS_INLINE bool IsUsingRecompiler() const
+  {
+    return (cpu_execution_mode == CPUExecutionMode::Recompiler);
+  }
+  ALWAYS_INLINE bool IsUsingSoftwareRenderer() const
+  {
+    return (gpu_renderer == GPURenderer::Software);
+  }
+  ALWAYS_INLINE bool IsRunaheadEnabled() const
+  {
+    return (runahead_frames > 0);
+  }
 
   ALWAYS_INLINE PGXPMode GetPGXPMode()
   {
     return gpu_pgxp_enable ? (gpu_pgxp_cpu ? PGXPMode::CPU : PGXPMode::Memory) : PGXPMode::Disabled;
   }
 
-  ALWAYS_INLINE bool UsingPGXPDepthBuffer() const { return gpu_pgxp_enable && gpu_pgxp_depth_buffer; }
-  ALWAYS_INLINE bool UsingPGXPCPUMode() const { return gpu_pgxp_enable && gpu_pgxp_cpu; }
-  ALWAYS_INLINE float GetPGXPDepthClearThreshold() const { return gpu_pgxp_depth_clear_threshold * 4096.0f; }
-  ALWAYS_INLINE void SetPGXPDepthClearThreshold(float value) { gpu_pgxp_depth_clear_threshold = value / 4096.0f; }
+  ALWAYS_INLINE bool UsingPGXPDepthBuffer() const
+  {
+    return gpu_pgxp_enable && gpu_pgxp_depth_buffer;
+  }
+  ALWAYS_INLINE bool UsingPGXPCPUMode() const
+  {
+    return gpu_pgxp_enable && gpu_pgxp_cpu;
+  }
+  ALWAYS_INLINE float GetPGXPDepthClearThreshold() const
+  {
+    return gpu_pgxp_depth_clear_threshold * 4096.0f;
+  }
+  ALWAYS_INLINE void SetPGXPDepthClearThreshold(float value)
+  {
+    gpu_pgxp_depth_clear_threshold = value / 4096.0f;
+  }
 
   ALWAYS_INLINE bool IsUsingFastmem() const
   {
@@ -289,7 +320,7 @@ struct Settings
   std::string GetSharedMemoryCardPath(u32 slot) const;
 
   /// Returns the default path to a memory card for a specific game.
-  static std::string GetGameMemoryCardPath(const char* game_code, u32 slot);
+  static std::string GetGameMemoryCardPath(const char* serial, u32 slot);
 
   static void CPUOverclockPercentToFraction(u32 percent, u32* numerator, u32* denominator);
   static u32 CPUOverclockFractionToPercent(u32 numerator, u32 denominator);
@@ -353,6 +384,10 @@ struct Settings
   static std::optional<DisplayAspectRatio> ParseDisplayAspectRatio(const char* str);
   static const char* GetDisplayAspectRatioName(DisplayAspectRatio ar);
 
+  static std::optional<DisplayAlignment> ParseDisplayAlignment(const char* str);
+  static const char* GetDisplayAlignmentName(DisplayAlignment alignment);
+  static const char* GetDisplayAlignmentDisplayName(DisplayAlignment alignment);
+
   static std::optional<AudioBackend> ParseAudioBackend(const char* str);
   static const char* GetAudioBackendName(AudioBackend backend);
   static const char* GetAudioBackendDisplayName(AudioBackend backend);
@@ -412,6 +447,7 @@ struct Settings
 
   static constexpr DisplayCropMode DEFAULT_DISPLAY_CROP_MODE = DisplayCropMode::Overscan;
   static constexpr DisplayAspectRatio DEFAULT_DISPLAY_ASPECT_RATIO = DisplayAspectRatio::Auto;
+  static constexpr DisplayAlignment DEFAULT_DISPLAY_ALIGNMENT = DisplayAlignment::Center;
   static constexpr float DEFAULT_OSD_SCALE = 100.0f;
 
   static constexpr u8 DEFAULT_CDROM_READAHEAD_SECTORS = 8;

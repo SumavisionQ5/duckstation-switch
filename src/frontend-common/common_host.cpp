@@ -32,7 +32,7 @@
 #include "imgui_fullscreen.h"
 #include "imgui_manager.h"
 #include "imgui_overlays.h"
-#include "inhibit_screensaver.h"
+#include "platform_misc.h"
 #include "input_manager.h"
 #include "scmversion/scmversion.h"
 #include "util/audio_stream.h"
@@ -70,6 +70,8 @@
 Log_SetChannel(CommonHostInterface);
 
 namespace CommonHost {
+static void UpdateSessionTime(const std::string& new_serial);
+
 #ifdef WITH_DISCORD_PRESENCE
 static void SetDiscordPresenceEnabled(bool enabled);
 static void InitializeDiscordPresence();
@@ -78,6 +80,10 @@ static void UpdateDiscordPresence(bool rich_presence_only);
 static void PollDiscordPresence();
 #endif
 } // namespace CommonHost
+
+// Used to track play time. We use a monotonic timer here, in case of clock changes.
+static u64 s_session_start_time = 0;
+static std::string s_session_serial;
 
 #ifdef WITH_DISCORD_PRESENCE
 // discord rich presence
@@ -110,7 +116,7 @@ void CommonHost::Shutdown()
 #endif
 
 #ifdef WITH_CHEEVOS
-  Achievements::Shutdown();
+  Achievements::OnSystemShutdown();
 #endif
 
   InputManager::CloseSources();
@@ -136,32 +142,32 @@ std::unique_ptr<HostDisplay> Host::CreateDisplayForAPI(RenderAPI api)
   {
 #ifdef WITH_VULKAN
     case RenderAPI::Vulkan:
-      return std::make_unique<FrontendCommon::VulkanHostDisplay>();
+      return std::make_unique<VulkanHostDisplay>();
 #endif
 
 #ifdef WITH_OPENGL
     case RenderAPI::OpenGL:
     case RenderAPI::OpenGLES:
-      return std::make_unique<FrontendCommon::OpenGLHostDisplay>();
+      return std::make_unique<OpenGLHostDisplay>();
 #endif
 
 #ifdef _WIN32
     case RenderAPI::D3D12:
-      return std::make_unique<FrontendCommon::D3D12HostDisplay>();
+      return std::make_unique<D3D12HostDisplay>();
 
     case RenderAPI::D3D11:
-      return std::make_unique<FrontendCommon::D3D11HostDisplay>();
+      return std::make_unique<D3D11HostDisplay>();
 #endif
 
     default:
 #if defined(_WIN32) && defined(_M_ARM64)
-      return std::make_unique<FrontendCommon::D3D12HostDisplay>();
+      return std::make_unique<D3D12HostDisplay>();
 #elif defined(_WIN32)
-      return std::make_unique<FrontendCommon::D3D11HostDisplay>();
+      return std::make_unique<D3D11HostDisplay>();
 #elif defined(WITH_OPENGL)
-      return std::make_unique<FrontendCommon::OpenGLHostDisplay>();
+      return std::make_unique<OpenGLHostDisplay>();
 #elif defined(WITH_VULKAN)
-      return std::make_unique<FrontendCommon::VulkanHostDisplay>();
+      return std::make_unique<VulkanHostDisplay>();
 #else
       return {};
 #endif
@@ -278,6 +284,8 @@ void CommonHost::OnGameChanged(const std::string& disc_path, const std::string& 
   UpdateDiscordPresence(false);
 #endif
 
+  UpdateSessionTime(game_serial);
+
   SaveStateSelectorUI::RefreshList();
 }
 
@@ -287,17 +295,8 @@ void CommonHost::SetDefaultSettings(SettingsInterface& si)
   si.SetBoolValue("Main", "EnableDiscordPresence", false);
 #endif
 
-#ifdef WITH_CHEEVOS
-  si.SetBoolValue("Cheevos", "Enabled", false);
-  si.SetBoolValue("Cheevos", "TestMode", false);
-  si.SetBoolValue("Cheevos", "UnofficialTestMode", false);
-  si.SetBoolValue("Cheevos", "UseFirstDiscFromPlaylist", true);
-  si.DeleteValue("Cheevos", "Username");
-  si.DeleteValue("Cheevos", "Token");
-
-#ifdef WITH_RAINTEGRATION
+#if defined(WITH_CHEEVOS) && defined(WITH_RAINTEGRATION)
   si.SetBoolValue("Cheevos", "UseRAIntegration", false);
-#endif
 #endif
 }
 
@@ -372,6 +371,8 @@ void CommonHost::CheckForSettingsChanges(const Settings& old_settings)
   Achievements::UpdateSettings(old_settings);
 #endif
 
+  FullscreenUI::CheckForConfigChanges(old_settings);
+
   if (g_settings.log_level != old_settings.log_level || g_settings.log_filter != old_settings.log_filter ||
       g_settings.log_to_console != old_settings.log_to_console ||
       g_settings.log_to_debug != old_settings.log_to_debug || g_settings.log_to_window != old_settings.log_to_window ||
@@ -379,6 +380,24 @@ void CommonHost::CheckForSettingsChanges(const Settings& old_settings)
   {
     UpdateLogSettings();
   }
+}
+
+void CommonHost::UpdateSessionTime(const std::string& new_serial)
+{
+  if (s_session_serial == new_serial)
+    return;
+
+  const u64 ctime = Common::Timer::GetCurrentValue();
+  if (!s_session_serial.empty())
+  {
+    // round up to seconds
+    const std::time_t etime = static_cast<std::time_t>(std::round(Common::Timer::ConvertValueToSeconds(ctime - s_session_start_time)));
+    const std::time_t wtime = std::time(nullptr);
+    GameList::AddPlayedTimeForSerial(s_session_serial, wtime, etime);
+  }
+
+  s_session_serial = new_serial;
+  s_session_start_time = ctime;
 }
 
 void Host::SetPadVibrationIntensity(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
@@ -410,9 +429,9 @@ void Host::DisplayLoadingScreen(const char* message, int progress_min /*= -1*/, 
                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
                      ImGuiWindowFlags_NoBackground))
   {
-    HostDisplayTexture* tex = ImGuiFullscreen::GetCachedTexture("images/duck.png");
+    GPUTexture* tex = ImGuiFullscreen::GetCachedTexture("images/duck.png");
     if (tex)
-      ImGui::Image(tex->GetHandle(), ImVec2(logo_width, logo_height));
+      ImGui::Image(tex, ImVec2(logo_width, logo_height));
   }
   ImGui::End();
 
@@ -534,7 +553,7 @@ void CommonHost::UpdateDiscordPresence(bool rich_presence_only)
   if (!System::IsShutdown())
   {
     details_string.AppendFormattedString("%s (%s)", System::GetRunningTitle().c_str(),
-                                         System::GetRunningCode().c_str());
+                                         System::GetRunningSerial().c_str());
   }
   else
   {
@@ -598,7 +617,7 @@ static void HotkeyLoadStateSlot(bool global, s32 slot)
   if (!System::IsValid())
     return;
 
-  if (!global && System::GetRunningCode().empty())
+  if (!global && System::GetRunningSerial().empty())
   {
     Host::AddKeyedOSDMessage("LoadState", TRANSLATABLE("OSDMessage", "Cannot load state for game without serial."),
                              5.0f);
@@ -606,7 +625,7 @@ static void HotkeyLoadStateSlot(bool global, s32 slot)
   }
 
   std::string path(global ? System::GetGlobalSaveStateFileName(slot) :
-                            System::GetGameSaveStateFileName(System::GetRunningCode(), slot));
+                            System::GetGameSaveStateFileName(System::GetRunningSerial(), slot));
   if (!FileSystem::FileExists(path.c_str()))
   {
     Host::AddKeyedOSDMessage("LoadState",
@@ -622,7 +641,7 @@ static void HotkeySaveStateSlot(bool global, s32 slot)
   if (!System::IsValid())
     return;
 
-  if (!global && System::GetRunningCode().empty())
+  if (!global && System::GetRunningSerial().empty())
   {
     Host::AddKeyedOSDMessage("LoadState", TRANSLATABLE("OSDMessage", "Cannot save state for game without serial."),
                              5.0f);
@@ -630,7 +649,7 @@ static void HotkeySaveStateSlot(bool global, s32 slot)
   }
 
   std::string path(global ? System::GetGlobalSaveStateFileName(slot) :
-                            System::GetGameSaveStateFileName(System::GetRunningCode(), slot));
+                            System::GetGameSaveStateFileName(System::GetRunningSerial(), slot));
   System::SaveState(path.c_str(), g_settings.create_save_state_backups);
 }
 

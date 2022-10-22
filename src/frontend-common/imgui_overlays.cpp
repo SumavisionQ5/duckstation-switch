@@ -49,14 +49,15 @@ static bool s_save_state_selector_ui_open = false;
 
 void ImGuiManager::RenderOverlays()
 {
-  if (System::IsValid())
+  const System::State state = System::GetState();
+  if (state != System::State::Shutdown)
   {
     DrawPerformanceOverlay();
 
-    if (g_settings.display_show_enhancements)
+    if (g_settings.display_show_enhancements && state != System::State::Paused)
       DrawEnhancementsOverlay();
 
-    if (g_settings.display_show_inputs)
+    if (g_settings.display_show_inputs && state != System::State::Paused)
       DrawInputsOverlay();
 
     if (s_save_state_selector_ui_open)
@@ -161,10 +162,46 @@ void ImGuiManager::DrawPerformanceOverlay()
       DRAW_LINE(fixed_font, text, IM_COL32(255, 255, 255, 255));
 
       text.Clear();
-      if (g_settings.cpu_overclock_active)
-        text.Fmt("CPU[{}]: ", g_settings.GetCPUOverclockPercent());
+      if (g_settings.cpu_overclock_active || (!g_settings.IsUsingRecompiler() || g_settings.cpu_recompiler_icache ||
+                                              g_settings.cpu_recompiler_memory_exceptions))
+      {
+        first = true;
+        text.AppendString("CPU[");
+        if (g_settings.cpu_overclock_active)
+        {
+          text.AppendFmtString("{}", g_settings.GetCPUOverclockPercent());
+          first = false;
+        }
+        if (g_settings.cpu_execution_mode == CPUExecutionMode::Interpreter)
+        {
+          text.AppendFmtString("{}{}", first ? "" : "/", "I");
+          first = false;
+        }
+        else if (g_settings.cpu_execution_mode == CPUExecutionMode::CachedInterpreter)
+        {
+          text.AppendFmtString("{}{}", first ? "" : "/", "CI");
+          first = false;
+        }
+        else
+        {
+          if (g_settings.cpu_recompiler_icache)
+          {
+            text.AppendFmtString("{}{}", first ? "" : "/", "IC");
+            first = false;
+          }
+          if (g_settings.cpu_recompiler_memory_exceptions)
+          {
+            text.AppendFmtString("{}{}", first ? "" : "/", "ME");
+            first = false;
+          }
+        }
+
+        text.AppendString("]: ");
+      }
       else
+      {
         text.Assign("CPU: ");
+      }
       FormatProcessorStat(text, System::GetCPUThreadUsage(), System::GetCPUThreadAverageTime());
       DRAW_LINE(fixed_font, text, IM_COL32(255, 255, 255, 255));
 
@@ -215,7 +252,8 @@ void ImGuiManager::DrawPerformanceOverlay()
 void ImGuiManager::DrawEnhancementsOverlay()
 {
   LargeString text;
-  text.AppendFmtString("{} {}", Settings::GetConsoleRegionName(System::GetRegion()), Settings::GetRendererName(g_gpu->GetRendererType()));
+  text.AppendFmtString("{} {}", Settings::GetConsoleRegionName(System::GetRegion()),
+                       Settings::GetRendererName(g_gpu->GetRendererType()));
 
   if (g_settings.rewind_enable)
     text.AppendFormattedString(" RW=%g/%u", g_settings.rewind_save_frequency, g_settings.rewind_save_slots);
@@ -235,7 +273,7 @@ void ImGuiManager::DrawEnhancementsOverlay()
   if (g_settings.gpu_multisamples != 1)
   {
     text.AppendFormattedString(" %ux%s", g_settings.gpu_multisamples,
-                               g_settings.gpu_per_sample_shading ? "MSAA" : "SSAA");
+                               g_settings.gpu_per_sample_shading ? "SSAA" : "MSAA");
   }
   if (g_settings.gpu_true_color)
     text.AppendString(" TrueCol");
@@ -257,6 +295,8 @@ void ImGuiManager::DrawEnhancementsOverlay()
       text.AppendString("/Cull");
     if (g_settings.gpu_pgxp_texture_correction)
       text.AppendString("/Tex");
+    if (g_settings.gpu_pgxp_color_correction)
+      text.AppendString("/Col");
     if (g_settings.gpu_pgxp_vertex_cache)
       text.AppendString("/VC");
     if (g_settings.gpu_pgxp_cpu)
@@ -369,10 +409,10 @@ namespace SaveStateSelectorUI {
 struct ListEntry
 {
   std::string path;
-  std::string game_code;
+  std::string serial;
   std::string title;
   std::string formatted_timestamp;
-  std::unique_ptr<HostDisplayTexture> preview_texture;
+  std::unique_ptr<GPUTexture> preview_texture;
   s32 slot;
   bool global;
 };
@@ -424,11 +464,11 @@ void SaveStateSelectorUI::RefreshList()
   if (System::IsShutdown())
     return;
 
-  if (!System::GetRunningCode().empty())
+  if (!System::GetRunningSerial().empty())
   {
     for (s32 i = 1; i <= System::PER_GAME_SAVE_STATE_SLOTS; i++)
     {
-      std::string path(System::GetGameSaveStateFileName(System::GetRunningCode(), i));
+      std::string path(System::GetGameSaveStateFileName(System::GetRunningSerial(), i));
       std::optional<ExtendedSaveStateInfo> ssi = System::GetExtendedSaveStateInfo(path.c_str());
 
       ListEntry li;
@@ -513,7 +553,7 @@ void SaveStateSelectorUI::InitializeListEntry(ListEntry* li, ExtendedSaveStateIn
                                               bool global)
 {
   li->title = std::move(ssi->title);
-  li->game_code = std::move(ssi->game_code);
+  li->serial = std::move(ssi->serial);
   li->path = std::move(path);
   li->formatted_timestamp = fmt::format("{:%c}", fmt::localtime(ssi->timestamp));
   li->slot = slot;
@@ -526,14 +566,14 @@ void SaveStateSelectorUI::InitializeListEntry(ListEntry* li, ExtendedSaveStateIn
   {
     if (ssi && !ssi->screenshot_data.empty())
     {
-      li->preview_texture = g_host_display->CreateTexture(ssi->screenshot_width, ssi->screenshot_height, 1, 1, 1,
-                                                          HostDisplayPixelFormat::RGBA8, ssi->screenshot_data.data(),
-                                                          sizeof(u32) * ssi->screenshot_width, false);
+      li->preview_texture =
+        g_host_display->CreateTexture(ssi->screenshot_width, ssi->screenshot_height, 1, 1, 1, GPUTexture::Format::RGBA8,
+                                      ssi->screenshot_data.data(), sizeof(u32) * ssi->screenshot_width, false);
     }
     else
     {
       li->preview_texture = g_host_display->CreateTexture(PLACEHOLDER_ICON_WIDTH, PLACEHOLDER_ICON_HEIGHT, 1, 1, 1,
-                                                          HostDisplayPixelFormat::RGBA8, PLACEHOLDER_ICON_DATA,
+                                                          GPUTexture::Format::RGBA8, PLACEHOLDER_ICON_DATA,
                                                           sizeof(u32) * PLACEHOLDER_ICON_WIDTH, false);
     }
 
@@ -545,7 +585,7 @@ void SaveStateSelectorUI::InitializeListEntry(ListEntry* li, ExtendedSaveStateIn
 void SaveStateSelectorUI::InitializePlaceholderListEntry(ListEntry* li, std::string path, s32 slot, bool global)
 {
   li->title = Host::TranslateStdString("SaveStateSelectorUI", "No Save State");
-  std::string().swap(li->game_code);
+  std::string().swap(li->serial);
   li->path = std::move(path);
   std::string().swap(li->formatted_timestamp);
   li->slot = slot;
@@ -553,9 +593,9 @@ void SaveStateSelectorUI::InitializePlaceholderListEntry(ListEntry* li, std::str
 
   if (g_host_display)
   {
-    li->preview_texture = g_host_display->CreateTexture(PLACEHOLDER_ICON_WIDTH, PLACEHOLDER_ICON_HEIGHT, 1, 1, 1,
-                                                        HostDisplayPixelFormat::RGBA8, PLACEHOLDER_ICON_DATA,
-                                                        sizeof(u32) * PLACEHOLDER_ICON_WIDTH, false);
+    li->preview_texture =
+      g_host_display->CreateTexture(PLACEHOLDER_ICON_WIDTH, PLACEHOLDER_ICON_HEIGHT, 1, 1, 1, GPUTexture::Format::RGBA8,
+                                    PLACEHOLDER_ICON_DATA, sizeof(u32) * PLACEHOLDER_ICON_WIDTH, false);
     if (!li->preview_texture)
       Log_ErrorPrintf("Failed to upload save state image to GPU");
   }
@@ -608,7 +648,7 @@ void SaveStateSelectorUI::Draw()
         {
           ImGui::SetCursorPosY(y_start + padding);
           ImGui::SetCursorPosX(padding);
-          ImGui::Image(reinterpret_cast<ImTextureID>(entry.preview_texture->GetHandle()), image_size);
+          ImGui::Image(entry.preview_texture.get(), image_size);
         }
 
         ImGui::SetCursorPosY(y_start + padding);
@@ -619,13 +659,13 @@ void SaveStateSelectorUI::Draw()
         {
           ImGui::Text(Host::TranslateString("SaveStateSelectorUI", "Global Slot %d"), entry.slot);
         }
-        else if (entry.game_code.empty())
+        else if (entry.serial.empty())
         {
           ImGui::Text(Host::TranslateString("SaveStateSelectorUI", "Game Slot %d"), entry.slot);
         }
         else
         {
-          ImGui::Text(Host::TranslateString("SaveStateSelectorUI", "%s Slot %d"), entry.game_code.c_str(), entry.slot);
+          ImGui::Text(Host::TranslateString("SaveStateSelectorUI", "%s Slot %d"), entry.serial.c_str(), entry.slot);
         }
         ImGui::TextUnformatted(entry.title.c_str());
         ImGui::TextUnformatted(entry.formatted_timestamp.c_str());

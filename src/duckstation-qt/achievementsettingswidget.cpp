@@ -24,6 +24,9 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsDialog* dialog, QWi
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.unofficialTestMode, "Cheevos", "UnofficialTestMode", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.useFirstDiscFromPlaylist, "Cheevos",
                                                "UseFirstDiscFromPlaylist", true);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.leaderboards, "Cheevos", "Leaderboards", true);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.soundEffects, "Cheevos", "SoundEffects", true);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.primedIndicators, "Cheevos", "PrimedIndicators", true);
 
   dialog->registerWidgetHelp(m_ui.enable, tr("Enable Achievements"), tr("Unchecked"),
                              tr("When enabled and logged in, DuckStation will scan for achievements on startup."));
@@ -42,10 +45,22 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsDialog* dialog, QWi
     tr(
       "When enabled, the first disc in a playlist will be used for achievements, regardless of which disc is active."));
   dialog->registerWidgetHelp(m_ui.challengeMode, tr("Enable Hardcore Mode"), tr("Unchecked"),
-                             tr("\"Challenge\" mode for achievements. Disables save state, cheats, and slowdown "
-                                "functions, but you receive double the achievement points."));
+                             tr("\"Challenge\" mode for achievements, including leaderboard tracking. Disables save "
+                                "state, cheats, and slowdown functions."));
+  dialog->registerWidgetHelp(
+    m_ui.soundEffects, tr("Enable Sound Effects"), tr("Checked"),
+    tr("Plays sound effects for events such as achievement unlocks and leaderboard submissions."));
+  dialog->registerWidgetHelp(
+    m_ui.leaderboards, tr("Enable Leaderboards"), tr("Checked"),
+    tr("Enables tracking and submission of leaderboards in supported games. If leaderboards "
+       "are disabled, you will still be able to view the leaderboard and scores, but no scores will be uploaded."));
+  dialog->registerWidgetHelp(
+    m_ui.primedIndicators, tr("Show Challenge Indicators"), tr("Checked"),
+    tr("Shows icons in the lower-right corner of the screen when a challenge/primed achievement is active."));
 
   connect(m_ui.enable, &QCheckBox::stateChanged, this, &AchievementSettingsWidget::updateEnableState);
+  connect(m_ui.challengeMode, &QCheckBox::stateChanged, this, &AchievementSettingsWidget::updateEnableState);
+  connect(m_ui.challengeMode, &QCheckBox::stateChanged, this, &AchievementSettingsWidget::onChallengeModeStateChanged);
 
   if (!m_dialog->isPerGameSettings())
   {
@@ -76,10 +91,41 @@ AchievementSettingsWidget::~AchievementSettingsWidget() = default;
 void AchievementSettingsWidget::updateEnableState()
 {
   const bool enabled = m_dialog->getEffectiveBoolValue("Cheevos", "Enabled", false);
+  const bool challenge = m_dialog->getEffectiveBoolValue("Cheevos", "ChallengeMode", false);
   m_ui.testMode->setEnabled(enabled);
   m_ui.useFirstDiscFromPlaylist->setEnabled(enabled);
   m_ui.richPresence->setEnabled(enabled);
   m_ui.challengeMode->setEnabled(enabled);
+  m_ui.leaderboards->setEnabled(enabled && challenge);
+  m_ui.unofficialTestMode->setEnabled(enabled);
+  m_ui.soundEffects->setEnabled(enabled);
+  m_ui.primedIndicators->setEnabled(enabled);
+}
+
+void AchievementSettingsWidget::onChallengeModeStateChanged()
+{
+  if (!QtHost::IsSystemValid())
+    return;
+
+  const bool enabled = m_dialog->getEffectiveBoolValue("Cheevos", "Enabled", false);
+  const bool challenge = m_dialog->getEffectiveBoolValue("Cheevos", "ChallengeMode", false);
+  if (!enabled || !challenge)
+    return;
+
+  // don't bother prompting if the game doesn't have achievements
+  auto lock = Achievements::GetLock();
+  if (!Achievements::HasActiveGame())
+    return;
+
+  if (QMessageBox::question(
+        QtUtils::GetRootWidget(this), tr("Reset System"),
+        tr("Hardcore mode will not be enabled until the system is reset. Do you want to reset the system now?")) !=
+      QMessageBox::Yes)
+  {
+    return;
+  }
+
+  g_emu_thread->resetSystem();
 }
 
 void AchievementSettingsWidget::updateLoginState()

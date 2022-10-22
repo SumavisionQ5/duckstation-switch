@@ -62,7 +62,7 @@ public:
   static std::unique_ptr<AnalogController> Create(u32 index);
 
   ControllerType GetType() const override;
-  bool InAnalogMode() const { return m_analog_mode; }
+  bool InAnalogMode() const override;
 
   void Reset() override;
   bool DoState(StateWrapper& sw, bool ignore_input_state) override;
@@ -121,7 +121,10 @@ private:
   bool m_analog_dpad_in_digital_mode = false;
   float m_analog_deadzone = 0.0f;
   float m_analog_sensitivity = 1.33f;
+  float m_button_deadzone = 0.0f;
   u8 m_rumble_bias = 8;
+  u8 m_invert_left_stick = 0;
+  u8 m_invert_right_stick = 0;
 
   bool m_analog_mode = false;
   bool m_analog_locked = false;

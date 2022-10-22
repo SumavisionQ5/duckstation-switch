@@ -14,16 +14,15 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
   setupAdditionalUi();
 
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.resolutionScale, "GPU", "ResolutionScale", 1);
+  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.gpuDownsampleMode, "GPU", "DownsampleMode",
+                                               &Settings::ParseDownsampleModeName, &Settings::GetDownsampleModeName,
+                                               Settings::DEFAULT_GPU_DOWNSAMPLE_MODE);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.trueColor, "GPU", "TrueColor", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.scaledDithering, "GPU", "ScaledDithering", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.disableInterlacing, "GPU", "DisableInterlacing",
-                                               true);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.forceNTSCTimings, "GPU", "ForceNTSCTimings",
-                                               false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.force43For24Bit, "Display", "Force4_3For24Bit",
-                                               false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.chromaSmoothingFor24Bit, "GPU",
-                                               "ChromaSmoothing24Bit", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.disableInterlacing, "GPU", "DisableInterlacing", true);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.forceNTSCTimings, "GPU", "ForceNTSCTimings", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.force43For24Bit, "Display", "Force4_3For24Bit", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.chromaSmoothingFor24Bit, "GPU", "ChromaSmoothing24Bit", false);
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.textureFiltering, "GPU", "TextureFilter",
                                                &Settings::ParseTextureFilterName, &Settings::GetTextureFilterName,
                                                Settings::DEFAULT_GPU_TEXTURE_FILTER);
@@ -33,11 +32,10 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
 
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpEnable, "GPU", "PGXPEnable", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpCulling, "GPU", "PGXPCulling", true);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpTextureCorrection, "GPU",
-                                               "PGXPTextureCorrection", true);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpTextureCorrection, "GPU", "PGXPTextureCorrection", true);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpColorCorrection, "GPU", "PGXPColorCorrection", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpDepthBuffer, "GPU", "PGXPDepthBuffer", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpPreserveProjPrecision, "GPU",
-                                               "PGXPPreserveProjFP", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpPreserveProjPrecision, "GPU", "PGXPPreserveProjFP", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpCPU, "GPU", "PGXPCPU", false);
 
   connect(m_ui.resolutionScale, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -46,8 +44,14 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
   updateScaledDitheringEnabled();
 
   connect(m_ui.pgxpEnable, &QCheckBox::stateChanged, this, &EnhancementSettingsWidget::updatePGXPSettingsEnabled);
+  connect(m_ui.pgxpTextureCorrection, &QCheckBox::stateChanged, this,
+          &EnhancementSettingsWidget::updatePGXPSettingsEnabled);
   updatePGXPSettingsEnabled();
 
+  dialog->registerWidgetHelp(
+    m_ui.gpuDownsampleMode, tr("Downsampling"), tr("Disabled"),
+    tr("Downsamples the rendered image prior to displaying it. Can improve overall image quality in mixed 2D/3D games, "
+       "but should be disabled for pure 3D games. Only applies to the hardware renderers."));
   dialog->registerWidgetHelp(
     m_ui.disableInterlacing, tr("Disable Interlacing (force progressive render/scan)"), tr("Unchecked"),
     tr(
@@ -85,8 +89,9 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
   dialog->registerWidgetHelp(
     m_ui.textureFiltering, tr("Texture Filtering"),
     qApp->translate("GPUTextureFilter", Settings::GetTextureFilterDisplayName(GPUTextureFilter::Nearest)),
-    tr("Smooths out the blockyness of magnified textures on 3D object by using filtering. <br>Will have a "
-       "greater effect on higher resolution scales. Only applies to the hardware renderers."));
+    tr("Smooths out the blockiness of magnified textures on 3D object by using filtering. <br>Will have a "
+       "greater effect on higher resolution scales. Only applies to the hardware renderers. <br>The JINC2 and "
+       "especially xBR filtering modes are very demanding, and may not be worth the speed penalty."));
   dialog->registerWidgetHelp(
     m_ui.widescreenHack, tr("Widescreen Hack"), tr("Unchecked"),
     tr("Scales vertex positions in screen-space to a widescreen aspect ratio, essentially "
@@ -104,9 +109,13 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
   dialog->registerWidgetHelp(m_ui.pgxpCulling, tr("Culling Correction"), tr("Checked"),
                              tr("Increases the precision of polygon culling, reducing the number of holes in geometry. "
                                 "Requires geometry correction enabled."));
-  dialog->registerWidgetHelp(m_ui.pgxpTextureCorrection, tr("Texture Correction"), tr("Checked"),
-                             tr("Uses perspective-correct interpolation for texture coordinates and colors, "
-                                "straightening out warped textures. Requires geometry correction enabled."));
+  dialog->registerWidgetHelp(m_ui.pgxpTextureCorrection, tr("Perspective Correct Textures"), tr("Checked"),
+                             tr("Uses perspective-correct interpolation for texture coordinates, straightening out "
+                                "warped textures. Requires geometry correction enabled."));
+  dialog->registerWidgetHelp(
+    m_ui.pgxpColorCorrection, tr("Perspective Correct Colors"), tr("Unchecked"),
+    tr("Uses perspective-correct interpolation for vertex colors, which can improve visuals in some games, but cause "
+       "rendering errors in others. Requires geometry correction enabled."));
   dialog->registerWidgetHelp(
     m_ui.pgxpDepthBuffer, tr("Depth Buffer (Low Compatibility)"), tr("Unchecked"),
     tr("Attempts to reduce polygon Z-fighting by testing pixels against the depth values from PGXP. Low compatibility, "
@@ -138,13 +147,21 @@ void EnhancementSettingsWidget::setupAdditionalUi()
     m_ui.textureFiltering->addItem(
       qApp->translate("GPUTextureFilter", Settings::GetTextureFilterDisplayName(static_cast<GPUTextureFilter>(i))));
   }
+
+  for (u32 i = 0; i < static_cast<u32>(GPUDownsampleMode::Count); i++)
+  {
+    m_ui.gpuDownsampleMode->addItem(
+      qApp->translate("GPUDownsampleMode", Settings::GetDownsampleModeDisplayName(static_cast<GPUDownsampleMode>(i))));
+  }
 }
 
 void EnhancementSettingsWidget::updatePGXPSettingsEnabled()
 {
-  const bool enabled = m_ui.pgxpEnable->isChecked();
+  const bool enabled = m_dialog->getEffectiveBoolValue("GPU", "PGXPEnable", false);
+  const bool tc_enabled = enabled && m_dialog->getEffectiveBoolValue("GPU", "PGXPTextureCorrection", true);
   m_ui.pgxpCulling->setEnabled(enabled);
   m_ui.pgxpTextureCorrection->setEnabled(enabled);
+  m_ui.pgxpColorCorrection->setEnabled(tc_enabled);
   m_ui.pgxpDepthBuffer->setEnabled(enabled);
   m_ui.pgxpPreserveProjPrecision->setEnabled(enabled);
   m_ui.pgxpCPU->setEnabled(enabled);

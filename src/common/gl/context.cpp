@@ -46,7 +46,9 @@ namespace GL {
 
 static bool ShouldPreferESContext()
 {
-#ifndef _MSC_VER
+#if defined(__ANDROID__)
+  return true;
+#elif !defined(_MSC_VER)
   const char* value = std::getenv("PREFER_GLES_CONTEXT");
   return (value && std::strcmp(value, "1") == 0);
 #else
@@ -78,6 +80,14 @@ static void DisableBrokenExtensions(const char* gl_vendor, const char* gl_render
       GLAD_GL_OES_copy_image = 0;
       GLAD_GL_EXT_disjoint_timer_query = 0;
     }
+  }
+
+  // If we're missing GLES 3.2, but have OES_draw_elements_base_vertex, redirect the function pointers.
+  if (!glad_glDrawElementsBaseVertex && GLAD_GL_OES_draw_elements_base_vertex && !GLAD_GL_ES_VERSION_3_2)
+  {
+    glad_glDrawElementsBaseVertex = glad_glDrawElementsBaseVertexOES;
+    glad_glDrawRangeElementsBaseVertex = glad_glDrawRangeElementsBaseVertexOES;
+    glad_glDrawElementsInstancedBaseVertex = glad_glDrawElementsInstancedBaseVertexOES;
   }
 }
 
