@@ -5,8 +5,10 @@
 #pragma once
 
 #include "../window_info.h"
+#include "../assert.h"
 #include "common/types.h"
 #include "memory_heap.h"
+#include "stream_buffer.h"
 #include "swap_chain.h"
 #include <array>
 #include <deko3d.hpp>
@@ -32,7 +34,11 @@ public:
 
   ALWAYS_INLINE dk::Device GetDevice() { return m_device; }
   ALWAYS_INLINE dk::Queue GetQueue() { return m_queue; }
-  ALWAYS_INLINE dk::CmdBuf GetCmdBuf() { return m_frame_resources[m_cur_cmd_buf].cmdbuf; }
+  ALWAYS_INLINE dk::CmdBuf GetCmdBuf()
+  {
+    Assert(!m_frame_resources[m_cur_cmd_buf].submitted);
+    return m_frame_resources[m_cur_cmd_buf].cmdbuf;
+  }
 
   ALWAYS_INLINE u64 GetCompletedFenceCounter() const { return m_completed_fence_counter; }
   ALWAYS_INLINE u64 GetCurrentFenceCounter() { return m_frame_resources[m_cur_cmd_buf].fence_counter; }
@@ -48,6 +54,10 @@ public:
 
   void AddCommandBufferMemory(size_t minSize);
 
+  ALWAYS_INLINE StreamBuffer& GetTextureUploadBuffer() { return m_texture_upload_buffer; }
+
+  StreamBuffer m_texture_upload_buffer;
+
 private:
   Context(dk::Device device);
 
@@ -59,6 +69,7 @@ private:
     dk::Fence fence = {};
     u64 fence_counter = 0;
     dk::CmdBuf cmdbuf;
+    bool submitted = false;
 
     std::vector<std::tuple<MemoryHeap*, MemoryHeap::Allocation>> pending_frees;
   };
@@ -70,7 +81,7 @@ private:
   u32 m_cur_cmd_buf = 0;
   std::array<FrameResources, NumCmdBufSegments> m_frame_resources;
   u64 m_completed_fence_counter = 0;
-  u64 m_next_fence_counter = 0;
+  u64 m_next_fence_counter = 1;
 };
 
 } // namespace Deko3D

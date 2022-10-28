@@ -73,18 +73,17 @@ if (SWITCH)
     deko3d/texture.h
     deko3d/util.cpp
     deko3d/util.h
-    deko3d/staging_texture.cpp
-    deko3d/staging_texture.h
     deko3d/shader_cache.cpp
     deko3d/shader_cache.h
+    deko3d/stream_buffer.cpp
+    deko3d/stream_buffer.h
   )
-
-  target_link_libraries(common PRIVATE uam deko3dd nxd)
 else()
   target_link_libraries(common PUBLIC vulkan-headers)
+  target_link_libraries(common PRIVATE "${CMAKE_DL_LIBS}")
 endif()
 target_link_libraries(common PUBLIC fmt Threads::Threads)
-target_link_libraries(common PRIVATE stb libchdr zlib minizip Zstd::Zstd "${CMAKE_DL_LIBS}")
+target_link_libraries(common PRIVATE stb libchdr zlib minizip Zstd::Zstd)
 
 if(WIN32)
   target_sources(common PRIVATE
@@ -129,6 +128,11 @@ if(NOT WIN32 AND NOT ANDROID)
   target_link_libraries(common PRIVATE
     CURL::libcurl
   )
+endif()
+
+if (SWITCH)
+  # switch curl depends on libnx, so we have to link it here...
+  target_link_libraries(common PRIVATE uam "${NX_LIBRARIES}")
 endif()
 
 if(ANDROID)

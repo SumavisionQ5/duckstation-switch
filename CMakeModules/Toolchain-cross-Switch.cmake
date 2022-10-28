@@ -46,6 +46,12 @@ else()
 	set(LIBNX ${DEVKITPRO}/libnx)
 endif()
 
+if (CMAKE_BUILD_TYPE STREQUAL Release)
+	set(NX_LIBRARIES deko3d nxd)
+else()
+	set(NX_LIBRARIES deko3dd nxd)
+endif()
+
 set(cross_prefix aarch64-none-elf-)
 set(arch_flags "-mtune=cortex-a57 -ffunction-sections -march=armv8-a+crc+crypto -mtp=soft -fPIE")
 set(inc_flags "-I${LIBNX}/include -I${DEVKITPRO}/portlibs/switch/include ${arch_flags}")

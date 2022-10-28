@@ -1,0 +1,196 @@
+#include "switch_nogui_platform.h"
+
+#include <switch.h>
+
+namespace Common::PageFaultHandler {
+bool PageFaultHandler(ThreadExceptionDump* ctx);
+}
+
+extern "C" {
+
+extern char __start__;
+extern char __rodata_start;
+
+void HandleFault(uint64_t pc, uint64_t lr, uint64_t fp, uint64_t faultAddr, uint32_t desc)
+{
+  if (pc >= (uint64_t)&__start__ && pc < (uint64_t)&__rodata_start)
+  {
+    printf("unintentional fault in .text at %p (type %d) (trying to access %p?)\n", (void*)(pc - (uint64_t)&__start__),
+           desc, (void*)faultAddr);
+
+    int frameNum = 0;
+    while (true)
+    {
+      printf("stack frame %d %p\n", frameNum, (void*)(lr - (uint64_t)&__start__));
+      lr = *(uint64_t*)(fp + 8);
+      fp = *(uint64_t*)fp;
+
+      frameNum++;
+      if (frameNum > 16 || fp == 0 || (fp & 0x7) != 0)
+        break;
+    }
+  }
+  else
+  {
+    printf("unintentional fault somewhere in deep (address) space at %p (type %d)\n", (void*)pc, desc);
+    if (lr >= (uint64_t)&__start__ && lr < (uint64_t)&__rodata_start)
+      printf("lr in range: %p\n", (void*)(lr - (uint64_t)&__start__));
+  }
+}
+
+void QuickContextRestore(u64*) __attribute__((noreturn));
+
+alignas(16) uint8_t __nx_exception_stack[0x8000];
+uint64_t __nx_exception_stack_size = 0x8000;
+
+void __libnx_exception_handler(ThreadExceptionDump* ctx)
+{
+  if (Common::PageFaultHandler::PageFaultHandler(ctx))
+    QuickContextRestore(&ctx->cpu_gprs[0].x);
+  else
+    HandleFault(ctx->pc.x, ctx->lr.x, ctx->fp.x, ctx->far.x, ctx->error_desc);
+}
+}
+
+std::unique_ptr<NoGUIPlatform> NoGUIPlatform::CreateSwitchPlatform()
+{
+  std::unique_ptr<SwitchNoGUIPlatform> platform(std::make_unique<SwitchNoGUIPlatform>());
+  if (!platform->Initialize())
+    platform.reset();
+  return platform;
+}
+
+SwitchNoGUIPlatform::SwitchNoGUIPlatform()
+{
+  m_message_loop_running.store(true, std::memory_order_release);
+}
+
+SwitchNoGUIPlatform::~SwitchNoGUIPlatform() = default;
+
+void SwitchNoGUIPlatform::AppletModeChange(AppletHookType type)
+{
+  switch (type)
+  {
+    case AppletHookType_OnOperationMode:
+    {
+      std::optional<WindowInfo> wi = GetPlatformWindowInfo();
+      NoGUIHost::ProcessPlatformWindowResize(wi->surface_width, wi->surface_height, wi->surface_scale);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+static void AppletModeChange(AppletHookType type, void* host_interface)
+{
+  static_cast<SwitchNoGUIPlatform*>(host_interface)->AppletModeChange(type);
+}
+
+bool SwitchNoGUIPlatform::Initialize()
+{
+  appletHook(&m_applet_cookie, ::AppletModeChange, this);
+
+  return true;
+}
+
+void SwitchNoGUIPlatform::ReportError(const std::string_view& title, const std::string_view& message) {}
+
+bool SwitchNoGUIPlatform::ConfirmMessage(const std::string_view& title, const std::string_view& message)
+{
+  return true;
+}
+
+void SwitchNoGUIPlatform::SetDefaultConfig(SettingsInterface& si) {}
+
+bool SwitchNoGUIPlatform::CreatePlatformWindow(std::string title)
+{
+  return true;
+}
+
+void SwitchNoGUIPlatform::DestroyPlatformWindow() {}
+
+std::optional<WindowInfo> SwitchNoGUIPlatform::GetPlatformWindowInfo()
+{
+  WindowInfo wi;
+  AppletOperationMode mode = appletGetOperationMode();
+  if (mode == AppletOperationMode_Handheld)
+  {
+    wi.surface_width = 1280;
+    wi.surface_height = 720;
+  }
+  else
+  {
+    wi.surface_width = 1920;
+    wi.surface_height = 1080;
+  }
+  wi.surface_scale = 1.2f;
+  wi.surface_format = WindowInfo::SurfaceFormat::RGBA8;
+  wi.type = WindowInfo::Type::Switch;
+  wi.window_handle = nwindowGetDefault();
+  return wi;
+}
+
+void SwitchNoGUIPlatform::SetPlatformWindowTitle(std::string title) {}
+
+void* SwitchNoGUIPlatform::GetPlatformWindowHandle()
+{
+  return nullptr;
+}
+
+std::optional<u32> SwitchNoGUIPlatform::ConvertHostKeyboardStringToCode(const std::string_view& str)
+{
+  return std::nullopt;
+}
+
+std::optional<std::string> SwitchNoGUIPlatform::ConvertHostKeyboardCodeToString(u32 code)
+{
+  return std::nullopt;
+}
+
+void SwitchNoGUIPlatform::RunMessageLoop()
+{
+  while (m_message_loop_running.load(std::memory_order_acquire))
+  {
+    if (!appletMainLoop())
+      Host::RequestExit(true);
+
+    std::unique_lock lock(m_callback_queue_mutex);
+    while (!m_callback_queue.empty())
+    {
+      std::function<void()> func = std::move(m_callback_queue.front());
+      m_callback_queue.pop_front();
+      lock.unlock();
+      func();
+      lock.lock();
+    }
+  }
+}
+
+void SwitchNoGUIPlatform::ExecuteInMessageLoop(std::function<void()> func)
+{
+  std::unique_lock lock(m_callback_queue_mutex);
+  m_callback_queue.push_back(std::move(func));
+}
+
+void SwitchNoGUIPlatform::QuitMessageLoop()
+{
+  m_message_loop_running.store(false, std::memory_order_release);
+}
+
+void SwitchNoGUIPlatform::SetFullscreen(bool enabled) {}
+
+bool SwitchNoGUIPlatform::RequestRenderWindowSize(s32 new_window_width, s32 new_window_height)
+{
+  return false;
+}
+
+bool SwitchNoGUIPlatform::OpenURL(const std::string_view& url)
+{
+  return false;
+}
+
+bool SwitchNoGUIPlatform::CopyTextToClipboard(const std::string_view& text)
+{
+  return false;
+}

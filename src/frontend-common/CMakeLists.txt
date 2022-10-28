@@ -1,6 +1,4 @@
 add_library(frontend-common
-  achievements.cpp
-  achievements.h
   common_host.cpp
   common_host.h
   fullscreen_ui.cpp
@@ -27,11 +25,9 @@ add_library(frontend-common
   postprocessing_shader.h
   postprocessing_shadergen.cpp
   postprocessing_shadergen.h
-  save_state_selector_ui.cpp
-  save_state_selector_ui.h
 )
 
-target_link_libraries(frontend-common PUBLIC core common cubeb imgui simpleini tinyxml2 rapidjson scmversion)
+target_link_libraries(frontend-common PUBLIC core common imgui simpleini tinyxml2 rapidjson scmversion)
 
 if (SWITCH)
   target_sources(frontend-common PRIVATE
@@ -39,9 +35,11 @@ if (SWITCH)
     deko3d_host_display.h
     imgui_impl_deko3d.cpp
     imgui_impl_deko3d.h
-    
+
     switch_audio_stream.cpp
-    switch_controller_interface.cpp
+    switch_audio_stream.h
+    switch_input_source.cpp
+    switch_input_source.h
   )
 endif()
 

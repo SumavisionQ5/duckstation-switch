@@ -181,6 +181,7 @@ void MemoryHeap::Destroy()
 
 MemoryHeap::Allocation MemoryHeap::Alloc(uint32_t size, uint32_t align)
 {
+  DebugAssert(m_valid);
   DebugAssert(size > 0);
   DebugAssertMsg((align & (align - 1)) == 0, "alignment must be a power of two");
   // minimum alignment (and thus size) is 32 bytes
@@ -233,7 +234,7 @@ MemoryHeap::Allocation MemoryHeap::Alloc(uint32_t size, uint32_t align)
 
 void MemoryHeap::Free(Allocation allocation)
 {
-  printf("freeing %d %d %d\n", allocation.blockIdx, allocation.offset, allocation.size);
+  DebugAssert(m_valid);
   Block* block = &m_blockPool[allocation.blockIdx];
   DebugAssert(!block->free);
 

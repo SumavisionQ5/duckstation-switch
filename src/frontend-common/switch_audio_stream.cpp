@@ -4,23 +4,28 @@
 #include <switch.h>
 Log_SetChannel(SwitchAudioStream);
 
-SwitchAudioStream::SwitchAudioStream() = default;
+SwitchAudioStream::SwitchAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, AudioStretchMode stretch)
+  : AudioStream(sample_rate, channels, buffer_ms, stretch)
+{
+}
 
 SwitchAudioStream::~SwitchAudioStream()
 {
-  if (IsOpen())
-    SwitchAudioStream::CloseDevice();
+  DestroyContextAndStream();
 }
 
-std::unique_ptr<SwitchAudioStream> SwitchAudioStream::Create()
+void SwitchAudioStream::SetOutputVolume(u32 volume)
 {
-  return std::make_unique<SwitchAudioStream>();
+  m_thread_volume = volume / 100.f;
 }
 
-bool SwitchAudioStream::OpenDevice()
+void SwitchAudioStream::SetPaused(bool paused)
 {
-  DebugAssert(!IsOpen());
+  m_state = paused ? State::Paused : State::Playing;
+}
 
+bool SwitchAudioStream::Initialize(u32 latency_ms)
+{
   static const AudioRendererConfig ar_config =
   {
       .output_rate     = AudioRendererOutputRate_48kHz,
@@ -45,13 +50,14 @@ bool SwitchAudioStream::OpenDevice()
     return false;
   }
 
-  u32 pool_size = m_buffer_size * m_channels * sizeof(int16_t) * 2;
+  u32 num_frames = GetBufferSizeForMS(m_sample_rate, (latency_ms == 0) ? m_buffer_ms : latency_ms);
+  u32 pool_size = num_frames * m_channels * sizeof(int16_t) * 2;
   pool_size = (pool_size + AUDREN_MEMPOOL_ALIGNMENT - 1) & ~(AUDREN_MEMPOOL_ALIGNMENT - 1);
   m_mem_pool = reinterpret_cast<u8*>(aligned_alloc(AUDREN_MEMPOOL_ALIGNMENT, pool_size));
   int mpid = audrvMemPoolAdd(&m_audio_driver, m_mem_pool, pool_size);
   audrvMemPoolAttach(&m_audio_driver, mpid);
 
-  m_audio_thread_buffer_size = m_buffer_size;
+  m_audio_thread_buffer_size = num_frames;
   m_audio_thread_num_channels = m_channels;
 
   static const u8 channel_ids[] = {0, 1};
@@ -60,7 +66,7 @@ bool SwitchAudioStream::OpenDevice()
   audrvUpdate(&m_audio_driver);
   audrenStartAudioRenderer();
 
-  audrvVoiceInit(&m_audio_driver, 0, 2, PcmFormat_Int16, m_output_sample_rate);
+  audrvVoiceInit(&m_audio_driver, 0, 2, PcmFormat_Int16, m_sample_rate);
   audrvVoiceSetDestinationMix(&m_audio_driver, 0, AUDREN_FINAL_MIX_ID);
   audrvVoiceSetMixFactor(&m_audio_driver, 0, 1.f, 0, 0);
   audrvVoiceSetMixFactor(&m_audio_driver, 0, 1.f, 1, 1);
@@ -72,28 +78,18 @@ bool SwitchAudioStream::OpenDevice()
   return true;
 }
 
-void SwitchAudioStream::SetOutputVolume(u32 volume)
-{
-  m_thread_volume = volume / 100.f;
-}
-
-void SwitchAudioStream::PauseDevice(bool paused)
-{
-  m_state = paused ? State::Paused : State::Playing;
-}
-
-void SwitchAudioStream::CloseDevice()
+void SwitchAudioStream::DestroyContextAndStream()
 {
   m_state = State::Stop;
 
-  threadWaitForExit(&m_audio_thread);
-  threadClose(&m_audio_thread);
-
-  audrvClose(&m_audio_driver);
-  audrenExit();
-
   if (m_mem_pool)
   {
+    threadWaitForExit(&m_audio_thread);
+    threadClose(&m_audio_thread);
+
+    audrvClose(&m_audio_driver);
+    audrenExit();
+
     free(m_mem_pool);
     m_mem_pool = nullptr;
   }
@@ -124,14 +120,15 @@ void SwitchAudioStream::AudioThread(void* userdata)
     {
       if (buffers[i].state == AudioDriverWaveBufState_Free || buffers[i].state == AudioDriverWaveBufState_Done)
       {
-          refill_buffer = &buffers[i];
-          break;
+        refill_buffer = &buffers[i];
+        break;
       }
     }
 
     if (refill_buffer)
     {
-      int16_t* data = reinterpret_cast<s16*>(this_ptr->m_mem_pool) + refill_buffer->start_sample_offset * this_ptr->m_audio_thread_num_channels;
+      int16_t* data = reinterpret_cast<s16*>(this_ptr->m_mem_pool) +
+                      refill_buffer->start_sample_offset * this_ptr->m_audio_thread_num_channels;
 
       if (this_ptr->m_state == State::Paused)
       {
@@ -139,9 +136,10 @@ void SwitchAudioStream::AudioThread(void* userdata)
       }
       else
       {
-        this_ptr->ReadFrames(data, this_ptr->m_audio_thread_buffer_size, false);
+        this_ptr->ReadFrames(data, this_ptr->m_audio_thread_buffer_size);
       }
-      armDCacheFlush(data, this_ptr->m_audio_thread_buffer_size * this_ptr->m_audio_thread_num_channels * sizeof(int16_t));
+      armDCacheFlush(data,
+                     this_ptr->m_audio_thread_buffer_size * this_ptr->m_audio_thread_num_channels * sizeof(int16_t));
 
       audrvVoiceAddWaveBuf(&this_ptr->m_audio_driver, 0, refill_buffer);
       audrvVoiceStart(&this_ptr->m_audio_driver, 0);
@@ -151,5 +149,3 @@ void SwitchAudioStream::AudioThread(void* userdata)
     audrenWaitFrame();
   }
 }
-
-void SwitchAudioStream::FramesAvailable() {}

@@ -4307,7 +4307,11 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
         }
 
         if (ActiveButton(ICON_FA_FROWN_OPEN " Cheat List", false,
-                         !System::GetRunningSerial().empty() && !Achievements::ChallengeModeActive()))
+                         !System::GetRunningSerial().empty()
+#ifdef WITH_CHEEVOS
+                           && !Achievements::ChallengeModeActive()
+#endif
+                           ))
         {
           s_current_main_window = MainWindowType::None;
           DoCheatsMenu();

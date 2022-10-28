@@ -134,6 +134,18 @@ bool ShaderCache::CreateNewShaderCache(const std::string& index_filename, const 
     return false;
   }
 
+  const u32 index_version = FILE_VERSION;
+
+  if (std::fwrite(&index_version, sizeof(index_version), 1, m_index_file) != 1 ||
+      std::fwrite(&m_version, sizeof(m_version), 1, m_index_file) != 1)
+  {
+    Log_ErrorPrintf("Failed to write header to index file '%s'", index_filename.c_str());
+    std::fclose(m_index_file);
+    m_index_file = nullptr;
+    FileSystem::DeleteFile(index_filename.c_str());
+    return false;
+  }
+
   m_blob_file = FileSystem::OpenCFile(blob_filename.c_str(), "w+b");
   if (!m_blob_file)
   {
@@ -224,7 +236,7 @@ void ShaderCache::CloseShaderCache()
 std::string ShaderCache::GetShaderCacheBaseFileName(const std::string_view& base_path, bool debug)
 {
   std::string base_filename(base_path);
-  base_filename += "deko3d_shaders";
+  base_filename += "/deko3d_shaders";
 
   if (debug)
     base_filename += "_debug";

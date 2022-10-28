@@ -32,6 +32,9 @@
 #include <condition_variable>
 #include <csignal>
 #include <thread>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 Log_SetChannel(NoGUIHost);
 
 #ifdef WITH_CHEEVOS
@@ -846,6 +849,8 @@ std::unique_ptr<NoGUIPlatform> NoGUIHost::CreatePlatform()
   ret = NoGUIPlatform::CreateWin32Platform();
 #elif defined(__APPLE__)
   // nothing yet
+#elif defined(__SWITCH__)
+  ret = NoGUIPlatform::CreateSwitchPlatform();
 #else
   // linux
   const char* platform = std::getenv("DUCKSTATION_NOGUI_PLATFORM");
@@ -1004,7 +1009,7 @@ static void SignalHandler(int signal)
   std::signal(signal, SIG_DFL);
 
   // MacOS is missing std::quick_exit() despite it being C++11...
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__SWITCH__)
   std::quick_exit(1);
 #else
   _Exit(1);
@@ -1262,6 +1267,10 @@ bool NoGUIHost::ParseCommandLineParametersAndInitializeConfig(int argc, char* ar
 
 int main(int argc, char* argv[])
 {
+#ifdef __SWITCH__
+  socketInitializeDefault();
+  nxlinkStdio();
+#endif
   CrashHandler::Install();
 
   g_nogui_window = NoGUIHost::CreatePlatform();
@@ -1289,6 +1298,9 @@ int main(int argc, char* argv[])
 
   s_base_settings_interface.reset();
   g_nogui_window.reset();
+#ifdef __SWITCH__
+  socketExit();
+#endif
   return EXIT_SUCCESS;
 }
 

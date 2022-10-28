@@ -1,6 +1,8 @@
 #include "imgui_overlays.h"
 #include "IconsFontAwesome5.h"
+#ifdef WITH_CHEEVOS
 #include "achievements.h"
+#endif
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"

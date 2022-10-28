@@ -387,7 +387,7 @@ bool ImGui_ImplDeko3D_CreateFontsTexture(dk::CmdBuf command_buffer)
   g_FontTexture.Create(width, height, 1, 0, DkImageFormat_RGBA8_Unorm, DkMsMode_1x, DkImageType_2D, 0);
 
   g_FontTextureUploadBuffer = g_deko3d_context->GetGeneralHeap().Alloc(upload_size, DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
-  memcpy(g_deko3d_context->GetGeneralHeap().CpuAddr<void*>(g_FontTextureUploadBuffer), pixels, upload_size);
+  memcpy(g_deko3d_context->GetGeneralHeap().CpuAddr<void>(g_FontTextureUploadBuffer), pixels, upload_size);
 
   g_FontTexture.UpdateFromBuffer(command_buffer, 0, 0, 0, 0, width, height,
                                  g_deko3d_context->GetGeneralHeap().GpuAddr(g_FontTextureUploadBuffer));

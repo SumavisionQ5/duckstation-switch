@@ -45,6 +45,10 @@ public:
   static std::unique_ptr<NoGUIPlatform> CreateWin32Platform();
 #endif
 
+#ifdef __SWITCH__
+  static std::unique_ptr<NoGUIPlatform> CreateSwitchPlatform();
+#endif
+
 #ifdef NOGUI_PLATFORM_WAYLAND
   static std::unique_ptr<NoGUIPlatform> CreateWaylandPlatform();
 #endif

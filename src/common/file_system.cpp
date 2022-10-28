@@ -1843,6 +1843,11 @@ bool FileSystem::RenamePath(const char* old_path, const char* new_path)
   if (old_path[0] == '\0' || new_path[0] == '\0')
     return false;
 
+#ifdef __SWITCH__
+  // technically makes tempfile + rename unsafe
+  DeleteFile(new_path);
+#endif
+
   if (rename(old_path, new_path) != 0)
   {
     Log_ErrorPrintf("rename('%s', '%s') failed: %d", old_path, new_path, errno);
@@ -1964,6 +1969,7 @@ bool FileSystem::SetPathCompression(const char* path, bool enable)
   return false;
 }
 
+#ifndef __SWITCH__
 FileSystem::POSIXLock::POSIXLock(int fd)
 {
   if (lockf(fd, F_LOCK, 0) == 0)
@@ -1987,5 +1993,6 @@ FileSystem::POSIXLock::~POSIXLock()
   if (m_fd >= 0)
     lockf(m_fd, F_ULOCK, m_fd);
 }
+#endif
 
 #endif

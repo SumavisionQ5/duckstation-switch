@@ -67,6 +67,10 @@
 #include "frontend-common/vulkan_host_display.h"
 #endif
 
+#ifdef __SWITCH__
+#include "frontend-common/deko3d_host_display.h"
+#endif
+
 Log_SetChannel(CommonHostInterface);
 
 namespace CommonHost {
@@ -168,6 +172,8 @@ std::unique_ptr<HostDisplay> Host::CreateDisplayForAPI(RenderAPI api)
       return std::make_unique<OpenGLHostDisplay>();
 #elif defined(WITH_VULKAN)
       return std::make_unique<VulkanHostDisplay>();
+#elif defined(__SWITCH__)
+      return std::make_unique<Deko3DHostDisplay>();
 #else
       return {};
 #endif

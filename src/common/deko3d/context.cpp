@@ -9,9 +9,11 @@ Log_SetChannel(Deko3DContext);
 
 namespace Deko3D {
 
-constexpr size_t GeneralHeapSize = 1024 * 1024 * 64;
-constexpr size_t ImageHeapSize = 1024 * 1024 * 64;
-constexpr size_t ShaderHeapSize = 1024 * 1024 * 64;
+constexpr size_t GeneralHeapSize = 1024 * 1024 * 128;
+constexpr size_t ImageHeapSize = 1024 * 1024 * 128;
+constexpr size_t ShaderHeapSize = 1024 * 1024 * 32;
+
+constexpr u32 TextureUploadBufferSize = 1024 * 1024 * 32;
 
 void DebugOut(void* userData, const char* context, DkResult result, const char* message)
 {
@@ -64,11 +66,16 @@ bool Context::Create(const WindowInfo* wi)
 
   g_deko3d_context->ActivateCommandBuffer(0);
 
+  g_deko3d_context->m_texture_upload_buffer.Create(TextureUploadBufferSize);
+
   return true;
 }
 
 void Context::Destroy()
 {
+  g_deko3d_context->WaitGPUIdle();
+  g_deko3d_context->m_texture_upload_buffer.Destroy(false);
+
   g_deko3d_context.reset();
 }
 
@@ -120,6 +127,7 @@ void Context::SubmitCommandBuffer(dk::Fence* wait_fence, bool flush)
     m_queue.waitFence(*wait_fence);
   m_queue.submitCommands(resources.cmdbuf.finishList());
   m_queue.signalFence(resources.fence);
+  resources.submitted = true;
 
   if (flush)
     m_queue.flush();
@@ -137,6 +145,8 @@ void Context::ActivateCommandBuffer(u32 index)
   if (resources.fence_counter > m_completed_fence_counter)
     WaitForCommandBufferCompletion(index);
 
+  resources.submitted = false;
+
   if (resources.cmd_memory_used.size() > 0)
   {
     // clear rolls back to the start of the last memory block
@@ -145,7 +155,7 @@ void Context::ActivateCommandBuffer(u32 index)
     for (size_t i = 0; i < resources.cmd_memory_used.size() - 1; i++)
       m_general_heap.Free(resources.cmd_memory_used[i]);
 
-    MemoryHeap::Allocation lastBlock = resources.cmd_memory_used[resources.cmd_memory_used.size()-1];
+    MemoryHeap::Allocation lastBlock = resources.cmd_memory_used[resources.cmd_memory_used.size() - 1];
     resources.cmd_memory_used.clear();
     resources.cmd_memory_used.push_back(lastBlock);
   }
@@ -156,11 +166,12 @@ void Context::ActivateCommandBuffer(u32 index)
 
 void Context::ExecuteCommandBuffer(bool wait_for_completion)
 {
+  const u32 current_buffer = m_cur_cmd_buf;
   SubmitCommandBuffer();
   MoveToNextCommandBuffer();
 
   if (wait_for_completion)
-    WaitForCommandBufferCompletion(m_cur_cmd_buf);
+    WaitForCommandBufferCompletion(current_buffer);
 }
 
 void Context::WaitForFenceCounter(u64 fence_counter)

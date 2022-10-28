@@ -72,6 +72,7 @@ void HTTPDownloaderCurl::ProcessRequest(Request* req)
 
   cancel_lock.unlock();
 
+#ifndef __SWITCH__
   // Apparently OpenSSL can fire SIGPIPE...
   sigset_t old_block_mask = {};
   sigset_t new_block_mask = {};
@@ -80,6 +81,7 @@ void HTTPDownloaderCurl::ProcessRequest(Request* req)
   sigaddset(&new_block_mask, SIGPIPE);
   if (pthread_sigmask(SIG_BLOCK, &new_block_mask, &old_block_mask) != 0)
     Log_WarningPrint("Failed to block SIGPIPE");
+#endif
 
   req->start_time = Common::Timer::GetCurrentValue();
   int ret = curl_easy_perform(req->handle);
@@ -103,8 +105,10 @@ void HTTPDownloaderCurl::ProcessRequest(Request* req)
 
   curl_easy_cleanup(req->handle);
 
+#ifndef __SWITCH__
   if (pthread_sigmask(SIG_UNBLOCK, &new_block_mask, &old_block_mask) != 0)
     Log_WarningPrint("Failed to unblock SIGPIPE");
+#endif
 
   cancel_lock.lock();
   req->state = Request::State::Complete;

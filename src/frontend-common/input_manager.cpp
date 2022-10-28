@@ -1565,4 +1565,7 @@ void InputManager::ReloadSources(SettingsInterface& si, std::unique_lock<std::mu
 #ifdef __ANDROID__
   UpdateInputSourceState(si, settings_lock, InputSourceType::Android, &InputSource::CreateAndroidSource, true);
 #endif
+#ifdef __SWITCH__
+  UpdateInputSourceState(si, settings_lock, InputSourceType::Switch, &InputSource::CreateSwitchSource, true);
+#endif
 }

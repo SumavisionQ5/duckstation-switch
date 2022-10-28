@@ -30,6 +30,9 @@ enum class InputSourceType : u32
 #ifdef __ANDROID__
   Android,
 #endif
+#ifdef __SWITCH__
+  Switch,
+#endif
   Count,
 };
 

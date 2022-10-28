@@ -109,7 +109,7 @@ ManagedCFilePtr OpenManagedSharedCFile(const char* filename, const char* mode, F
 std::FILE* OpenSharedCFile(const char* filename, const char* mode, FileShareMode share_mode);
 
 /// Abstracts a POSIX file lock.
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__SWITCH__)
 class POSIXLock
 {
 public:

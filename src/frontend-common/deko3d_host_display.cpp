@@ -6,7 +6,7 @@
 #include "common/deko3d/util.h"
 #include "common/log.h"
 #include "common/string_util.h"
-#include "common_host_interface.h"
+#include "core/settings.h"
 #include "core/shader_cache_version.h"
 #include "frontend-common/imgui_impl_deko3d.h"
 #include "imgui.h"
@@ -17,45 +17,22 @@
 #include <tuple>
 Log_SetChannel(Deko3DHostDisplay);
 
-namespace FrontendCommon {
-
-class Deko3DHostDisplayTexture : public HostDisplayTexture
-{
-public:
-  Deko3DHostDisplayTexture(Deko3D::Texture texture, Deko3D::StagingTexture staging_texture,
-                           HostDisplayPixelFormat format)
-    : m_texture(std::move(texture)), m_staging_texture(std::move(staging_texture)), m_format(format)
-  {
-  }
-  ~Deko3DHostDisplayTexture() override = default;
-
-  void* GetHandle() const override { return const_cast<Deko3D::Texture*>(&m_texture); }
-  u32 GetWidth() const override { return m_texture.GetWidth(); }
-  u32 GetHeight() const override { return m_texture.GetHeight(); }
-  u32 GetLayers() const override { return m_texture.GetLayers(); }
-  u32 GetLevels() const override { return m_texture.GetLevels(); }
-  u32 GetSamples() const override { return m_texture.GetSamples(); }
-  HostDisplayPixelFormat GetFormat() const override { return m_format; }
-
-  const Deko3D::Texture& GetTexture() const { return m_texture; }
-  Deko3D::Texture& GetTexture() { return m_texture; }
-  Deko3D::StagingTexture& GetStagingTexture() { return m_staging_texture; }
-
-private:
-  Deko3D::Texture m_texture;
-  Deko3D::StagingTexture m_staging_texture;
-  HostDisplayPixelFormat m_format;
-};
-
 Deko3DHostDisplay::Deko3DHostDisplay() = default;
 
 Deko3DHostDisplay::~Deko3DHostDisplay()
 {
-  AssertMsg(!m_swap_chain, "Swap chain should have been destroyed by now");
-  AssertMsg(!g_deko3d_context, "Context should have been destroyed by now");
+  if (!g_deko3d_context)
+    return;
+
+  g_deko3d_context->WaitGPUIdle();
+
+  DestroyResources();
+  DestroyRenderSurface();
+
+  Deko3D::Context::Destroy();
 }
 
-HostDisplay::RenderAPI Deko3DHostDisplay::GetRenderAPI() const
+RenderAPI Deko3DHostDisplay::GetRenderAPI() const
 {
   return RenderAPI::Deko3D;
 }
@@ -80,8 +57,7 @@ bool Deko3DHostDisplay::HasRenderSurface() const
   return g_deko3d_context != nullptr;
 }
 
-bool Deko3DHostDisplay::CreateRenderDevice(const WindowInfo& wi, std::string_view adapter_name, bool debug_device,
-                                           bool threaded_presentation)
+bool Deko3DHostDisplay::CreateRenderDevice(const WindowInfo& wi)
 {
   WindowInfo local_wi(wi);
   if (!Deko3D::Context::Create(&local_wi))
@@ -100,28 +76,20 @@ bool Deko3DHostDisplay::CreateRenderDevice(const WindowInfo& wi, std::string_vie
   return true;
 }
 
-bool Deko3DHostDisplay::InitializeRenderDevice(std::string_view shader_cache_directory, bool debug_device,
-                                               bool threaded_presentation)
+bool Deko3DHostDisplay::InitializeRenderDevice()
 {
-  Deko3D::ShaderCache::Create(shader_cache_directory, SHADER_CACHE_VERSION, debug_device);
+#ifdef NDEBUG
+  const bool debug = false;
+#else
+  const bool debug = true;
+#endif
+
+  Deko3D::ShaderCache::Create(EmuFolders::Cache, SHADER_CACHE_VERSION, debug);
 
   if (!CreateResources())
     return false;
 
   return true;
-}
-
-void Deko3DHostDisplay::DestroyRenderDevice()
-{
-  if (!g_deko3d_context)
-    return;
-
-  g_deko3d_context->WaitGPUIdle();
-
-  DestroyResources();
-  DestroyRenderSurface();
-
-  Deko3D::Context::Destroy();
 }
 
 bool Deko3DHostDisplay::MakeRenderContextCurrent()
@@ -173,148 +141,103 @@ bool Deko3DHostDisplay::SetPostProcessingChain(const std::string_view& config)
   return false;
 }
 
-static constexpr std::array<DkImageFormat, static_cast<u32>(HostDisplayPixelFormat::Count)>
-  s_display_pixel_format_mapping = {{DkImageFormat_None, DkImageFormat_RGBA8_Unorm, DkImageFormat_BGRA8_Unorm,
-                                     DkImageFormat_RGB565_Unorm, DkImageFormat_BGR5A1_Unorm}};
+static constexpr std::array<DkImageFormat, static_cast<u32>(GPUTexture::Format::Count)> s_display_pixel_format_mapping =
+  {{DkImageFormat_None, DkImageFormat_RGBA8_Unorm, DkImageFormat_BGRA8_Unorm, DkImageFormat_BGR565_Unorm,
+    DkImageFormat_BGR5A1_Unorm, DkImageFormat_R8_Unorm, DkImageFormat_Z16}};
 
-std::unique_ptr<HostDisplayTexture> Deko3DHostDisplay::CreateTexture(u32 width, u32 height, u32 layers, u32 levels,
-                                                                     u32 samples, HostDisplayPixelFormat format,
-                                                                     const void* data, u32 data_stride, bool dynamic)
+std::unique_ptr<GPUTexture> Deko3DHostDisplay::CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
+                                                             GPUTexture::Format format, const void* data,
+                                                             u32 data_stride, bool dynamic)
 {
   const DkImageFormat dk_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
   if (dk_format == DkImageFormat_None)
     return {};
 
-  printf("creating texture %d %d\n", width, height);
-  Deko3D::Texture texture;
-  if (!texture.Create(width, height, levels, layers, dk_format, static_cast<DkMsMode>(__builtin_ctz(samples)),
-                      (layers > 1) ? DkImageType_2DArray : DkImageType_2D, 0))
+  std::unique_ptr<Deko3D::Texture> texture(std::make_unique<Deko3D::Texture>());
+  if (!texture->Create(width, height, levels, layers, dk_format, static_cast<DkMsMode>(__builtin_ctz(samples)),
+                       (layers > 1) ? DkImageType_2DArray : DkImageType_2D, 0))
   {
     return {};
   }
 
-  Deko3D::StagingTexture staging_texture;
-  if (data || dynamic)
-  {
-    if (!staging_texture.Create(dk_format, width, height))
-    {
-      return {};
-    }
-  }
-
   if (data)
   {
-    staging_texture.WriteTexels(0, 0, width, height, data, data_stride);
-    staging_texture.CopyToTexture(g_deko3d_context->GetCmdBuf(), 0, 0, texture, 0, 0, 0, 0, width, height);
-  }
-  else
-  {
-    // clear it instead so we don't read uninitialized data (and keep the validation layer happy!)
-    /*static constexpr VkClearColorValue ccv = {};
-    static constexpr VkImageSubresourceRange isr = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
-    vkCmdClearColorImage(g_vulkan_context->GetCurrentCommandBuffer(), texture.GetImage(), texture.GetLayout(), &ccv, 1u,
-                         &isr);*/
+    texture->Update(0, 0, width, height, 0, 0, data, data_stride);
   }
 
-  // don't need to keep the staging texture around if we're not dynamic
-  if (!dynamic)
-    staging_texture.Destroy(true);
-
-  return std::make_unique<Deko3DHostDisplayTexture>(std::move(texture), std::move(staging_texture), format);
+  return texture;
 }
 
-void Deko3DHostDisplay::UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height,
-                                      const void* data, u32 data_stride)
+bool Deko3DHostDisplay::UpdateTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* data,
+                                      u32 data_stride)
 {
-  Deko3DHostDisplayTexture* dk_texture = static_cast<Deko3DHostDisplayTexture*>(texture);
+  return static_cast<Deko3D::Texture*>(texture)->Update(x, y, width, height, 0, 0, data, data_stride);
+}
 
-  Deko3D::StagingTexture* staging_texture;
-  if (dk_texture->GetStagingTexture().IsValid())
-  {
-    staging_texture = &dk_texture->GetStagingTexture();
-  }
-  else
-  {
-    // TODO: This should use a stream buffer instead for speed.
-    if (m_upload_staging_texture.IsValid())
-      m_upload_staging_texture.Flush();
+bool Deko3DHostDisplay::BeginTextureUpdate(GPUTexture* texture, u32 width, u32 height, void** out_buffer,
+                                           u32* out_pitch)
+{
+  return static_cast<Deko3D::Texture*>(texture)->BeginUpdate(width, height, out_buffer, out_pitch);
+}
 
-    if ((m_upload_staging_texture.GetWidth() < width || m_upload_staging_texture.GetHeight() < height) &&
-        !m_upload_staging_texture.Create(DkImageFormat_RGBA8_Unorm, width, height))
+void Deko3DHostDisplay::EndTextureUpdate(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height)
+{
+  static_cast<Deko3D::Texture*>(texture)->EndUpdate(x, y, width, height, 0, 0);
+}
+
+bool Deko3DHostDisplay::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
+                                        u32 out_data_stride)
+{
+  Deko3D::Texture* tex = static_cast<Deko3D::Texture*>(texture);
+  /*
+    const u32 pitch = tex->CalcUpdatePitch(width);
+    const u32 size = pitch * height;
+    const u32 level = 0;
+    if (!CheckStagingBufferSize(size))
     {
-      Panic("Failed to create upload staging texture");
-    }
-
-    staging_texture = &m_upload_staging_texture;
-  }
-
-  staging_texture->WriteTexels(0, 0, width, height, data, data_stride);
-  staging_texture->CopyToTexture(0, 0, dk_texture->GetTexture(), x, y, 0, 0, width, height);
-}
-
-bool Deko3DHostDisplay::DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y,
-                                        u32 width, u32 height, void* out_data, u32 out_data_stride)
-{
-  Deko3D::Texture* texture = static_cast<Deko3D::Texture*>(const_cast<void*>(texture_handle));
-
-  if ((m_readback_staging_texture.GetWidth() < width || m_readback_staging_texture.GetHeight() < height) &&
-      !m_readback_staging_texture.Create(texture->GetFormat(), width, height))
-  {
-    return false;
-  }
-
-  m_readback_staging_texture.CopyFromTexture(*texture, x, y, 0, 0, 0, 0, width, height);
-  m_readback_staging_texture.ReadTexels(0, 0, width, height, out_data, out_data_stride);
-  return true;
-}
-
-bool Deko3DHostDisplay::SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const
-{
-  //const DkImageFormat dk_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
-  //return dk_format != DkImageFormat_None;
-  return format == HostDisplayPixelFormat::RGBA8;
-}
-
-bool Deko3DHostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                              u32* out_pitch)
-{
-  const DkImageFormat dk_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
-
-  if (m_display_pixels_texture.GetWidth() < width || m_display_pixels_texture.GetHeight() < height ||
-      m_display_pixels_texture.GetFormat() != dk_format)
-  {
-    if (!m_display_pixels_texture.Create(width, height, 1, 1, dk_format, DkMsMode_1x, DkImageType_2D, 0))
-    {
-      printf("failed to create pixel blah\n");
+      Log_ErrorPrintf("Can't read back %ux%u", width, height);
       return false;
     }
-  }
 
-  if ((m_upload_staging_texture.GetWidth() < width || m_upload_staging_texture.GetHeight() < height) &&
-      !m_upload_staging_texture.Create(dk_format, width, height))
-  {
-    printf("failed to create upload buffer\n");
-    return false;
-  }
+    {
+      dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
 
-  SetDisplayTexture(&m_display_pixels_texture, format, m_display_pixels_texture.GetWidth(),
-                    m_display_pixels_texture.GetHeight(), 0, 0, width, height);
+      VkBufferImageCopy image_copy = {};
+      const VkImageAspectFlags aspect = Vulkan::Util::IsDepthFormat(static_cast<VkFormat>(tex->GetFormat())) ?
+                                          VK_IMAGE_ASPECT_DEPTH_BIT :
+                                          VK_IMAGE_ASPECT_COLOR_BIT;
+      image_copy.bufferOffset = 0;
+      image_copy.bufferRowLength = tex->CalcUpdateRowLength(pitch);
+      image_copy.bufferImageHeight = 0;
+      image_copy.imageSubresource = {aspect, level, 0u, 1u};
+      image_copy.imageOffset = {static_cast<s32>(x), static_cast<s32>(y), 0};
+      image_copy.imageExtent = {width, height, 1u};
 
-  *out_buffer = m_upload_staging_texture.GetMappedPointer();
-  *out_pitch = m_upload_staging_texture.GetMappedStride();
+      cmdbuf.barrier(DkBarrier_Full, 0);
+
+      // do the copy
+      cmdbuf.copyImageToBuffer()
+      vkCmdCopyImageToBuffer(cmdbuf, tex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_readback_staging_buffer,
+    1, &image_copy);
+    }
+
+    g_deko3d_context->ExecuteCommandBuffer(true);
+
+    StringUtil::StrideMemCpy(out_data, out_data_stride, m_readback_staging_buffer_map, pitch,
+                             std::min(pitch, out_data_stride), height);
+  */
   return true;
 }
 
-void Deko3DHostDisplay::EndSetDisplayPixels()
+bool Deko3DHostDisplay::SupportsTextureFormat(GPUTexture::Format format) const
 {
-  m_upload_staging_texture.CopyToTexture(0, 0, m_display_pixels_texture, 0, 0, 0, 0,
-                                         static_cast<u32>(m_display_texture_view_width),
-                                         static_cast<u32>(m_display_texture_view_height));
+  return format == GPUTexture::Format::RGBA8 || format == GPUTexture::Format::RGB565 ||
+         format == GPUTexture::Format::RGBA5551;
 }
 
 void Deko3DHostDisplay::SetVSync(bool enabled) {}
 
-bool Deko3DHostDisplay::Render()
+bool Deko3DHostDisplay::Render(bool skip_present)
 {
   if (ShouldSkipDisplayingFrame() || !m_swap_chain)
   {
@@ -331,7 +254,7 @@ bool Deko3DHostDisplay::Render()
   dk::ImageView colorTargetView{m_swap_chain->GetImage(imageSlot).GetImage()};
   cmdbuf.bindRenderTargets({&colorTargetView});
   cmdbuf.setScissors(0, {{0, 0, m_window_info.surface_width, m_window_info.surface_height}});
-  cmdbuf.clearColor(0, DkColorMask_RGBA, 1.f, 0.f, 0.f, 1.f);
+  cmdbuf.clearColor(0, DkColorMask_RGBA, 0.f, 0.f, 0.f, 1.f);
 
   RenderDisplay();
 
@@ -358,7 +281,7 @@ void Deko3DHostDisplay::RenderDisplay()
     return;
   }
 
-  const auto [left, top, width, height] = CalculateDrawRect(GetWindowWidth(), GetWindowHeight(), m_display_top_margin);
+  const auto [left, top, width, height] = CalculateDrawRect(GetWindowWidth(), GetWindowHeight());
 
   // no post processing for now
   /*if (!m_post_processing_chain.IsEmpty())
@@ -370,35 +293,36 @@ void Deko3DHostDisplay::RenderDisplay()
     return;
   }*/
 
-  RenderDisplay(left, top, width, height, m_display_texture_handle, m_display_texture_width, m_display_texture_height,
-                m_display_texture_view_x, m_display_texture_view_y, m_display_texture_view_width,
-                m_display_texture_view_height, m_display_linear_filtering);
+  RenderDisplay(left, top, width, height, static_cast<Deko3D::Texture*>(m_display_texture), m_display_texture_view_x,
+                m_display_texture_view_y, m_display_texture_view_width, m_display_texture_view_height,
+                IsUsingLinearFiltering());
 }
 
-void Deko3DHostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, void* texture_handle, u32 texture_width,
-                                      s32 texture_height, s32 texture_view_x, s32 texture_view_y,
-                                      s32 texture_view_width, s32 texture_view_height, bool linear_filter)
+void Deko3DHostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, Deko3D::Texture* texture,
+                                      s32 texture_view_x, s32 texture_view_y, s32 texture_view_width,
+                                      s32 texture_view_height, bool linear_filter)
 {
   dk::CmdBuf cmdbuffer = g_deko3d_context->GetCmdBuf();
 
-  const float position_adjust = m_display_linear_filtering ? 0.5f : 0.0f;
-  const float size_adjust = m_display_linear_filtering ? 1.0f : 0.0f;
-  const UniformBuffer pc{(static_cast<float>(texture_view_x) + position_adjust) / static_cast<float>(texture_width),
-                         (static_cast<float>(texture_view_y) + position_adjust) / static_cast<float>(texture_height),
-                         (static_cast<float>(texture_view_width) - size_adjust) / static_cast<float>(texture_width),
-                         (static_cast<float>(texture_view_height) - size_adjust) / static_cast<float>(texture_height)};
+  const float position_adjust = linear_filter ? 0.5f : 0.0f;
+  const float size_adjust = linear_filter ? 1.0f : 0.0f;
+  const UniformBuffer pc{
+    (static_cast<float>(texture_view_x) + position_adjust) / static_cast<float>(texture->GetWidth()),
+    (static_cast<float>(texture_view_y) + position_adjust) / static_cast<float>(texture->GetHeight()),
+    (static_cast<float>(texture_view_width) - size_adjust) / static_cast<float>(texture->GetWidth()),
+    (static_cast<float>(texture_view_height) - size_adjust) / static_cast<float>(texture->GetHeight())};
   cmdbuffer.bindVtxAttribState({});
   cmdbuffer.bindColorState(dk::ColorState{});
   cmdbuffer.bindColorWriteState(dk::ColorWriteState{}.setMask(0, DkColorMask_RGBA));
   cmdbuffer.bindDepthStencilState(dk::DepthStencilState{}.setDepthWriteEnable(false).setDepthTestEnable(false));
-  cmdbuffer.bindUniformBuffer(DkStage_Vertex, 0, g_deko3d_context->GetGeneralHeap().GpuAddr(m_uniform_buffer), m_uniform_buffer.size);
+  cmdbuffer.bindUniformBuffer(DkStage_Vertex, 0, g_deko3d_context->GetGeneralHeap().GpuAddr(m_uniform_buffer),
+                              m_uniform_buffer.size);
 
-  Deko3D::Texture* texture = static_cast<Deko3D::Texture*>(texture_handle);
-
-  cmdbuffer.barrier(DkBarrier_Full, DkInvalidateFlags_Descriptors|DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+  cmdbuffer.barrier(DkBarrier_Full,
+                    DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
 
   dk::ImageDescriptor descriptor;
-  dk::ImageView view {texture->GetImage()};
+  dk::ImageView view{texture->GetImage()};
   descriptor.initialize(view);
   cmdbuffer.pushData(g_deko3d_context->GetGeneralHeap().GpuAddr(m_descriptor_buffer), &descriptor, sizeof(descriptor));
   cmdbuffer.bindSamplerDescriptorSet(g_deko3d_context->GetGeneralHeap().GpuAddr(m_sampler_buffer), 2);
@@ -415,7 +339,7 @@ void Deko3DHostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, 
 }
 
 bool Deko3DHostDisplay::RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
-                                         HostDisplayPixelFormat* out_format)
+                                         GPUTexture::Format* out_format)
 {
   return false;
 }
@@ -436,7 +360,6 @@ void main()
   vec2 pos = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
   v_tex0 = u_src_rect.xy + pos * u_src_rect.zw;
   gl_Position = vec4(pos * vec2(2.0f, -2.0f) + vec2(-1.0f, 1.0f), 0.0f, 1.0f);
-  gl_Position.y = -gl_Position.y;
 }
 )";
 
@@ -490,8 +413,6 @@ void Deko3DHostDisplay::DestroyResources()
   g_deko3d_context->GetGeneralHeap().Free(m_uniform_buffer);
 
   m_display_pixels_texture.Destroy(false);
-  m_readback_staging_texture.Destroy(false);
-  m_upload_staging_texture.Destroy(false);
 }
 
 bool Deko3DHostDisplay::CreateImGuiContext()
@@ -517,5 +438,3 @@ bool Deko3DHostDisplay::UpdateImGuiFontTexture()
   ImGui_ImplDeko3D_DestroyFontUploadObjects();
   return ImGui_ImplDeko3D_CreateFontsTexture(g_deko3d_context->GetCmdBuf());
 }
-
-} // namespace FrontendCommon

@@ -10,14 +10,12 @@ if(SWITCH)
   enable_language(ASM)
 
   target_sources(duckstation-nogui PRIVATE
-    imgui_impl_switch.cpp
-    imgui_impl_switch.h
-    switch_host_interface.cpp
-    switch_host_interface.h
+    switch_nogui_platform.cpp
+    switch_nogui_platform.h
     switch_asm.s
   )
-  target_link_libraries(duckstation-nogui PUBLIC deko3dd nxd)
-  
+  target_link_libraries(duckstation-nogui PUBLIC "${NX_LIBRARIES}")
+
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/control.nacp
     COMMAND ${NACPTOOL} --create "duckstation" "Stenzek, RSDuck" "aaaa" ${CMAKE_BINARY_DIR}/control.nacp)
   

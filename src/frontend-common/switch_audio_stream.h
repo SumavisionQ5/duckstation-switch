@@ -1,5 +1,5 @@
 #pragma once
-#include "common/audio_stream.h"
+#include "util/audio_stream.h"
 #include <cstdint>
 #include <atomic>
 #include <switch.h>
@@ -7,23 +7,18 @@
 class SwitchAudioStream final : public AudioStream
 {
 public:
-  SwitchAudioStream();
+  SwitchAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, AudioStretchMode stretch);
   ~SwitchAudioStream();
 
-  static std::unique_ptr<SwitchAudioStream> Create();
-
-protected:
-  ALWAYS_INLINE bool IsOpen() const { return m_mem_pool != nullptr; }
-
-  bool OpenDevice() override;
-  void PauseDevice(bool paused) override;
-  void CloseDevice() override;
-  void FramesAvailable() override;
+  void SetPaused(bool paused) override;
   void SetOutputVolume(u32 volume) override;
 
-  static void AudioThread(void* userdata);
+  bool Initialize(u32 latency_ms);
 
 private:
+  void DestroyContextAndStream();
+
+  static void AudioThread(void* userdata);
   AudioDriver m_audio_driver;
   u8* m_mem_pool = nullptr;
   Thread m_audio_thread;
@@ -36,7 +31,6 @@ private:
     Stop
   };
 
-  std::mutex m_settings_lock;
   std::atomic<State> m_state = State::Playing;
   std::atomic<float> m_thread_volume = 1.f;
 };
