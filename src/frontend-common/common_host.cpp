@@ -197,6 +197,12 @@ std::unique_ptr<AudioStream> Host::CreateAudioStream(AudioBackend backend, u32 s
 {
   switch (backend)
   {
+
+#ifdef __SWITCH__
+    case AudioBackend::Switch:
+      return CommonHost::CreateSwitchAudioStream(sample_rate, channels, buffer_ms, latency_ms, stretch);
+#endif
+
 #ifdef WITH_CUBEB
     case AudioBackend::Cubeb:
       return CommonHost::CreateCubebAudioStream(sample_rate, channels, buffer_ms, latency_ms, stretch);

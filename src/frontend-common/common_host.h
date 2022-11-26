@@ -32,6 +32,10 @@ void PumpMessagesOnCPUThread();
 bool CreateHostDisplayResources();
 void ReleaseHostDisplayResources();
 
+#ifdef __SWITCH__
+std::unique_ptr<AudioStream> CreateSwitchAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, u32 latency_ms,
+                                                     AudioStretchMode stretch);
+#endif
 #ifdef WITH_CUBEB
 std::unique_ptr<AudioStream> CreateCubebAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, u32 latency_ms,
                                                     AudioStretchMode stretch);

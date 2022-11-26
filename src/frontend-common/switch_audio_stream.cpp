@@ -1,6 +1,7 @@
 #include "switch_audio_stream.h"
 #include "common/assert.h"
 #include "common/log.h"
+#include "common_host.h"
 #include <switch.h>
 Log_SetChannel(SwitchAudioStream);
 
@@ -17,6 +18,7 @@ SwitchAudioStream::~SwitchAudioStream()
 void SwitchAudioStream::SetOutputVolume(u32 volume)
 {
   m_thread_volume = volume / 100.f;
+  m_volume = volume;
 }
 
 void SwitchAudioStream::SetPaused(bool paused)
@@ -26,14 +28,13 @@ void SwitchAudioStream::SetPaused(bool paused)
 
 bool SwitchAudioStream::Initialize(u32 latency_ms)
 {
-  static const AudioRendererConfig ar_config =
-  {
-      .output_rate     = AudioRendererOutputRate_48kHz,
-      .num_voices      = 4,
-      .num_effects     = 0,
-      .num_sinks       = 1,
-      .num_mix_objs    = 1,
-      .num_mix_buffers = 2,
+  static const AudioRendererConfig ar_config = {
+    .output_rate = AudioRendererOutputRate_48kHz,
+    .num_voices = 4,
+    .num_effects = 0,
+    .num_sinks = 1,
+    .num_mix_objs = 1,
+    .num_mix_buffers = 2,
   };
   Result r = audrenInitialize(&ar_config);
   if (R_FAILED(r))
@@ -72,8 +73,10 @@ bool SwitchAudioStream::Initialize(u32 latency_ms)
   audrvVoiceSetMixFactor(&m_audio_driver, 0, 1.f, 1, 1);
   audrvVoiceStart(&m_audio_driver, 0);
 
-  threadCreate(&m_audio_thread, SwitchAudioStream::AudioThread, this, nullptr, 1024*32, 0x20, 0);
+  threadCreate(&m_audio_thread, SwitchAudioStream::AudioThread, this, nullptr, 1024 * 128, 0x20, 0);
   threadStart(&m_audio_thread);
+
+  BaseInitialize();
 
   return true;
 }
@@ -138,6 +141,7 @@ void SwitchAudioStream::AudioThread(void* userdata)
       {
         this_ptr->ReadFrames(data, this_ptr->m_audio_thread_buffer_size);
       }
+
       armDCacheFlush(data,
                      this_ptr->m_audio_thread_buffer_size * this_ptr->m_audio_thread_num_channels * sizeof(int16_t));
 
@@ -148,4 +152,14 @@ void SwitchAudioStream::AudioThread(void* userdata)
     audrvUpdate(&this_ptr->m_audio_driver);
     audrenWaitFrame();
   }
+}
+
+std::unique_ptr<AudioStream> CommonHost::CreateSwitchAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms,
+                                                                u32 latency_ms, AudioStretchMode stretch)
+{
+  std::unique_ptr<SwitchAudioStream> stream(
+    std::make_unique<SwitchAudioStream>(sample_rate, channels, buffer_ms, stretch));
+  if (!stream->Initialize(latency_ms))
+    stream.reset();
+  return stream;
 }
