@@ -4,8 +4,10 @@
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QStackedWidget>
 #include <memory>
+#include <optional>
 
 #include "controllersettingsdialog.h"
+#include "common/window_info.h"
 #include "core/types.h"
 #include "displaywidget.h"
 #include "settingsdialog.h"
@@ -97,6 +99,7 @@ public Q_SLOTS:
   bool requestShutdown(bool allow_confirm = true, bool allow_save_to_state = true, bool save_state = true, bool block_until_done = false);
   void requestExit(bool allow_save_to_state = true);
   void checkForSettingChanges();
+  void getWindowInfo(WindowInfo* wi);
 
   void checkForUpdates(bool display_message);
 
@@ -169,6 +172,10 @@ protected:
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dropEvent(QDropEvent* event) override;
 
+#ifdef _WIN32
+  bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
+#endif
+
 private:
   static void setStyleFromSettings();
   static void setIconThemeFromSettings();
@@ -217,6 +224,9 @@ private:
   void setGameListEntryCoverImage(const GameList::Entry* entry);
   void setTheme(const QString& theme);
   void recreate();
+
+  void registerForDeviceNotifications();
+  void unregisterForDeviceNotifications();
 
   /// Fills menu with save state info and handlers.
   void populateGameListContextMenu(const GameList::Entry* entry, QWidget* parent_window, QMenu* menu);
@@ -271,6 +281,10 @@ private:
   bool m_is_closing = false;
 
   GDBServer* m_gdb_server = nullptr;
+
+#ifdef _WIN32
+  void* m_device_notification_handle = nullptr;
+#endif
 };
 
 extern MainWindow* g_main_window;

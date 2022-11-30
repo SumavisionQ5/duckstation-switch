@@ -17,6 +17,7 @@ public:
 
   bool Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) override;
   void UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) override;
+  bool ReloadDevices() override;
   void Shutdown() override;
 
   void PollEvents() override;
@@ -67,9 +68,9 @@ private:
   ControllerDataArray m_controllers;
 
   HMODULE m_xinput_module{};
-  DWORD(WINAPI* m_xinput_get_state)(DWORD, XINPUT_STATE*);
-  DWORD(WINAPI* m_xinput_set_state)(DWORD, XINPUT_VIBRATION*);
-  DWORD(WINAPI* m_xinput_get_capabilities)(DWORD, DWORD, XINPUT_CAPABILITIES*);
+  DWORD(WINAPI* m_xinput_get_state)(DWORD, XINPUT_STATE*) = nullptr;
+  DWORD(WINAPI* m_xinput_set_state)(DWORD, XINPUT_VIBRATION*) = nullptr;
+  DWORD(WINAPI* m_xinput_get_capabilities)(DWORD, DWORD, XINPUT_CAPABILITIES*) = nullptr;
 
   static const char* s_axis_names[NUM_AXES];
   static const char* s_button_names[NUM_BUTTONS];

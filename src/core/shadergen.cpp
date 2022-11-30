@@ -392,7 +392,7 @@ void ShaderGen::DeclareVertexEntryPoint(
 
       ss << "out VertexData" << output_block_suffix << " {\n";
       for (u32 i = 0; i < num_color_outputs; i++)
-        ss << "  " << qualifier << "float4 v_col" << i << ";\n";
+        ss << "  " << (noperspective_color ? "noperspective " : "") << qualifier << "float4 v_col" << i << ";\n";
 
       for (u32 i = 0; i < num_texcoord_outputs; i++)
         ss << "  " << qualifier << "float2 v_tex" << i << ";\n";
@@ -409,7 +409,7 @@ void ShaderGen::DeclareVertexEntryPoint(
       const char* qualifier = GetInterpolationQualifier(false, msaa, ssaa, true);
 
       for (u32 i = 0; i < num_color_outputs; i++)
-        ss << qualifier << "out float4 v_col" << i << ";\n";
+        ss << qualifier << (noperspective_color ? "noperspective " : "") << "out float4 v_col" << i << ";\n";
 
       for (u32 i = 0; i < num_texcoord_outputs; i++)
         ss << qualifier << "out float2 v_tex" << i << ";\n";

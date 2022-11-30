@@ -481,6 +481,11 @@ void NoGUIHost::PlatformWindowFocusLost()
   });
 }
 
+void NoGUIHost::PlatformDevicesChanged()
+{
+  Host::RunOnCPUThread([]() { InputManager::ReloadDevices(); });
+}
+
 bool NoGUIHost::GetSavedPlatformWindowGeometry(s32* x, s32* y, s32* width, s32* height)
 {
   auto lock = Host::GetSettingsLock();
@@ -690,6 +695,11 @@ bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
     return false;
   }
 
+  // reload input sources, since it might use the window handle
+  {
+    auto lock = Host::GetSettingsLock();
+    InputManager::ReloadSources(*Host::GetSettingsInterface(), lock);
+  }
   return true;
 }
 
@@ -710,6 +720,9 @@ void NoGUIHost::ReleaseHostDisplay()
 {
   if (!g_host_display)
     return;
+
+  // close input sources, since it might use the window handle
+  InputManager::CloseSources();
 
   CommonHost::ReleaseHostDisplayResources();
   ImGuiManager::Shutdown();
@@ -956,9 +969,9 @@ void Host::SetFullscreen(bool enabled)
   g_nogui_window->SetFullscreen(enabled);
 }
 
-void* Host::GetTopLevelWindowHandle()
+std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
 {
-  return g_nogui_window->GetPlatformWindowHandle();
+  return g_nogui_window->GetPlatformWindowInfo();
 }
 
 void Host::RequestExit(bool save_state_if_running)

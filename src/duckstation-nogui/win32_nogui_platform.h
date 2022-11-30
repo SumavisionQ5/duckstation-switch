@@ -23,7 +23,6 @@ public:
   void DestroyPlatformWindow() override;
   std::optional<WindowInfo> GetPlatformWindowInfo() override;
   void SetPlatformWindowTitle(std::string title) override;
-  void* GetPlatformWindowHandle() override;
 
   std::optional<u32> ConvertHostKeyboardStringToCode(const std::string_view& str) override;
   std::optional<std::string> ConvertHostKeyboardCodeToString(u32 code) override;
@@ -59,4 +58,6 @@ private:
   std::atomic_bool m_fullscreen{false};
 
   DWORD m_last_mouse_buttons = 0;
+
+  HDEVNOTIFY m_dev_notify_handle = NULL;
 };

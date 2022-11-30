@@ -5,6 +5,7 @@
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"
+#include "core/achievements.h"
 #include "core/host.h"
 #include "core/host_display.h"
 #include "core/memory_card.h"
@@ -24,10 +25,6 @@
 #include "settingwidgetbinder.h"
 #include "util/cd_image.h"
 
-#ifdef WITH_CHEEVOS
-#include "frontend-common/achievements.h"
-#endif
-
 #include <QtCore/QDebug>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -42,6 +39,15 @@
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QStyleFactory>
 #include <cmath>
+
+#ifdef WITH_CHEEVOS
+#include "frontend-common/achievements.h"
+#endif
+
+#ifdef _WIN32
+#include "common/windows_headers.h"
+#include <Dbt.h>
+#endif
 
 Log_SetChannel(MainWindow);
 
@@ -101,6 +107,10 @@ MainWindow::~MainWindow()
   // we compare here, since recreate destroys the window later
   if (g_main_window == this)
     g_main_window = nullptr;
+
+#ifdef _WIN32
+  unregisterForDeviceNotifications();
+#endif
 }
 
 void MainWindow::updateApplicationTheme()
@@ -129,6 +139,10 @@ void MainWindow::initialize()
   if (Achievements::IsUsingRAIntegration())
     Achievements::RAIntegration::MainWindowChanged((void*)winId());
 #endif
+
+#ifdef _WIN32
+  registerForDeviceNotifications();
+#endif
 }
 
 void MainWindow::reportError(const QString& title, const QString& message)
@@ -142,6 +156,48 @@ bool MainWindow::confirmMessage(const QString& title, const QString& message)
 
   return (QMessageBox::question(this, title, message) == QMessageBox::Yes);
 }
+
+void MainWindow::registerForDeviceNotifications()
+{
+#ifdef _WIN32
+  // We use these notifications to detect when a controller is connected or disconnected.
+  DEV_BROADCAST_DEVICEINTERFACE_W filter = {sizeof(DEV_BROADCAST_DEVICEINTERFACE_W), DBT_DEVTYP_DEVICEINTERFACE};
+  m_device_notification_handle = RegisterDeviceNotificationW(
+    (HANDLE)winId(), &filter, DEVICE_NOTIFY_WINDOW_HANDLE | DEVICE_NOTIFY_ALL_INTERFACE_CLASSES);
+#endif
+}
+
+void MainWindow::unregisterForDeviceNotifications()
+{
+#ifdef _WIN32
+  if (!m_device_notification_handle)
+    return;
+
+  UnregisterDeviceNotification(static_cast<HDEVNOTIFY>(m_device_notification_handle));
+  m_device_notification_handle = nullptr;
+#endif
+}
+
+#ifdef _WIN32
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+  static constexpr const char win_type[] = "windows_generic_MSG";
+  if (eventType == QByteArray(win_type, sizeof(win_type) - 1))
+  {
+    const MSG* msg = static_cast<const MSG*>(message);
+    if (msg->message == WM_DEVICECHANGE && msg->wParam == DBT_DEVNODES_CHANGED)
+    {
+      g_emu_thread->reloadInputDevices();
+      *result = 1;
+      return true;
+    }
+  }
+
+  return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+#endif
 
 bool MainWindow::createDisplay(bool fullscreen, bool render_to_main)
 {
@@ -238,7 +294,7 @@ bool MainWindow::updateDisplay(bool fullscreen, bool render_to_main, bool surfac
 
   g_host_display->DestroyRenderSurface();
 
-  destroyDisplayWidget(surfaceless);
+  destroyDisplayWidget(surfaceless || fullscreen);
 
   // if we're going to surfaceless, we're done here
   if (surfaceless)
@@ -648,7 +704,10 @@ std::string MainWindow::getDeviceDiscPath(const QString& title)
 void MainWindow::recreate()
 {
   if (s_system_valid)
-    requestShutdown(false, true, true);
+    requestShutdown(false, true, true, true);
+
+  // We need to close input sources, because e.g. DInput uses our window handle.
+  g_emu_thread->closeInputSources();
 
   close();
   g_main_window = nullptr;
@@ -657,6 +716,9 @@ void MainWindow::recreate()
   new_main_window->initialize();
   new_main_window->show();
   deleteLater();
+
+  // Reload the sources we just closed.
+  g_emu_thread->reloadInputSources();
 }
 
 void MainWindow::populateGameListContextMenu(const GameList::Entry* entry, QWidget* parent_window, QMenu* menu)
@@ -1374,7 +1436,7 @@ void MainWindow::setupAdditionalUi()
   m_ui.actionViewStatusBar->setChecked(status_bar_visible);
   m_ui.statusBar->setVisible(status_bar_visible);
 
-  const bool toolbar_visible = Host::GetBaseBoolSettingValue("UI", "ShowToolbar", true);
+  const bool toolbar_visible = Host::GetBaseBoolSettingValue("UI", "ShowToolbar", false);
   m_ui.actionViewToolbar->setChecked(toolbar_visible);
   m_ui.toolBar->setVisible(toolbar_visible);
 
@@ -1658,7 +1720,7 @@ void MainWindow::updateWindowState(bool force_visible)
     return;
 
   const bool hide_window = !isRenderingToMain() && shouldHideMainWindow();
-  const bool disable_resize = Host::GetBaseBoolSettingValue("Main", "DisableWindowResize", false);
+  const bool disable_resize = Host::GetBoolSettingValue("Main", "DisableWindowResize", false);
   const bool has_window = s_system_valid || m_display_widget;
 
   // Need to test both valid and display widget because of startup (vm invalid while window is created).
@@ -1725,13 +1787,13 @@ bool MainWindow::isRenderingToMain() const
 bool MainWindow::shouldHideMouseCursor() const
 {
   return m_hide_mouse_cursor ||
-         (isRenderingFullscreen() && Host::GetBoolSettingValue("Main", "HideCursorInFullscreen", false));
+         (isRenderingFullscreen() && Host::GetBoolSettingValue("Main", "HideCursorInFullscreen", true));
 }
 
 bool MainWindow::shouldHideMainWindow() const
 {
-  return Host::GetBaseBoolSettingValue("Main", "HideMainWindowWhenRunning", false) || isRenderingFullscreen() ||
-         QtHost::InNoGUIMode();
+  return Host::GetBaseBoolSettingValue("Main", "HideMainWindowWhenRunning", false) ||
+         (g_emu_thread->shouldRenderToMain() && isRenderingFullscreen()) || QtHost::InNoGUIMode();
 }
 
 void MainWindow::switchToGameListView()
@@ -1742,7 +1804,7 @@ void MainWindow::switchToGameListView()
     return;
   }
 
-  if (s_system_valid)
+  if (m_display_created)
   {
     m_was_paused_on_surface_loss = s_system_paused;
     if (!s_system_paused)
@@ -2389,7 +2451,7 @@ bool MainWindow::requestShutdown(bool allow_confirm /* = true */, bool allow_sav
     QMessageBox msgbox(lock.getDialogParent());
     msgbox.setIcon(QMessageBox::Question);
     msgbox.setWindowTitle(tr("Confirm Shutdown"));
-    msgbox.setText("Are you sure you want to shut down the virtual machine?");
+    msgbox.setText(tr("Are you sure you want to shut down the virtual machine?"));
 
     QCheckBox* save_cb = new QCheckBox(tr("Save State For Resume"), &msgbox);
     save_cb->setChecked(allow_save_to_state && save_state);
@@ -2412,7 +2474,7 @@ bool MainWindow::requestShutdown(bool allow_confirm /* = true */, bool allow_sav
   // reshow the main window during display updates, because otherwise fullscreen transitions and renderer switches
   // would briefly show and then hide the main window. So instead, we do it on shutdown, here. Except if we're in
   // batch mode, when we're going to exit anyway.
-  if (!isRenderingToMain() && isHidden() && !QtHost::InBatchMode())
+  if (!isRenderingToMain() && isHidden() && !QtHost::InBatchMode() && !g_emu_thread->isRunningFullscreenUI())
     updateWindowState(true);
 
   // Now we can actually shut down the VM.
@@ -2456,6 +2518,13 @@ void MainWindow::checkForSettingChanges()
 #endif
 
   updateWindowState();
+}
+
+void MainWindow::getWindowInfo(WindowInfo* wi)
+{
+  std::optional<WindowInfo> opt_wi(QtUtils::GetWindowInfoForWidget(this));
+  if (opt_wi.has_value())
+    *wi = opt_wi.value();
 }
 
 void MainWindow::onCheckForUpdatesActionTriggered()
@@ -2678,7 +2747,16 @@ MainWindow::SystemLock MainWindow::pauseAndLockSystem()
   if (was_fullscreen)
     g_emu_thread->setSurfaceless(true);
   if (!was_paused)
+  {
     g_emu_thread->setSystemPaused(true);
+
+    // Need to wait for the pause to go through, and make the main window visible if needed.
+    while (!s_system_paused)
+      QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 1);
+
+    // Ensure it's visible before we try to create any dialogs parented to us.
+    QApplication::sync();
+  }
 
   // We want to parent dialogs to the display widget, except if we were fullscreen,
   // since it's going to get destroyed by the surfaceless call above.

@@ -6,10 +6,6 @@
 #include <xaudio2.h>
 Log_SetChannel(XAudio2AudioStream);
 
-#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
-#pragma comment(lib, "xaudio2.lib")
-#endif
-
 XAudio2AudioStream::XAudio2AudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, AudioStretchMode stretch)
   : AudioStream(sample_rate, channels, buffer_ms, stretch)
 {
@@ -20,13 +16,11 @@ XAudio2AudioStream::~XAudio2AudioStream()
   if (IsOpen())
     CloseDevice();
 
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
   if (m_xaudio2_library)
     FreeLibrary(m_xaudio2_library);
 
   if (m_com_initialized_by_us)
     CoUninitialize();
-#endif
 }
 
 std::unique_ptr<AudioStream> CommonHost::CreateXAudio2Stream(u32 sample_rate, u32 channels, u32 buffer_ms,
@@ -43,17 +37,13 @@ bool XAudio2AudioStream::OpenDevice(u32 latency_ms)
 {
   DebugAssert(!IsOpen());
 
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
   m_xaudio2_library = LoadLibraryW(XAUDIO2_DLL_W);
   if (!m_xaudio2_library)
   {
     Log_ErrorPrintf("Failed to load '%s', make sure you're using Windows 10", XAUDIO2_DLL_A);
     return false;
   }
-#endif
 
-  HRESULT hr;
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
   using PFNXAUDIO2CREATE =
     HRESULT(STDAPICALLTYPE*)(IXAudio2 * *ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR XAudio2Processor);
   PFNXAUDIO2CREATE xaudio2_create =
@@ -61,7 +51,7 @@ bool XAudio2AudioStream::OpenDevice(u32 latency_ms)
   if (!xaudio2_create)
     return false;
 
-  hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   m_com_initialized_by_us = SUCCEEDED(hr);
   if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE)
   {
@@ -70,9 +60,6 @@ bool XAudio2AudioStream::OpenDevice(u32 latency_ms)
   }
 
   hr = xaudio2_create(m_xaudio.ReleaseAndGetAddressOf(), 0, XAUDIO2_DEFAULT_PROCESSOR);
-#else
-  hr = XAudio2Create(m_xaudio.ReleaseAndGetAddressOf(), 0, XAUDIO2_DEFAULT_PROCESSOR);
-#endif
   if (FAILED(hr))
   {
     Log_ErrorPrintf("XAudio2Create() failed: %08X", hr);

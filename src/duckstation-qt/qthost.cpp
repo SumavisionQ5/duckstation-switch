@@ -6,6 +6,7 @@
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
+#include "common/window_info.h"
 #include "core/cheats.h"
 #include "core/controller.h"
 #include "core/game_database.h"
@@ -166,6 +167,7 @@ bool QtHost::InitializeConfig(std::string settings_filename)
     }
 
     s_base_settings_interface->SetUIntValue("Main", "SettingsVersion", SETTINGS_VERSION);
+    s_base_settings_interface->SetBoolValue("ControllerPorts", "ControllerSettingsMigrated", true);
     SetDefaultSettings(*s_base_settings_interface, true, true);
     s_base_settings_interface->Save();
   }
@@ -178,6 +180,14 @@ bool QtHost::InitializeConfig(std::string settings_filename)
       s_base_settings_interface->GetBoolValue("Logging", "LogToConsole", Settings::DEFAULT_LOG_TO_CONSOLE))
   {
     Log::SetConsoleOutputParams(true, nullptr, LOGLEVEL_NONE);
+  }
+
+  // TEMPORARY: Migrate controller settings to new interface.
+  if (!s_base_settings_interface->GetBoolValue("ControllerPorts", "ControllerSettingsMigrated", false))
+  {
+    s_base_settings_interface->SetBoolValue("ControllerPorts", "ControllerSettingsMigrated", true);
+    if (InputManager::MigrateBindings(*s_base_settings_interface.get()))
+      s_base_settings_interface->Save();
   }
 
   InstallTranslator();
@@ -376,7 +386,7 @@ void QtHost::SetDefaultSettings(SettingsInterface& si, bool system, bool control
 
 bool EmuThread::shouldRenderToMain() const
 {
-  return !Host::GetBaseBoolSettingValue("Main", "RenderToSeparateWindow", false) && !QtHost::InNoGUIMode();
+  return !Host::GetBoolSettingValue("Main", "RenderToSeparateWindow", false) && !QtHost::InNoGUIMode();
 }
 
 void Host::RequestResizeHostDisplay(s32 new_window_width, s32 new_window_height)
@@ -893,6 +903,28 @@ void EmuThread::reloadInputBindings()
   SettingsInterface* si = Host::GetSettingsInterface();
   SettingsInterface* bindings_si = Host::GetSettingsInterfaceForBindings();
   InputManager::ReloadBindings(*si, *bindings_si);
+}
+
+void EmuThread::reloadInputDevices()
+{
+  if (!isOnThread())
+  {
+    QMetaObject::invokeMethod(this, &EmuThread::reloadInputDevices, Qt::QueuedConnection);
+    return;
+  }
+
+  InputManager::ReloadDevices();
+}
+
+void EmuThread::closeInputSources()
+{
+  if (!isOnThread())
+  {
+    QMetaObject::invokeMethod(this, &EmuThread::reloadInputDevices, Qt::BlockingQueuedConnection);
+    return;
+  }
+
+  InputManager::CloseSources();
 }
 
 void EmuThread::enumerateInputDevices()
@@ -1726,10 +1758,13 @@ void Host::RequestExit(bool save_state_if_running)
   QMetaObject::invokeMethod(g_main_window, "requestExit", Qt::QueuedConnection, Q_ARG(bool, save_state_if_running));
 }
 
-void* Host::GetTopLevelWindowHandle()
+std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
 {
-  void* ret = nullptr;
-  QMetaObject::invokeMethod(g_main_window, &MainWindow::getNativeWindowId, Qt::BlockingQueuedConnection, &ret);
+  // Normally we'd just feed the std::optional all the way through here. But that won't work because of some bug
+  // in Qt 6.1, and we can't upgrade that because of raging/abusive Win7 users... to anyone still using that dead
+  // OS, this is a passive-aggressive "screw you".
+  WindowInfo ret;
+  QMetaObject::invokeMethod(g_main_window, "getWindowInfo", Qt::BlockingQueuedConnection, Q_ARG(WindowInfo*, &ret));
   return ret;
 }
 
