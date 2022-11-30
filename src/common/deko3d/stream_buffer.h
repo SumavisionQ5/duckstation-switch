@@ -26,6 +26,8 @@ public:
   ALWAYS_INLINE u32 GetCurrentSize() const { return m_size; }
   ALWAYS_INLINE u32 GetCurrentSpace() const { return m_current_space; }
   ALWAYS_INLINE u32 GetCurrentOffset() const { return m_current_offset; }
+  ALWAYS_INLINE DkGpuAddr GetCurrentPointer() const { return m_pointer + m_current_offset; }
+  ALWAYS_INLINE DkGpuAddr GetPointer() const { return m_pointer; }
 
   bool Create(u32 size);
   void Destroy(bool defer);
@@ -47,6 +49,7 @@ public:
   MemoryHeap::Allocation m_buffer;
 
   u8* m_host_pointer = nullptr;
+  DkGpuAddr m_pointer = DK_GPU_ADDR_INVALID;
 
   // List of fences and the corresponding positions in the buffer
   std::deque<std::pair<u64, u32>> m_tracked_fences;

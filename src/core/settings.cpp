@@ -839,6 +839,9 @@ const char* Settings::GetCPUFastmemModeDisplayName(CPUFastmemMode mode)
 }
 
 static constexpr auto s_gpu_renderer_names = make_array(
+#ifdef __SWITCH__
+  "deko3D",
+#endif
 #ifdef _WIN32
   "D3D11", "D3D12",
 #endif
@@ -850,6 +853,9 @@ static constexpr auto s_gpu_renderer_names = make_array(
 #endif
   "Software");
 static constexpr auto s_gpu_renderer_display_names = make_array(
+#ifdef __SWITCH__
+  TRANSLATABLE("GPURenderer", "Hardware (deko3D)"),
+#endif
 #ifdef _WIN32
   TRANSLATABLE("GPURenderer", "Hardware (D3D11)"), TRANSLATABLE("GPURenderer", "Hardware (D3D12)"),
 #endif

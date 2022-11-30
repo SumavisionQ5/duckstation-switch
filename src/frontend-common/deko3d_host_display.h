@@ -78,6 +78,8 @@ protected:
   void RenderDisplay(s32 left, s32 top, s32 width, s32 height, Deko3D::Texture* texture, s32 texture_view_x,
                      s32 texture_view_y, s32 texture_view_width, s32 texture_view_height, bool linear_filter);
 
+  void CheckStagingBufferSize(u32 required_size);
+
 private:
   std::optional<dk::Device> m_device;
   std::unique_ptr<Deko3D::SwapChain> m_swap_chain;
@@ -91,4 +93,6 @@ private:
   Deko3D::MemoryHeap::Allocation m_uniform_buffer;
   Deko3D::MemoryHeap::Allocation m_sampler_buffer;
   Deko3D::MemoryHeap::Allocation m_descriptor_buffer;
+
+  Deko3D::MemoryHeap::Allocation m_readback_buffer;
 };

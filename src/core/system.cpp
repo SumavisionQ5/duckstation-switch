@@ -1552,6 +1552,12 @@ bool System::CreateGPU(GPURenderer renderer)
       break;
 #endif
 
+#ifdef __SWITCH__
+    case GPURenderer::HardwareDeko3D:
+      g_gpu = GPU::CreateHardwareDeko3DRenderer();
+      break;
+#endif
+
     case GPURenderer::Software:
     default:
       g_gpu = GPU::CreateSoftwareRenderer();

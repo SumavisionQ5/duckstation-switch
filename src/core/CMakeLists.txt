@@ -119,15 +119,11 @@ target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(core PUBLIC Threads::Threads common util zlib)
 target_link_libraries(core PRIVATE stb xxhash imgui rapidjson tinyxml2)
 
-if (NOT SWITCH)
+if (SWITCH)
   target_sources(core PRIVATE
-    gpu_hw_vulkan.cpp
-    gpu_hw_vulkan.h
-    gpu_hw_opengl.cpp
-    gpu_hw_opengl.h
+    gpu_hw_deko3d.cpp
+    gpu_hw_deko3d.h
   )
-
-  target_link_libraries(core PUBLIC glad vulkan-loader)
 endif()
 
 if(WIN32)

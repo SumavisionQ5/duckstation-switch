@@ -174,6 +174,10 @@ public:
   static std::unique_ptr<GPU> CreateHardwareVulkanRenderer();
 #endif
 
+#ifdef __SWITCH__
+  static std::unique_ptr<GPU> CreateHardwareDeko3DRenderer();
+#endif
+
   // gpu_sw.cpp
   static std::unique_ptr<GPU> CreateSoftwareRenderer();
 

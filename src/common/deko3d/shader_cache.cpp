@@ -49,6 +49,7 @@ std::optional<std::vector<u8>> CompileShader(ShaderCache::ShaderType stage, std:
   }
   else
   {
+    Log_DebugPrintf("Failed to compile shader (stage: %u)\n%s\n", static_cast<u32>(stage), shader_source.c_str());
     return std::optional<std::vector<u8>>{};
   }
 }

@@ -58,7 +58,7 @@ Context::~Context()
 bool Context::Create(const WindowInfo* wi)
 {
   dk::Device device = dk::DeviceMaker{}
-                        .setFlags(DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginUpperLeft)
+                        .setFlags(DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginLowerLeft)
                         .setCbDebug(DebugOut)
                         .create();
 

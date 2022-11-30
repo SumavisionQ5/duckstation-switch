@@ -114,7 +114,7 @@ std::string GPU_HW_ShaderGen::GenerateBatchVertexShader(bool textured)
 #endif
 
   // NDC space Y flip in Vulkan.
-#if API_OPENGL || API_OPENGL_ES || API_VULKAN
+#if API_OPENGL || API_OPENGL_ES || API_VULKAN || API_DEKO3D
   pos_y = -pos_y;
 #endif
 

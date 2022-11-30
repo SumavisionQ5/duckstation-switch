@@ -37,6 +37,10 @@ ShaderGen::ShaderGen(RenderAPI render_api, bool supports_dual_source_blend)
 #endif
   }
 #endif
+#ifdef __SWITCH__
+  m_use_glsl_interface_blocks = true;
+  m_use_glsl_binding_layout = true;
+#endif
 }
 
 ShaderGen::~ShaderGen() = default;
@@ -110,7 +114,7 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
 {
   if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
     ss << m_glsl_version_string << "\n\n";
-  else if (m_render_api == RenderAPI::Vulkan)
+  else if (m_render_api == RenderAPI::Vulkan || m_render_api == RenderAPI::Deko3D)
     ss << "#version 450 core\n\n";
 
 #ifdef WITH_OPENGL
@@ -153,6 +157,7 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
   }
 #endif
 
+  DefineMacro(ss, "API_DEKO3D", m_render_api == RenderAPI::Deko3D);
   DefineMacro(ss, "API_OPENGL", m_render_api == RenderAPI::OpenGL);
   DefineMacro(ss, "API_OPENGL_ES", m_render_api == RenderAPI::OpenGLES);
   DefineMacro(ss, "API_D3D11", m_render_api == RenderAPI::D3D11);
@@ -599,7 +604,7 @@ std::string ShaderGen::GenerateScreenQuadVertexShader()
 {
   v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
   v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
+  #if API_OPENGL || API_OPENGL_ES || API_VULKAN || API_DEKO3D
     v_pos.y = -v_pos.y;
   #endif
 }
@@ -619,7 +624,7 @@ std::string ShaderGen::GenerateUVQuadVertexShader()
   v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
   v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
   v_tex0 = u_uv_min + (u_uv_max - u_uv_min) * v_tex0;
-  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
+  #if API_OPENGL || API_OPENGL_ES || API_VULKAN || API_DEKO3D
     v_pos.y = -v_pos.y;
   #endif
 }

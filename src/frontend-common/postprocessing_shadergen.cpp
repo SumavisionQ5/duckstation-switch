@@ -22,7 +22,7 @@ std::string PostProcessingShaderGen::GeneratePostProcessingVertexShader(const Po
 {
   v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
   v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
+  #if API_OPENGL || API_OPENGL_ES || API_VULKAN || API_DEKO3D
     v_pos.y = -v_pos.y;
   #endif
   v_tex0 = src_rect.xy + (src_size * v_tex0);

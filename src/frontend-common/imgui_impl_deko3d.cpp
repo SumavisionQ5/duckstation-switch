@@ -249,15 +249,16 @@ static void ImGui_ImplDeko3D_UpdateAndBindDescriptors(const ImDrawCmd* pcmd, dk:
     TextureIDs[idx] = pcmd->TextureId;*/
     const Deko3D::Texture* tex = static_cast<const Deko3D::Texture*>(pcmd->TextureId);
 
-    //printf("binding texture %p %d %d\n", tex, tex->GetWidth(), tex->GetHeight());
+    // printf("binding texture %p %d %d\n", tex, tex->GetWidth(), tex->GetHeight());
     dk::ImageView view{tex->GetImage()};
 
     dk::ImageDescriptor descriptor;
     descriptor.initialize(view);
     command_buffer.barrier(DkBarrier_Full, DkInvalidateFlags_Descriptors);
-    command_buffer.pushData(g_deko3d_context->GetGeneralHeap().GpuAddr(g_DescriptorSet)/*+idx*sizeof(descriptor)*/, &descriptor, sizeof(descriptor));
+    command_buffer.pushData(g_deko3d_context->GetGeneralHeap().GpuAddr(g_DescriptorSet) /*+idx*sizeof(descriptor)*/,
+                            &descriptor, sizeof(descriptor));
   }
-  command_buffer.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(/*idx*/0, 0)});
+  command_buffer.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(/*idx*/ 0, 0)});
 }
 
 // Render function
@@ -318,7 +319,8 @@ void ImGui_ImplDeko3D_RenderDrawData(ImDrawData* draw_data, dk::CmdBuf command_b
   ImGui_ImplDeko3D_SetupRenderState(draw_data, command_buffer, rb, fb_width, fb_height);
 
   // Will project scissor/clipping rectangles into framebuffer space
-  ImVec2 clip_off = draw_data->DisplayPos; // (0,0) unless using multi-viewports
+  ImVec2 clip_off = draw_data->DisplayPos;         // (0,0) unless using multi-viewports
+  ImVec2 clip_scale = draw_data->FramebufferScale; // (1,1) unless using retina display which are often (2,2)
 
   // Render command lists
   // (Because we merged all buffers into a single one, we maintain our own offset into them)
@@ -353,16 +355,17 @@ void ImGui_ImplDeko3D_RenderDrawData(ImDrawData* draw_data, dk::CmdBuf command_b
         {
           ImGui_ImplDeko3D_UpdateAndBindDescriptors(pcmd, command_buffer);
 
-          // Negative offsets are illegal for vkCmdSetScissor
-          if (clip_rect.x < 0.0f)
-            clip_rect.x = 0.0f;
-          if (clip_rect.y < 0.0f)
-            clip_rect.y = 0.0f;
+          ImVec2 clip_min((pcmd->ClipRect.x - clip_off.x) * clip_scale.x,
+                          (pcmd->ClipRect.y - clip_off.y) * clip_scale.y);
+          ImVec2 clip_max((pcmd->ClipRect.z - clip_off.x) * clip_scale.x,
+                          (pcmd->ClipRect.w - clip_off.y) * clip_scale.y);
+          if (clip_max.x <= clip_min.x || clip_max.y <= clip_min.y)
+            continue;
 
-          // Apply scissor/clipping rectangle
-          command_buffer.setScissors(0,
-                                     {{(uint32_t)(clip_rect.x), (uint32_t)(clip_rect.y),
-                                       (uint32_t)(clip_rect.z - clip_rect.x), (uint32_t)(clip_rect.w - clip_rect.y)}});
+          // Apply scissor/clipping rectangle (we configured deko3d for Y to be inverted like in OpenGL)
+          command_buffer.setScissors(0, {{(uint32_t)clip_min.x, (uint32_t)((float)fb_height - clip_max.y),
+                                          (uint32_t)(clip_max.x - clip_min.x), (uint32_t)(clip_max.y - clip_min.y)}});
+
           // Draw
           command_buffer.drawIndexed(DkPrimitive_Triangles, pcmd->ElemCount, 1, pcmd->IdxOffset + global_idx_offset,
                                      pcmd->VtxOffset + global_vtx_offset, 0);
@@ -443,7 +446,7 @@ bool ImGui_ImplDeko3D_CreateDeviceObjects()
   if (g_DescriptorSet.size == 0)
   {
     g_DescriptorSet =
-      g_deko3d_context->GetGeneralHeap().Alloc(sizeof(dk::ImageDescriptor)*32, DK_IMAGE_DESCRIPTOR_ALIGNMENT);
+      g_deko3d_context->GetGeneralHeap().Alloc(sizeof(dk::ImageDescriptor) * 32, DK_IMAGE_DESCRIPTOR_ALIGNMENT);
   }
 
   if (g_VertShaderMemory.size == 0)

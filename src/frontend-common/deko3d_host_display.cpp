@@ -185,47 +185,43 @@ void Deko3DHostDisplay::EndTextureUpdate(GPUTexture* texture, u32 x, u32 y, u32 
   static_cast<Deko3D::Texture*>(texture)->EndUpdate(x, y, width, height, 0, 0);
 }
 
+void Deko3DHostDisplay::CheckStagingBufferSize(u32 required_size)
+{
+  if (m_readback_buffer.size >= required_size)
+    return;
+
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
+  // no synchronisation necessary, because there's always a GPU/CPU sync
+  // when using this buffer
+  if (m_readback_buffer.size > 0)
+    heap.Free(m_readback_buffer);
+  m_readback_buffer = heap.Alloc(required_size, DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
+}
+
 bool Deko3DHostDisplay::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
                                         u32 out_data_stride)
 {
   Deko3D::Texture* tex = static_cast<Deko3D::Texture*>(texture);
-  /*
-    const u32 pitch = tex->CalcUpdatePitch(width);
-    const u32 size = pitch * height;
-    const u32 level = 0;
-    if (!CheckStagingBufferSize(size))
-    {
-      Log_ErrorPrintf("Can't read back %ux%u", width, height);
-      return false;
-    }
+  const u32 pitch = tex->CalcUpdatePitch(width);
+  const u32 size = pitch * height;
+  CheckStagingBufferSize(size);
 
-    {
-      dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
+  dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
 
-      VkBufferImageCopy image_copy = {};
-      const VkImageAspectFlags aspect = Vulkan::Util::IsDepthFormat(static_cast<VkFormat>(tex->GetFormat())) ?
-                                          VK_IMAGE_ASPECT_DEPTH_BIT :
-                                          VK_IMAGE_ASPECT_COLOR_BIT;
-      image_copy.bufferOffset = 0;
-      image_copy.bufferRowLength = tex->CalcUpdateRowLength(pitch);
-      image_copy.bufferImageHeight = 0;
-      image_copy.imageSubresource = {aspect, level, 0u, 1u};
-      image_copy.imageOffset = {static_cast<s32>(x), static_cast<s32>(y), 0};
-      image_copy.imageExtent = {width, height, 1u};
+  dk::ImageView srcView{tex->GetImage()};
+  if (texture->GetFormat() == GPUTexture::Format::D16)
+    srcView.setFormat(DkImageFormat_R16_Uint);
 
-      cmdbuf.barrier(DkBarrier_Full, 0);
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
 
-      // do the copy
-      cmdbuf.copyImageToBuffer()
-      vkCmdCopyImageToBuffer(cmdbuf, tex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_readback_staging_buffer,
-    1, &image_copy);
-    }
+  // do the copy
+  cmdbuf.copyImageToBuffer(srcView, {x, y, 0, width, height, 1}, {heap.GpuAddr(m_readback_buffer), 0, 0});
+  cmdbuf.barrier(DkBarrier_Full, DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
 
-    g_deko3d_context->ExecuteCommandBuffer(true);
+  g_deko3d_context->ExecuteCommandBuffer(true);
 
-    StringUtil::StrideMemCpy(out_data, out_data_stride, m_readback_staging_buffer_map, pitch,
-                             std::min(pitch, out_data_stride), height);
-  */
+  StringUtil::StrideMemCpy(out_data, out_data_stride, heap.CpuAddr<void>(m_readback_buffer), pitch,
+                            std::min(pitch, out_data_stride), height);
   return true;
 }
 
@@ -317,18 +313,20 @@ void Deko3DHostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, 
   cmdbuffer.bindDepthStencilState(dk::DepthStencilState{}.setDepthWriteEnable(false).setDepthTestEnable(false));
   cmdbuffer.bindUniformBuffer(DkStage_Vertex, 0, g_deko3d_context->GetGeneralHeap().GpuAddr(m_uniform_buffer),
                               m_uniform_buffer.size);
+  cmdbuffer.bindRasterizerState(dk::RasterizerState{}.setCullMode(DkFace_None));
 
-  cmdbuffer.barrier(DkBarrier_Full,
-                    DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
+  cmdbuffer.barrier(DkBarrier_Primitives,
+                    DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
 
   dk::ImageDescriptor descriptor;
   dk::ImageView view{texture->GetImage()};
+
   descriptor.initialize(view);
   cmdbuffer.pushData(g_deko3d_context->GetGeneralHeap().GpuAddr(m_descriptor_buffer), &descriptor, sizeof(descriptor));
   cmdbuffer.bindSamplerDescriptorSet(g_deko3d_context->GetGeneralHeap().GpuAddr(m_sampler_buffer), 2);
   cmdbuffer.bindImageDescriptorSet(g_deko3d_context->GetGeneralHeap().GpuAddr(m_descriptor_buffer), 1);
 
-  cmdbuffer.bindImages(DkStage_Fragment, 0, {dkMakeTextureHandle(0, (u32)linear_filter)});
+  cmdbuffer.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(0, (u32)linear_filter)});
 
   cmdbuffer.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment, {&m_vertex_shader, &m_display_fragment_shader});
 

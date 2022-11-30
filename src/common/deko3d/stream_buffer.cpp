@@ -58,6 +58,7 @@ bool StreamBuffer::Create(u32 size)
   m_tracked_fences.clear();
   m_buffer = new_buffer;
   m_host_pointer = g_deko3d_context->GetGeneralHeap().CpuAddr<u8>(new_buffer);
+  m_pointer = g_deko3d_context->GetGeneralHeap().GpuAddr(new_buffer);
   return true;
 }
 
