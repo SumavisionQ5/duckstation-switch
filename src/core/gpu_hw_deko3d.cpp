@@ -36,6 +36,7 @@ bool GPU_HW_Deko3D::Initialize()
   m_supports_dual_source_blend = true;
   m_supports_per_sample_shading = true;
   m_supports_disable_color_perspective = true;
+  m_max_resolution_scale = 4096 / VRAM_WIDTH;
 
   if (!Host::AcquireHostDisplay(RenderAPI::Deko3D))
   {
@@ -85,7 +86,7 @@ bool GPU_HW_Deko3D::Initialize()
   }
 
   UpdateDepthBufferFromMaskBit();
-  RestoreGraphicsAPIState();
+  RestoreGraphicsAPIStateEx(true, false);
   return true;
 }
 
@@ -101,6 +102,49 @@ bool GPU_HW_Deko3D::DoState(StateWrapper& sw, GPUTexture** host_texture, bool up
 {
   if (host_texture)
   {
+    dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
+    dk::ImageView vramView{m_vram_texture.GetImage()};
+    if (sw.IsReading())
+    {
+      Deko3D::Texture* tex = static_cast<Deko3D::Texture*>(*host_texture);
+      if (tex->GetWidth() != m_vram_texture.GetWidth() || tex->GetHeight() != m_vram_texture.GetHeight() ||
+          tex->GetSamples() != m_vram_texture.GetSamples())
+      {
+        return false;
+      }
+
+      dk::ImageView srcView{tex->GetImage()};
+      cmdbuf.copyImage(srcView, {0, 0, 0, tex->GetWidth(), tex->GetHeight(), 1}, vramView,
+                       {0, 0, 0, tex->GetWidth(), tex->GetHeight(), 1});
+    }
+    else
+    {
+      Deko3D::Texture* tex = static_cast<Deko3D::Texture*>(*host_texture);
+      if (!tex || tex->GetWidth() != m_vram_texture.GetWidth() || tex->GetHeight() != m_vram_texture.GetHeight() ||
+          tex->GetSamples() != static_cast<u32>(m_vram_texture.GetSamples()))
+      {
+        delete tex;
+
+        tex = static_cast<Deko3D::Texture*>(g_host_display
+                                              ->CreateTexture(m_vram_texture.GetWidth(), m_vram_texture.GetHeight(), 1,
+                                                              1, m_vram_texture.GetSamples(), GPUTexture::Format::RGBA8,
+                                                              nullptr, 0, false)
+                                              .release());
+        *host_texture = tex;
+        if (!tex)
+          return false;
+      }
+
+      if (tex->GetWidth() != m_vram_texture.GetWidth() || tex->GetHeight() != m_vram_texture.GetHeight() ||
+          tex->GetSamples() != m_vram_texture.GetSamples())
+      {
+        return false;
+      }
+
+      dk::ImageView dstView{tex->GetImage()};
+      cmdbuf.copyImage(vramView, {0, 0, 0, tex->GetWidth(), tex->GetHeight(), 1}, dstView,
+                       {0, 0, 0, tex->GetWidth(), tex->GetHeight(), 1});
+    }
   }
 
   return GPU_HW::DoState(sw, host_texture, update_display);
@@ -109,26 +153,30 @@ bool GPU_HW_Deko3D::DoState(StateWrapper& sw, GPUTexture** host_texture, bool up
 void GPU_HW_Deko3D::ResetGraphicsAPIState()
 {
   GPU_HW::ResetGraphicsAPIState();
-
-  dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
-  cmdbuf.bindRasterizerState(dk::RasterizerState{}.setCullMode(DkFace_Back));
-
-  // this is called at the end of the frame, so the UBO is associated with the previous command buffer.
-  m_batch_ubo_dirty = true;
 }
 
-void GPU_HW_Deko3D::RestoreGraphicsAPIState()
+void GPU_HW_Deko3D::RestoreGraphicsAPIStateEx(bool restore_rt, bool returning_from_known_state)
 {
   dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
 
-  dk::ImageView vramTextureView{m_vram_texture.GetImage()};
-  dk::ImageView vramDepthTextureView{m_vram_depth_texture.GetImage()};
-  cmdbuf.bindRenderTargets({&vramTextureView}, {&vramDepthTextureView});
+  if (restore_rt)
+  {
+    dk::ImageView vramTextureView{m_vram_texture.GetImage()};
+    dk::ImageView vramDepthTextureView{m_vram_depth_texture.GetImage()};
+    cmdbuf.bindRenderTargets({&vramTextureView}, {&vramDepthTextureView});
+  }
 
-  SetDepthFunc(cmdbuf, true);
-  SetBlendMode(cmdbuf);
+  SetDepthFunc(cmdbuf, !returning_from_known_state);
+  SetBlendMode(cmdbuf, m_blending_enabled, m_subtractive_blending, !returning_from_known_state);
 
-  cmdbuf.bindRasterizerState(dk::RasterizerState{}.setCullMode(DkFace_None));
+  if (!returning_from_known_state)
+  {
+    cmdbuf.bindSamplerDescriptorSet(heap.GpuAddr(m_sampler_memory), SAMPLERS_COUNT);
+    cmdbuf.bindImageDescriptorSet(heap.GpuAddr(m_image_descriptor_memory), IMAGES_COUNT);
+
+    cmdbuf.bindRasterizerState(dk::RasterizerState{}.setCullMode(DkFace_None));
+  }
 
   cmdbuf.bindVtxBuffer(0, m_vertex_stream_buffer.GetPointer(), m_vertex_stream_buffer.GetCurrentSize());
   cmdbuf.bindVtxBufferState({{sizeof(BatchVertex), 0}});
@@ -138,23 +186,19 @@ void GPU_HW_Deko3D::RestoreGraphicsAPIState()
                              {0, 0, offsetof(BatchVertex, texpage), DkVtxAttribSize_1x32, DkVtxAttribType_Uint, 0},
                              {0, 0, offsetof(BatchVertex, uv_limits), DkVtxAttribSize_4x8, DkVtxAttribType_Unorm, 0}});
 
-  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
-  cmdbuf.bindSamplerDescriptorSet(heap.GpuAddr(m_sampler_memory), SAMPLERS_COUNT);
-  cmdbuf.bindImageDescriptorSet(heap.GpuAddr(m_image_descriptor_memory), IMAGES_COUNT);
-
   cmdbuf.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(IMAGE_VRAM_READ, SAMPLER_POINT)});
 
   cmdbuf.setViewports(0, {{0.f, 0.f, static_cast<float>(m_vram_texture.GetWidth()),
                            static_cast<float>(m_vram_texture.GetHeight()), 0.f, 1.f}});
   SetScissorFromDrawingArea();
 
-  if (m_current_uniform_buffer_pointer != DK_GPU_ADDR_INVALID)
-  {
-    cmdbuf.bindUniformBuffer(DkStage_Vertex, 1, m_current_uniform_buffer_pointer, m_current_uniform_buffer_size);
-    cmdbuf.bindUniformBuffer(DkStage_Fragment, 1, m_current_uniform_buffer_pointer, m_current_uniform_buffer_size);
-  }
+  cmdbuf.bindUniformBuffer(DkStage_Vertex, 1, heap.GpuAddr(m_batch_uniform), m_batch_uniform.size);
+  cmdbuf.bindUniformBuffer(DkStage_Fragment, 1, heap.GpuAddr(m_batch_uniform), m_batch_uniform.size);
+}
 
-  m_batch_ubo_dirty = true;
+void GPU_HW_Deko3D::RestoreGraphicsAPIState()
+{
+  RestoreGraphicsAPIStateEx(true, false);
 }
 
 void GPU_HW_Deko3D::UpdateSettings()
@@ -179,7 +223,10 @@ void GPU_HW_Deko3D::UpdateSettings()
     CreateFramebuffer();
 
   if (shaders_changed)
+  {
+    DestroyShaders();
     CompileShaders();
+  }
 
   // this has to be done here, because otherwise we're using destroyed pipelines in the same cmdbuffer
   if (framebuffer_changed)
@@ -206,8 +253,7 @@ bool GPU_HW_Deko3D::CompileShaders()
                              m_true_color, m_scaled_dithering, m_texture_filtering, m_using_uv_limits,
                              m_pgxp_depth_buffer, m_disable_color_perspective, m_supports_dual_source_blend);
 
-  ShaderCompileProgressTracker progress("Compiling shaders", 2 + (4 * 9 * 2 * 2) + (3 * 4 * 5 * 9 * 2 * 2) + 1 + 2 +
-                                                               (2 * 2) + 2 + 1 + 1 + (2 * 3) + 1);
+  ShaderCompileProgressTracker progress("Compiling shaders", 2 + (4 * 9 * 2 * 2) + 2 + (2 * 2) + 4 + (2 * 3) + 1);
 
   for (u8 textured = 0; textured < 2; textured++)
   {
@@ -353,24 +399,82 @@ void GPU_HW_Deko3D::UnmapBatchVertexPointer(u32 used_vertices)
 
 void GPU_HW_Deko3D::UploadUniformBuffer(const void* data, u32 data_size)
 {
-  const u32 alignment = static_cast<u32>(DK_UNIFORM_BUF_ALIGNMENT);
-  if (!m_uniform_stream_buffer.ReserveMemory(data_size, alignment))
+  dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
+
+  cmdbuf.pushConstants(heap.GpuAddr(m_batch_uniform), m_batch_uniform.size, 0, data_size, data);
+}
+
+void GPU_HW_Deko3D::DestroyShaders()
+{
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetShaderHeap();
+
+  auto free_shader = [this, &heap](Shader& shader) {
+    if (shader.memory.size)
+    {
+      heap.Free(shader.memory);
+      shader.memory = {};
+    }
+  };
+
+  for (u8 textured = 0; textured < 2; textured++)
+    free_shader(m_batch_vertex_shaders[textured]);
+
+  for (u8 render_mode = 0; render_mode < 4; render_mode++)
   {
-    Log_PerfPrintf("Executing command buffer while waiting for %u bytes in uniform stream buffer", data_size);
-    ExecuteCommandBuffer(false, true);
-    if (!m_uniform_stream_buffer.ReserveMemory(data_size, alignment))
-      Panic("Failed to reserve uniform stream buffer memory");
+    for (u8 texture_mode = 0; texture_mode < 9; texture_mode++)
+    {
+      for (u8 dithering = 0; dithering < 2; dithering++)
+      {
+        for (u8 interlacing = 0; interlacing < 2; interlacing++)
+        {
+          free_shader(m_batch_fragment_shaders[render_mode][texture_mode][dithering][interlacing]);
+        }
+      }
+    }
   }
 
-  m_current_uniform_buffer_pointer = m_uniform_stream_buffer.GetCurrentPointer();
-  m_current_uniform_buffer_size = data_size;
-  std::memcpy(m_uniform_stream_buffer.GetCurrentHostPointer(), data, data_size);
-  m_uniform_stream_buffer.CommitMemory(data_size);
+  free_shader(m_fullscreen_quad_vertex_shader);
+  free_shader(uv_quad_vertex_shader);
 
-  dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
+  // VRAM fill
+  for (u8 wrapped = 0; wrapped < 2; wrapped++)
+  {
+    for (u8 interlaced = 0; interlaced < 2; interlaced++)
+    {
+      free_shader(m_vram_fill_shaders[wrapped][interlaced]);
+    }
+  }
 
-  cmdbuf.bindUniformBuffer(DkStage_Vertex, 1, m_current_uniform_buffer_pointer, data_size);
-  cmdbuf.bindUniformBuffer(DkStage_Fragment, 1, m_current_uniform_buffer_pointer, data_size);
+  // VRAM read
+  free_shader(m_vram_read_shader);
+
+  // VRAM write
+  free_shader(m_vram_write_shader);
+
+  // VRAM update depth
+  free_shader(m_vram_update_depth_shader);
+
+  // VRAM copy
+  free_shader(m_vram_copy_shader);
+
+  for (u8 depth_24 = 0; depth_24 < 2; depth_24++)
+  {
+    for (u8 interlace_mode = 0; interlace_mode < 3; interlace_mode++)
+    {
+      free_shader(m_display_shaders[depth_24][interlace_mode]);
+    }
+  }
+
+  /*if (m_downsample_mode == GPUDownsampleMode::Adaptive)
+  {
+
+  }
+  else */
+  if (m_downsample_mode == GPUDownsampleMode::Box)
+  {
+    free_shader(m_boxsample_downsample_shader);
+  }
 }
 
 void GPU_HW_Deko3D::DestroyResources()
@@ -381,8 +485,32 @@ void GPU_HW_Deko3D::DestroyResources()
 
   DestroyFramebuffer();
 
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
+  if (m_sampler_memory.size != 0)
+  {
+    heap.Free(m_sampler_memory);
+    m_sampler_memory = {};
+  }
+  if (m_image_descriptor_memory.size != 0)
+  {
+    heap.Free(m_image_descriptor_memory);
+    m_image_descriptor_memory = {};
+  }
+
+  if (m_batch_uniform.size != 0)
+  {
+    heap.Free(m_batch_uniform);
+    m_batch_uniform = {};
+  }
+  if (m_other_uniforms.size != 0)
+  {
+    heap.Free(m_other_uniforms);
+    m_other_uniforms = {};
+  }
+
+  DestroyShaders();
+
   m_vertex_stream_buffer.Destroy(false);
-  m_uniform_stream_buffer.Destroy(false);
   m_texture_stream_buffer.Destroy(false);
 }
 
@@ -472,6 +600,7 @@ void GPU_HW_Deko3D::ClearFramebuffer()
 
 void GPU_HW_Deko3D::DestroyFramebuffer()
 {
+  m_downsample_texture.Destroy(false);
   m_vram_read_texture.Destroy(false);
   m_vram_depth_texture.Destroy(false);
   m_vram_texture.Destroy(false);
@@ -489,8 +618,10 @@ bool GPU_HW_Deko3D::CreateVertexBuffer()
 
 bool GPU_HW_Deko3D::CreateUniformBuffer()
 {
-  if (!m_uniform_stream_buffer.Create(UNIFORM_BUFFER_SIZE))
-    return false;
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
+
+  m_batch_uniform = heap.Alloc(sizeof(BatchUBOData), DK_UNIFORM_BUF_ALIGNMENT);
+  m_other_uniforms = heap.Alloc(MAX_PUSH_CONSTANTS_SIZE, DK_UNIFORM_BUF_ALIGNMENT);
 
   return true;
 }
@@ -526,29 +657,36 @@ void GPU_HW_Deko3D::DrawBatchVertices(BatchRenderMode render_mode, u32 base_vert
 
   cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment, {&vertshader.shader, &fragshader.shader});
 
-  if (m_current_transparency_mode != m_batch.transparency_mode || m_current_render_mode != render_mode)
-  {
-    m_current_transparency_mode = m_batch.transparency_mode;
-    m_current_render_mode = render_mode;
-    SetBlendMode(cmdbuf);
-  }
-
+  SetBlendMode(cmdbuf, UseAlphaBlending(m_batch.transparency_mode, render_mode),
+               m_batch.transparency_mode == GPUTransparencyMode::BackgroundMinusForeground);
   SetDepthFunc(cmdbuf);
 
   cmdbuf.draw(DkPrimitive_Triangles, num_vertices, 1, m_batch_base_vertex, 0);
 }
 
-void GPU_HW_Deko3D::SetBlendMode(dk::CmdBuf cmdbuf)
+void GPU_HW_Deko3D::DisableBlending(dk::CmdBuf cmdbuf)
 {
-  bool enableBlending = UseAlphaBlending(m_current_transparency_mode, m_current_render_mode);
-  cmdbuf.bindColorState(dk::ColorState{}.setBlendEnable(0, enableBlending));
-  if (enableBlending)
+  if (m_blending_enabled)
   {
+    cmdbuf.bindColorState(dk::ColorState{});
+    m_blending_enabled = false;
+  }
+}
+
+void GPU_HW_Deko3D::SetBlendMode(dk::CmdBuf cmdbuf, bool enable_blending, bool subtractive_blending, bool force)
+{
+  if (enable_blending != m_blending_enabled || force)
+  {
+    m_blending_enabled = enable_blending;
+    cmdbuf.bindColorState(dk::ColorState{}.setBlendEnable(0, enable_blending));
+  }
+
+  if ((enable_blending && m_subtractive_blending != subtractive_blending) || force)
+  {
+    m_subtractive_blending = subtractive_blending;
     cmdbuf.bindBlendStates(
       0, {dk::BlendState{}
-            .setOps(m_current_transparency_mode == GPUTransparencyMode::BackgroundMinusForeground ? DkBlendOp_RevSub :
-                                                                                                    DkBlendOp_Add,
-                    DkBlendOp_Add)
+            .setOps(subtractive_blending ? DkBlendOp_RevSub : DkBlendOp_Add, DkBlendOp_Add)
             .setFactors(DkBlendFactor_One, DkBlendFactor_Src1Alpha, DkBlendFactor_One, DkBlendFactor_Zero)});
   }
 }
@@ -579,6 +717,14 @@ void GPU_HW_Deko3D::SetScissorFromDrawingArea()
 
   g_deko3d_context->GetCmdBuf().setScissors(0, {{static_cast<u32>(left), static_cast<u32>(top),
                                                  static_cast<u32>(right - left), static_cast<u32>(bottom - top)}});
+}
+
+void GPU_HW_Deko3D::PushOtherUniform(dk::CmdBuf cmdbuf, DkStage stage, const void* data, u32 data_size)
+{
+  Deko3D::MemoryHeap& heap = g_deko3d_context->GetGeneralHeap();
+
+  cmdbuf.bindUniformBuffer(DkStage_Fragment, 1, heap.GpuAddr(m_other_uniforms), data_size);
+  cmdbuf.pushConstants(heap.GpuAddr(m_other_uniforms), m_other_uniforms.size, 0, data_size, data);
 }
 
 void GPU_HW_Deko3D::ClearDisplay()
@@ -665,9 +811,9 @@ void GPU_HW_Deko3D::UpdateDisplay()
     {
       cmdbuf.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
 
-      cmdbuf.bindColorState(dk::ColorState{});
       Deko3D::Util::SetViewportAndScissor(cmdbuf, 0, 0, scaled_display_width, scaled_display_height);
       SetDepthTest(cmdbuf, false, DkCompareOp_Always);
+      DisableBlending(cmdbuf);
 
       cmdbuf.bindShaders(
         DkStageFlag_Vertex | DkStageFlag_Fragment,
@@ -676,17 +822,15 @@ void GPU_HW_Deko3D::UpdateDisplay()
 
       dk::ImageView displayView{m_display_texture.GetImage()};
       cmdbuf.bindRenderTargets({&displayView});
-      // if (interlaced == InterlacedRenderMode::None)
-      //   cmdbuf.discardColor(0);
+      if (interlaced == InterlacedRenderMode::None)
+        cmdbuf.discardColor(0);
 
       const u32 reinterpret_field_offset = (interlaced != InterlacedRenderMode::None) ? GetInterlacedDisplayField() : 0;
       const u32 reinterpret_start_x = m_crtc_state.regs.X * resolution_scale;
       const u32 reinterpret_crop_left = (m_crtc_state.display_vram_left - m_crtc_state.regs.X) * resolution_scale;
       const u32 uniforms[4] = {reinterpret_start_x, scaled_vram_offset_y + reinterpret_field_offset,
                                reinterpret_crop_left, reinterpret_field_offset};
-
-      UploadUniformBuffer(uniforms, sizeof(uniforms));
-      m_batch_ubo_dirty = true;
+      PushOtherUniform(cmdbuf, DkStage_Fragment, uniforms, sizeof(uniforms));
 
       Assert(scaled_display_width <= m_display_texture.GetWidth() &&
              scaled_display_height <= m_display_texture.GetHeight());
@@ -705,9 +849,7 @@ void GPU_HW_Deko3D::UpdateDisplay()
         g_host_display->SetDisplayTexture(&m_display_texture, 0, 0, scaled_display_width, scaled_display_height);
       }
 
-      cmdbuf.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
-
-      RestoreGraphicsAPIState();
+      RestoreGraphicsAPIStateEx(true, true);
     }
   }
 }
@@ -734,9 +876,9 @@ void GPU_HW_Deko3D::ReadVRAM(u32 x, u32 y, u32 width, u32 height)
   cmdbuf.bindRenderTargets({&view});
 
   const u32 uniforms[4] = {copy_rect.left, copy_rect.top, copy_rect.GetWidth(), copy_rect.GetHeight()};
-  UploadUniformBuffer(uniforms, sizeof(uniforms));
+  PushOtherUniform(cmdbuf, DkStage_Fragment, uniforms, sizeof(uniforms));
 
-  cmdbuf.bindColorState(dk::ColorState{});
+  DisableBlending(cmdbuf);
   Deko3D::Util::SetViewportAndScissor(cmdbuf, 0, 0, encoded_width, encoded_height);
   cmdbuf.bindVtxAttribState({});
   cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment,
@@ -751,7 +893,7 @@ void GPU_HW_Deko3D::ReadVRAM(u32 x, u32 y, u32 width, u32 height)
                                   &m_vram_shadow[copy_rect.top * VRAM_WIDTH + copy_rect.left],
                                   VRAM_WIDTH * sizeof(u16));
 
-  RestoreGraphicsAPIState();
+  RestoreGraphicsAPIStateEx(true, true);
 }
 
 void GPU_HW_Deko3D::FillVRAM(u32 x, u32 y, u32 width, u32 height, u32 color)
@@ -783,18 +925,17 @@ void GPU_HW_Deko3D::FillVRAM(u32 x, u32 y, u32 width, u32 height, u32 color)
   else
   {
     const VRAMFillUBOData uniforms = GetVRAMFillUBOData(x, y, width, height, color);
-    UploadUniformBuffer(&uniforms, sizeof(uniforms));
-    m_batch_ubo_dirty = true;
+    PushOtherUniform(cmdbuf, DkStage_Fragment, &uniforms, sizeof(uniforms));
 
     cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment,
                        {&m_fullscreen_quad_vertex_shader.shader,
                         &m_vram_fill_shaders[BoolToUInt8(wrapped)][BoolToUInt8(interlaced)].shader});
 
-    cmdbuf.bindColorState(dk::ColorState{});
+    DisableBlending(cmdbuf);
     cmdbuf.bindVtxAttribState({});
     SetDepthTest(cmdbuf, true, DkCompareOp_Always);
     cmdbuf.draw(DkPrimitive_Triangles, 3, 1, 0, 0);
-    RestoreGraphicsAPIState();
+    RestoreGraphicsAPIStateEx(false, true);
   }
 }
 
@@ -835,15 +976,14 @@ void GPU_HW_Deko3D::UpdateVRAM(u32 x, u32 y, u32 width, u32 height, const void* 
   dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
 
   const VRAMWriteUBOData uniforms = GetVRAMWriteUBOData(x, y, width, height, start_index, set_mask, check_mask);
-  UploadUniformBuffer(&uniforms, sizeof(uniforms));
-  m_batch_ubo_dirty = true;
+  PushOtherUniform(cmdbuf, DkStage_Fragment, &uniforms, sizeof(uniforms));
 
   cmdbuf.bindVtxAttribState({});
   cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment,
                      {&m_fullscreen_quad_vertex_shader.shader, &m_vram_write_shader.shader});
 
   SetDepthTest(cmdbuf, true, (check_mask && !m_pgxp_depth_buffer) ? DkCompareOp_Gequal : DkCompareOp_Always);
-  cmdbuf.bindColorState(dk::ColorState{});
+  DisableBlending(cmdbuf);
 
   cmdbuf.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(IMAGE_TEXTURE_BUFFER, 0)});
 
@@ -852,7 +992,7 @@ void GPU_HW_Deko3D::UpdateVRAM(u32 x, u32 y, u32 width, u32 height, const void* 
   cmdbuf.setScissors(0, {{scaled_bounds.left, scaled_bounds.top, scaled_bounds.GetWidth(), scaled_bounds.GetHeight()}});
   cmdbuf.draw(DkPrimitive_Triangles, 3, 1, 0, 0);
 
-  RestoreGraphicsAPIState();
+  RestoreGraphicsAPIStateEx(false, true);
 }
 
 void GPU_HW_Deko3D::CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 width, u32 height)
@@ -872,16 +1012,19 @@ void GPU_HW_Deko3D::CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 wid
 
     cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment,
                        {&m_fullscreen_quad_vertex_shader.shader, &m_vram_copy_shader.shader});
-    cmdbuf.bindColorState(dk::ColorState{});
+    DisableBlending(cmdbuf);
+    SetDepthTest(cmdbuf, true,
+                 (m_GPUSTAT.check_mask_before_draw && !m_pgxp_depth_buffer) ? DkCompareOp_Gequal : DkCompareOp_Always);
 
     const VRAMCopyUBOData uniforms(GetVRAMCopyUBOData(src_x, src_y, dst_x, dst_y, width, height));
     const Common::Rectangle<u32> dst_bounds_scaled(dst_bounds * m_resolution_scale);
+    PushOtherUniform(cmdbuf, DkStage_Fragment, &uniforms, sizeof(uniforms));
 
     Deko3D::Util::SetViewportAndScissor(cmdbuf, dst_bounds_scaled.left, dst_bounds_scaled.top,
                                         dst_bounds_scaled.GetWidth(), dst_bounds_scaled.GetHeight());
 
     cmdbuf.draw(DkPrimitive_Triangles, 3, 1, 0, 0);
-    RestoreGraphicsAPIState();
+    RestoreGraphicsAPIStateEx(false, true);
 
     if (m_GPUSTAT.check_mask_before_draw)
       m_current_depth++;
@@ -942,16 +1085,19 @@ void GPU_HW_Deko3D::UpdateDepthBufferFromMaskBit()
   dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
 
   cmdbuf.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
+
+  cmdbuf.bindColorWriteState(dk::ColorWriteState{}.setMask(0, 0));
   Deko3D::Util::SetViewportAndScissor(cmdbuf, 0, 0, m_vram_texture.GetWidth(), m_vram_texture.GetHeight());
   cmdbuf.bindVtxAttribState({});
   cmdbuf.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(IMAGE_VRAM, SAMPLER_LINEAR)});
   cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment,
                      {&m_fullscreen_quad_vertex_shader.shader, &m_vram_update_depth_shader.shader});
-  cmdbuf.bindColorState(dk::ColorState{});
+  DisableBlending(cmdbuf);
   SetDepthTest(cmdbuf, true, DkCompareOp_Always);
   cmdbuf.draw(DkPrimitive_Triangles, 3, 1, 0, 0);
+  cmdbuf.bindColorWriteState(dk::ColorWriteState{}.setMask(0, DkColorMask_RGBA));
 
-  RestoreGraphicsAPIState();
+  RestoreGraphicsAPIStateEx(false, true);
 }
 
 void GPU_HW_Deko3D::ClearDepthBuffer()
@@ -1012,7 +1158,7 @@ void GPU_HW_Deko3D::DownsampleFramebufferBoxFilter(Deko3D::Texture& source, u32 
   dk::ImageView downsampleTextureView{m_downsample_texture.GetImage()};
 
   cmdbuf.bindRenderTargets({&downsampleTextureView});
-  cmdbuf.bindColorState(dk::ColorState{});
+  DisableBlending(cmdbuf);
   SetDepthTest(cmdbuf, false, DkCompareOp_Always);
   Deko3D::Util::SetViewportAndScissor(cmdbuf, ds_left, ds_top, ds_width, ds_height);
   cmdbuf.bindVtxAttribState({});
@@ -1020,7 +1166,7 @@ void GPU_HW_Deko3D::DownsampleFramebufferBoxFilter(Deko3D::Texture& source, u32 
                       {dkMakeTextureHandle(&source == &m_vram_texture ? IMAGE_VRAM : IMAGE_DISPLAY, SAMPLER_LINEAR)});
   cmdbuf.draw(DkPrimitive_Triangles, 3, 1, 0, 0);
 
-  RestoreGraphicsAPIState();
+  RestoreGraphicsAPIStateEx(true, true);
 
   g_host_display->SetDisplayTexture(&m_downsample_texture, ds_left, ds_top, ds_width, ds_height);
 }

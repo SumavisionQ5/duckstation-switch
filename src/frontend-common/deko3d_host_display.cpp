@@ -216,7 +216,7 @@ bool Deko3DHostDisplay::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 w
 
   // do the copy
   cmdbuf.copyImageToBuffer(srcView, {x, y, 0, width, height, 1}, {heap.GpuAddr(m_readback_buffer), 0, 0});
-  cmdbuf.barrier(DkBarrier_Full, DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+  cmdbuf.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
 
   g_deko3d_context->ExecuteCommandBuffer(true);
 

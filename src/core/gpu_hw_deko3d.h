@@ -50,6 +50,7 @@ private:
   bool CreateSamplers();
 
   bool CompileShaders();
+  void DestroyShaders();
 
   bool CreateFramebuffer();
   void ClearFramebuffer();
@@ -64,11 +65,16 @@ private:
   void DownsampleFramebuffer(Deko3D::Texture& source, u32 left, u32 top, u32 width, u32 height);
   void DownsampleFramebufferBoxFilter(Deko3D::Texture& source, u32 left, u32 top, u32 width, u32 height);
 
-  void SetBlendMode(dk::CmdBuf cmdbuf);
+  void SetBlendMode(dk::CmdBuf cmdbuf, bool enable_blending, bool subtractive_blending, bool force = false);
   void SetDepthFunc(dk::CmdBuf cmdbuf, bool force = false);
   void SetDepthTest(dk::CmdBuf cmdbuf, bool enable, DkCompareOp func, bool force = false);
+  void DisableBlending(dk::CmdBuf cmdbuf);
 
   void ExecuteCommandBuffer(bool wait_for_completion, bool restore_state);
+
+  void RestoreGraphicsAPIStateEx(bool restore_rt, bool returning_from_known_state);
+
+  void PushOtherUniform(dk::CmdBuf cmdbuf, DkStage stage, const void* data, u32 data_size);
 
   enum : u32
   {
@@ -91,7 +97,6 @@ private:
 
   Deko3D::MemoryHeap::Allocation m_sampler_memory;
   Deko3D::MemoryHeap::Allocation m_image_descriptor_memory;
-  Deko3D::MemoryHeap::Allocation m_push_uniform_memory;
 
   dk::Image m_texture_buffer;
 
@@ -102,11 +107,7 @@ private:
   Deko3D::Texture m_display_texture;
 
   Deko3D::StreamBuffer m_vertex_stream_buffer;
-  Deko3D::StreamBuffer m_uniform_stream_buffer;
   Deko3D::StreamBuffer m_texture_stream_buffer;
-
-  DkGpuAddr m_current_uniform_buffer_pointer = DK_GPU_ADDR_INVALID;
-  u32 m_current_uniform_buffer_size;
 
   // texture replacements
   Deko3D::Texture m_vram_write_replacement_texture;
@@ -115,10 +116,13 @@ private:
   Deko3D::Texture m_downsample_texture;
   Deko3D::Texture m_downsample_weight_texture;
 
-  struct SmoothMipView
+  Deko3D::MemoryHeap::Allocation m_batch_uniform;
+  Deko3D::MemoryHeap::Allocation m_other_uniforms;
+
+  /*struct SmoothMipView
   {
   };
-  std::vector<SmoothMipView> m_downsample_mip_views;
+  std::vector<SmoothMipView> m_downsample_mip_views;*/
 
   struct Shader
   {
@@ -126,10 +130,8 @@ private:
     Deko3D::MemoryHeap::Allocation memory;
   };
 
-  GPUTransparencyMode m_current_transparency_mode = GPUTransparencyMode::Disabled;
-  BatchRenderMode m_current_render_mode = BatchRenderMode::TransparencyDisabled;
-
   dk::DepthStencilState m_current_depth_state;
+  bool m_blending_enabled = false, m_subtractive_blending = false;
 
   DimensionalArray<Shader, 2> m_batch_vertex_shaders;
   DimensionalArray<Shader, 2, 2, 9, 4> m_batch_fragment_shaders;

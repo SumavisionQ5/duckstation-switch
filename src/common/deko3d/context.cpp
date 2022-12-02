@@ -29,10 +29,10 @@ void CmdBufAddMem(void* userData, DkCmdBuf cmdbuf, size_t minReqSize)
 
 Context::Context(dk::Device device)
   : m_device(device), m_queue(dk::QueueMaker{device}.setFlags(DkQueueFlags_Graphics).create()),
-    m_general_heap(device, GeneralHeapSize, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, 1024),
-    m_image_heap(device, ImageHeapSize, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, 1024),
+    m_general_heap(device, GeneralHeapSize, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, 4096),
+    m_image_heap(device, ImageHeapSize, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, 4096),
     m_shader_heap(device, ShaderHeapSize,
-                  DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code, 512)
+                  DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code, 4096)
 {
   for (int i = 0; i < NumCmdBufSegments; i++)
   {
