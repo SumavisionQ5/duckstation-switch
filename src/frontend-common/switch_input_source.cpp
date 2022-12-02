@@ -52,6 +52,12 @@ bool SwitchInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::
 void SwitchInputSource::UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) {}
 void SwitchInputSource::Shutdown() {}
 
+bool SwitchInputSource::ReloadDevices()
+{
+  PollEvents();
+  return true;
+}
+
 void SwitchInputSource::PollEvents()
 {
   for (u32 i = 0; i < NUM_CONTROLLERS; i++)

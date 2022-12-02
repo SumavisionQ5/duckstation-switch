@@ -133,11 +133,6 @@ std::optional<WindowInfo> SwitchNoGUIPlatform::GetPlatformWindowInfo()
 
 void SwitchNoGUIPlatform::SetPlatformWindowTitle(std::string title) {}
 
-void* SwitchNoGUIPlatform::GetPlatformWindowHandle()
-{
-  return nullptr;
-}
-
 std::optional<u32> SwitchNoGUIPlatform::ConvertHostKeyboardStringToCode(const std::string_view& str)
 {
   return std::nullopt;
