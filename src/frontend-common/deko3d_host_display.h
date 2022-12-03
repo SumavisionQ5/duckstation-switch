@@ -2,6 +2,7 @@
 
 #include "common/deko3d/swap_chain.h"
 #include "common/window_info.h"
+#include "common/timer.h"
 #include "core/host_display.h"
 #include "postprocessing_chain.h"
 #include <deko3d.hpp>
@@ -65,6 +66,13 @@ protected:
     float src_rect_height;
   };
 
+  enum : u32
+  {
+    SAMPLER_NEAREST,
+    SAMPLER_LINEAR,
+    SAMPLERS_COUNT,
+  };
+
   bool CreateResources() override;
   void DestroyResources() override;
 
@@ -73,13 +81,20 @@ protected:
   bool UpdateImGuiFontTexture() override;
 
   void RenderImGui();
-  void RenderDisplay();
+  void RenderDisplay(const Deko3D::Texture* final_target);
 
-  void RenderDisplay(s32 left, s32 top, s32 width, s32 height, Deko3D::Texture* texture, s32 texture_view_x,
+  void RenderDisplay(s32 left, s32 top, s32 width, s32 height, const Deko3D::Texture* texture, s32 texture_view_x,
                      s32 texture_view_y, s32 texture_view_width, s32 texture_view_height, bool linear_filter);
 
   void CheckStagingBufferSize(u32 required_size);
 
+  void ApplyPostProcessingChain(const Deko3D::Texture* final_target, s32 final_left, s32 final_top, s32 final_width,
+                                s32 final_height, const Deko3D::Texture* texture, s32 texture_view_x,
+                                s32 texture_view_y, s32 texture_view_width, s32 texture_view_height, u32 target_width,
+                                u32 target_height);
+  bool CheckPostProcessingRenderTargets(dk::CmdBuf cmdbuf, u32 target_width, u32 target_height);
+
+  void DestroyPostProcessingStages(bool defer = true);
 private:
   std::optional<dk::Device> m_device;
   std::unique_ptr<Deko3D::SwapChain> m_swap_chain;
@@ -95,4 +110,19 @@ private:
   Deko3D::MemoryHeap::Allocation m_descriptor_buffer;
 
   Deko3D::MemoryHeap::Allocation m_readback_buffer;
+
+  struct PostProcessingStage
+  {
+    dk::Shader vertex_shader, fragment_shader;
+    Deko3D::MemoryHeap::Allocation vertex_shader_memory, fragment_shader_memory;
+    Deko3D::Texture output_texture;
+    u32 uniforms_size;
+  };
+
+  FrontendCommon::PostProcessingChain m_post_processing_chain;
+  Deko3D::Texture m_post_processing_input_texture;
+  std::vector<PostProcessingStage> m_post_processing_stages;
+  Common::Timer m_post_processing_timer;
+
+  bool m_post_processing_descriptors_dirty = true;
 };
