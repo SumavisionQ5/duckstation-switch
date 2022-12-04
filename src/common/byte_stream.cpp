@@ -49,6 +49,10 @@ public:
     if (m_errorState)
       return false;
 
+// bizarre workaround to make file access faster
+#ifdef _SWITCH__
+    SeekAbsolute(GetPosition());
+#endif
     if (fread(pDestByte, 1, 1, m_pFile) != 1)
     {
       m_errorState = true;
@@ -63,6 +67,9 @@ public:
     if (m_errorState)
       return 0;
 
+#ifdef __SWITCH__
+    SeekAbsolute(GetPosition());
+#endif
     u32 readCount = (u32)fread(pDestination, 1, ByteCount, m_pFile);
     if (readCount != ByteCount && ferror(m_pFile) != 0)
       m_errorState = true;
