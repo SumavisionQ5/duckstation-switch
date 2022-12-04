@@ -28,7 +28,7 @@ Deko3DHostDisplay::~Deko3DHostDisplay()
   g_deko3d_context->WaitGPUIdle();
 
   DestroyResources();
-  DestroyRenderSurface();
+  DestroySurface();
 
   Deko3D::Context::Destroy();
 }
@@ -38,27 +38,28 @@ RenderAPI Deko3DHostDisplay::GetRenderAPI() const
   return RenderAPI::Deko3D;
 }
 
-void* Deko3DHostDisplay::GetRenderDevice() const
+void* Deko3DHostDisplay::GetDevice() const
 {
   return nullptr;
 }
 
-void* Deko3DHostDisplay::GetRenderContext() const
+void* Deko3DHostDisplay::GetContext() const
 {
   return nullptr;
 }
 
-bool Deko3DHostDisplay::HasRenderDevice() const
+bool Deko3DHostDisplay::HasDevice() const
 {
   return g_deko3d_context != nullptr;
 }
 
-bool Deko3DHostDisplay::HasRenderSurface() const
+bool Deko3DHostDisplay::HasSurface() const
 {
   return g_deko3d_context != nullptr;
 }
 
-bool Deko3DHostDisplay::CreateRenderDevice(const WindowInfo& wi)
+
+bool Deko3DHostDisplay::CreateDevice(const WindowInfo& wi, bool vsync)
 {
   WindowInfo local_wi(wi);
   if (!Deko3D::Context::Create(&local_wi))
@@ -74,11 +75,7 @@ bool Deko3DHostDisplay::CreateRenderDevice(const WindowInfo& wi)
   }
 
   m_window_info = m_swap_chain ? m_swap_chain->GetWindowInfo() : local_wi;
-  return true;
-}
 
-bool Deko3DHostDisplay::InitializeRenderDevice()
-{
 #ifdef NDEBUG
   const bool debug = false;
 #else
@@ -87,28 +84,33 @@ bool Deko3DHostDisplay::InitializeRenderDevice()
 
   Deko3D::ShaderCache::Create(EmuFolders::Cache, SHADER_CACHE_VERSION, debug);
 
+  return true;
+}
+
+bool Deko3DHostDisplay::SetupDevice()
+{
   if (!CreateResources())
     return false;
 
   return true;
 }
 
-bool Deko3DHostDisplay::MakeRenderContextCurrent()
+bool Deko3DHostDisplay::MakeCurrent()
 {
   return true;
 }
 
-bool Deko3DHostDisplay::DoneRenderContextCurrent()
+bool Deko3DHostDisplay::DoneCurrent()
 {
   return true;
 }
 
-bool Deko3DHostDisplay::ChangeRenderWindow(const WindowInfo& new_wi)
+bool Deko3DHostDisplay::ChangeWindow(const WindowInfo& new_wi)
 {
   return false;
 }
 
-void Deko3DHostDisplay::ResizeRenderWindow(s32 new_window_width, s32 new_window_height) {}
+void Deko3DHostDisplay::ResizeWindow(s32 new_window_width, s32 new_window_height) {}
 
 bool Deko3DHostDisplay::SupportsFullscreen() const
 {
@@ -130,7 +132,7 @@ HostDisplay::AdapterAndModeList Deko3DHostDisplay::GetAdapterAndModeList()
   return {};
 }
 
-void Deko3DHostDisplay::DestroyRenderSurface()
+void Deko3DHostDisplay::DestroySurface()
 {
   m_window_info = {};
   g_deko3d_context->WaitGPUIdle();
