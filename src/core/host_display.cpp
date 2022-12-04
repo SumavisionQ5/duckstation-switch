@@ -621,7 +621,11 @@ bool HostDisplay::WriteScreenshotToFile(std::string filename, bool compress_on_t
     return false;
   }
 
+  // detach doesn't work on Switch
+  // so we have to do this silly workaround
+#ifndef __SWITCH__
   if (!compress_on_thread)
+#endif
   {
     return CompressAndWriteTextureToFile(width, height, std::move(filename), std::move(fp), true, UsesLowerLeftOrigin(),
                                          width, height, std::move(pixels), pixels_stride, pixels_format);

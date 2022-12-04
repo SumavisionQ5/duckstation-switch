@@ -58,7 +58,6 @@ bool Deko3DHostDisplay::HasSurface() const
   return g_deko3d_context != nullptr;
 }
 
-
 bool Deko3DHostDisplay::CreateDevice(const WindowInfo& wi, bool vsync)
 {
   WindowInfo local_wi(wi);
@@ -538,7 +537,28 @@ void Deko3DHostDisplay::RenderDisplay(s32 left, s32 top, s32 width, s32 height, 
 bool Deko3DHostDisplay::RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
                                          GPUTexture::Format* out_format)
 {
-  return false;
+  Deko3D::Texture texture;
+  if (!texture.Create(width, height, 1, 1, DkImageFormat_RGBA8_Unorm, DkMsMode_1x, DkImageType_2D,
+                      DkImageFlags_UsageRender))
+  {
+    return false;
+  }
+
+  dk::CmdBuf cmdbuf = g_deko3d_context->GetCmdBuf();
+  dk::ImageView textureView{texture.GetImage()};
+  cmdbuf.bindRenderTargets({&textureView});
+  cmdbuf.setScissors(0, {{0, 0, width, height}});
+  cmdbuf.clearColor(0, DkColorMask_RGBA, 0, 0, 0, 0);
+
+  RenderDisplay(&texture);
+
+  out_pixels->resize(width * height);
+  *out_format = GPUTexture::Format::RGBA8;
+  *out_stride = width * 4;
+
+  DownloadTexture(&texture, 0, 0, width, height, out_pixels->data(), *out_stride);
+
+  return true;
 }
 
 bool Deko3DHostDisplay::CreateResources()
