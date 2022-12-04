@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "nogui_host.h"
 #include "common/assert.h"
 #include "common/byte_stream.h"
@@ -412,7 +415,7 @@ void NoGUIHost::ProcessPlatformWindowResize(s32 width, s32 height, float scale)
 {
   Host::RunOnCPUThread([width, height, scale]() {
     // TODO: Scale
-    g_host_display->ResizeRenderWindow(width, height);
+    g_host_display->ResizeWindow(width, height);
     ImGuiManager::WindowResized();
     System::HostDisplayResized();
   });
@@ -643,6 +646,8 @@ void NoGUIHost::CPUThreadMainLoop()
 
     Host::PumpMessagesOnCPUThread();
     Host::RenderDisplay(false);
+    if (!g_host_display->IsVsyncEnabled())
+      g_host_display->ThrottlePresentation();
   }
 }
 
@@ -657,12 +662,12 @@ bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
       if (wi.has_value())
       {
         g_host_display = Host::CreateDisplayForAPI(api);
-        if (g_host_display && !g_host_display->CreateRenderDevice(wi.value()))
+        if (g_host_display && !g_host_display->CreateDevice(wi.value(), System::ShouldUseVSync()))
           g_host_display.reset();
       }
 
       if (g_host_display)
-        g_host_display->DoneRenderContextCurrent();
+        g_host_display->DoneCurrent();
       else
         g_nogui_window->DestroyPlatformWindow();
     }
@@ -678,8 +683,8 @@ bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
     return false;
   }
 
-  if (!g_host_display->MakeRenderContextCurrent() || !g_host_display->InitializeRenderDevice() ||
-      !ImGuiManager::Initialize() || !CommonHost::CreateHostDisplayResources())
+  if (!g_host_display->MakeCurrent() || !g_host_display->SetupDevice() || !ImGuiManager::Initialize() ||
+      !CommonHost::CreateHostDisplayResources())
   {
     ImGuiManager::Shutdown();
     CommonHost::ReleaseHostDisplayResources();

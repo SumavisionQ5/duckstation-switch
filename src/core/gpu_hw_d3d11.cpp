@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "gpu_hw_d3d11.h"
 #include "common/assert.h"
 #include "common/d3d11/shader_compiler.h"
@@ -41,8 +44,8 @@ bool GPU_HW_D3D11::Initialize()
     return false;
   }
 
-  m_device = static_cast<ID3D11Device*>(g_host_display->GetRenderDevice());
-  m_context = static_cast<ID3D11DeviceContext*>(g_host_display->GetRenderContext());
+  m_device = static_cast<ID3D11Device*>(g_host_display->GetDevice());
+  m_context = static_cast<ID3D11DeviceContext*>(g_host_display->GetContext());
   if (!m_device || !m_context)
     return false;
 

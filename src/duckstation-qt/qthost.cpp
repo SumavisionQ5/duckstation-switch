@@ -1,4 +1,7 @@
-﻿#include "qthost.h"
+﻿// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
+#include "qthost.h"
 #include "common/assert.h"
 #include "common/byte_stream.h"
 #include "common/crash_handler.h"
@@ -616,7 +619,7 @@ void EmuThread::onDisplayWindowResized(int width, int height)
     return;
 
   Log_DevPrintf("Display window resized to %dx%d", width, height);
-  g_host_display->ResizeRenderWindow(width, height);
+  g_host_display->ResizeWindow(width, height);
   ImGuiManager::WindowResized();
   System::HostDisplayResized();
 
@@ -742,7 +745,7 @@ bool EmuThread::acquireHostDisplay(RenderAPI api)
     return false;
   }
 
-  if (!g_host_display->MakeRenderContextCurrent() || !g_host_display->InitializeRenderDevice() ||
+  if (!g_host_display->MakeCurrent() || !g_host_display->SetupDevice() ||
       !ImGuiManager::Initialize() || !CommonHost::CreateHostDisplayResources())
   {
     ImGuiManager::Shutdown();
@@ -754,18 +757,12 @@ bool EmuThread::acquireHostDisplay(RenderAPI api)
 
   m_is_exclusive_fullscreen = g_host_display->IsFullscreen();
 
-  if (m_run_fullscreen_ui)
+  if (m_run_fullscreen_ui && !FullscreenUI::Initialize())
   {
-    if (!FullscreenUI::Initialize())
-    {
-      Log_ErrorPrint("Failed to initialize fullscreen UI");
-      releaseHostDisplay();
-      m_run_fullscreen_ui = false;
-      return false;
-    }
-
-    // start with vsync on
-    g_host_display->SetVSync(true);
+    Log_ErrorPrint("Failed to initialize fullscreen UI");
+    releaseHostDisplay();
+    m_run_fullscreen_ui = false;
+    return false;
   }
 
   return true;
@@ -790,10 +787,10 @@ void EmuThread::updateDisplayState()
     return;
 
   // this expects the context to get moved back to us afterwards
-  g_host_display->DoneRenderContextCurrent();
+  g_host_display->DoneCurrent();
 
   updateDisplayRequested(m_is_fullscreen, m_is_rendering_to_main && !m_is_fullscreen, m_is_surfaceless);
-  if (!g_host_display->MakeRenderContextCurrent())
+  if (!g_host_display->MakeCurrent())
     Panic("Failed to make device context current after updating");
 
   m_is_exclusive_fullscreen = g_host_display->IsFullscreen();
@@ -1439,7 +1436,11 @@ void EmuThread::run()
       m_event_loop->processEvents(QEventLoop::AllEvents);
       CommonHost::PumpMessagesOnCPUThread();
       if (g_host_display)
+      {
         renderDisplay(false);
+        if (!g_host_display->IsVsyncEnabled())
+          g_host_display->ThrottlePresentation();
+      }
     }
   }
 

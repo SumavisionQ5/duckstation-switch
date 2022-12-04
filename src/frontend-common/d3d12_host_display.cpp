@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "d3d12_host_display.h"
 #include "common/assert.h"
 #include "common/d3d11/shader_compiler.h"
@@ -26,7 +29,7 @@ D3D12HostDisplay::~D3D12HostDisplay()
     return;
 
   // DestroyRenderSurface() will exec the command list.
-  DestroyRenderSurface();
+  DestroySurface();
   DestroyResources();
   g_d3d12_context->Destroy();
 }
@@ -36,22 +39,22 @@ RenderAPI D3D12HostDisplay::GetRenderAPI() const
   return RenderAPI::D3D12;
 }
 
-void* D3D12HostDisplay::GetRenderDevice() const
+void* D3D12HostDisplay::GetDevice() const
 {
   return g_d3d12_context->GetDevice();
 }
 
-void* D3D12HostDisplay::GetRenderContext() const
+void* D3D12HostDisplay::GetContext() const
 {
   return g_d3d12_context.get();
 }
 
-bool D3D12HostDisplay::HasRenderDevice() const
+bool D3D12HostDisplay::HasDevice() const
 {
   return static_cast<bool>(g_d3d12_context);
 }
 
-bool D3D12HostDisplay::HasRenderSurface() const
+bool D3D12HostDisplay::HasSurface() const
 {
   return static_cast<bool>(m_swap_chain);
 }
@@ -139,10 +142,10 @@ bool D3D12HostDisplay::GetHostRefreshRate(float* refresh_rate)
 
 void D3D12HostDisplay::SetVSync(bool enabled)
 {
-  m_vsync = enabled;
+  m_vsync_enabled = enabled;
 }
 
-bool D3D12HostDisplay::CreateRenderDevice(const WindowInfo& wi)
+bool D3D12HostDisplay::CreateDevice(const WindowInfo& wi, bool vsync)
 {
   ComPtr<IDXGIFactory> temp_dxgi_factory;
   HRESULT hr = CreateDXGIFactory(IID_PPV_ARGS(temp_dxgi_factory.GetAddressOf()));
@@ -198,6 +201,7 @@ bool D3D12HostDisplay::CreateRenderDevice(const WindowInfo& wi)
   }
 
   m_window_info = wi;
+  m_vsync_enabled = vsync;
 
   if (m_window_info.type != WindowInfo::Type::Surfaceless && !CreateSwapChain(nullptr))
   {
@@ -208,7 +212,7 @@ bool D3D12HostDisplay::CreateRenderDevice(const WindowInfo& wi)
   return true;
 }
 
-bool D3D12HostDisplay::InitializeRenderDevice()
+bool D3D12HostDisplay::SetupDevice()
 {
   if (!CreateResources())
     return false;
@@ -216,12 +220,12 @@ bool D3D12HostDisplay::InitializeRenderDevice()
   return true;
 }
 
-bool D3D12HostDisplay::MakeRenderContextCurrent()
+bool D3D12HostDisplay::MakeCurrent()
 {
   return true;
 }
 
-bool D3D12HostDisplay::DoneRenderContextCurrent()
+bool D3D12HostDisplay::DoneCurrent()
 {
   return true;
 }
@@ -338,15 +342,15 @@ void D3D12HostDisplay::DestroySwapChainRTVs()
   m_current_swap_chain_buffer = 0;
 }
 
-bool D3D12HostDisplay::ChangeRenderWindow(const WindowInfo& new_wi)
+bool D3D12HostDisplay::ChangeWindow(const WindowInfo& new_wi)
 {
-  DestroyRenderSurface();
+  DestroySurface();
 
   m_window_info = new_wi;
   return CreateSwapChain(nullptr);
 }
 
-void D3D12HostDisplay::DestroyRenderSurface()
+void D3D12HostDisplay::DestroySurface()
 {
   m_window_info.SetSurfaceless();
 
@@ -360,7 +364,7 @@ void D3D12HostDisplay::DestroyRenderSurface()
   m_swap_chain.Reset();
 }
 
-void D3D12HostDisplay::ResizeRenderWindow(s32 new_window_width, s32 new_window_height)
+void D3D12HostDisplay::ResizeWindow(s32 new_window_width, s32 new_window_height)
 {
   if (!m_swap_chain)
     return;
@@ -599,10 +603,10 @@ bool D3D12HostDisplay::Render(bool skip_present)
   swap_chain_buf.TransitionToState(D3D12_RESOURCE_STATE_PRESENT);
   g_d3d12_context->ExecuteCommandList(false);
 
-  if (!m_vsync && m_using_allow_tearing)
+  if (!m_vsync_enabled && m_using_allow_tearing)
     m_swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
   else
-    m_swap_chain->Present(BoolToUInt32(m_vsync), 0);
+    m_swap_chain->Present(BoolToUInt32(m_vsync_enabled), 0);
 
   return true;
 }

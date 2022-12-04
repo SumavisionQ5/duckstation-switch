@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/gpu_texture.h"
 #include "common/rectangle.h"
@@ -62,18 +65,18 @@ public:
   ALWAYS_INLINE bool IsGPUTimingEnabled() const { return m_gpu_timing_enabled; }
 
   virtual RenderAPI GetRenderAPI() const = 0;
-  virtual void* GetRenderDevice() const = 0;
-  virtual void* GetRenderContext() const = 0;
+  virtual void* GetDevice() const = 0;
+  virtual void* GetContext() const = 0;
 
-  virtual bool HasRenderDevice() const = 0;
-  virtual bool HasRenderSurface() const = 0;
+  virtual bool HasDevice() const = 0;
+  virtual bool HasSurface() const = 0;
 
-  virtual bool CreateRenderDevice(const WindowInfo& wi) = 0;
-  virtual bool InitializeRenderDevice() = 0;
-  virtual bool MakeRenderContextCurrent() = 0;
-  virtual bool DoneRenderContextCurrent() = 0;
-  virtual void DestroyRenderSurface() = 0;
-  virtual bool ChangeRenderWindow(const WindowInfo& wi) = 0;
+  virtual bool CreateDevice(const WindowInfo& wi, bool vsync) = 0;
+  virtual bool SetupDevice() = 0;
+  virtual bool MakeCurrent() = 0;
+  virtual bool DoneCurrent() = 0;
+  virtual void DestroySurface() = 0;
+  virtual bool ChangeWindow(const WindowInfo& wi) = 0;
   virtual bool SupportsFullscreen() const = 0;
   virtual bool IsFullscreen() = 0;
   virtual bool SetFullscreen(bool fullscreen, u32 width, u32 height, float refresh_rate) = 0;
@@ -84,7 +87,7 @@ public:
   virtual bool SetPostProcessingChain(const std::string_view& config) = 0;
 
   /// Call when the window size changes externally to recreate any resources.
-  virtual void ResizeRenderWindow(s32 new_window_width, s32 new_window_height) = 0;
+  virtual void ResizeWindow(s32 new_window_width, s32 new_window_height) = 0;
 
   /// Creates an abstracted RGBA8 texture. If dynamic, the texture can be updated with UpdateTexture() below.
   virtual std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
@@ -105,6 +108,7 @@ public:
   virtual bool RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
                                 GPUTexture::Format* out_format) = 0;
 
+  ALWAYS_INLINE bool IsVsyncEnabled() const { return m_vsync_enabled; }
   virtual void SetVSync(bool enabled) = 0;
 
   /// ImGui context management, usually called by derived classes.
@@ -115,6 +119,7 @@ public:
   bool UsesLowerLeftOrigin() const;
   void SetDisplayMaxFPS(float max_fps);
   bool ShouldSkipDisplayingFrame();
+  void ThrottlePresentation();
 
   void ClearDisplayTexture()
   {
@@ -244,6 +249,7 @@ protected:
 
   bool m_display_changed = false;
   bool m_gpu_timing_enabled = false;
+  bool m_vsync_enabled = false;
 };
 
 /// Returns a pointer to the current host display abstraction. Assumes AcquireHostDisplay() has been caled.

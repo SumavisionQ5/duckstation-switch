@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #define IMGUI_DEFINE_MATH_OPERATORS
 
 #include "fullscreen_ui.h"
@@ -638,7 +641,6 @@ void FullscreenUI::OnSystemDestroyed()
   if (!IsInitialized())
     return;
 
-  g_host_display->SetVSync(true);
   s_pause_menu_was_open = false;
   SwitchToLanding();
 }
@@ -668,15 +670,7 @@ void FullscreenUI::PauseForMenuOpen()
 {
   s_was_paused_on_quick_menu_open = (System::GetState() == System::State::Paused);
   if (g_settings.pause_on_menu && !s_was_paused_on_quick_menu_open)
-  {
-    Host::RunOnCPUThread([]() {
-      System::PauseSystem(true);
-
-      // force vsync on when pausing
-      if (g_host_display)
-        g_host_display->SetVSync(true);
-    });
-  }
+    Host::RunOnCPUThread([]() { System::PauseSystem(true); });
 
   s_pause_menu_was_open = true;
 }
@@ -1337,7 +1331,8 @@ void FullscreenUI::DrawInputBindingButton(SettingsInterface* bsi, Controller::Co
   {
     BeginInputBinding(bsi, type, section, name, display_name);
   }
-  else if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+  else if (ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
+           ImGui::IsNavInputTest(ImGuiNavInput_Input, ImGuiNavReadMode_Pressed))
   {
     bsi->DeleteValue(section, name);
     SetSettingsChanged(bsi);
@@ -2803,7 +2798,7 @@ void FullscreenUI::DrawConsoleSettingsPage()
     "Speeds up CD-ROM reads by the specified factor. May improve loading speeds in some games, and break others.",
     "CDROM", "ReadSpeedup", 1, cdrom_read_speeds.data(), cdrom_read_speeds.size(), 1);
   DrawIntListSetting(
-    bsi, "Read Speedup",
+    bsi, "Seek Speedup",
     "Speeds up CD-ROM seeks by the specified factor. May improve loading speeds in some games, and break others.",
     "CDROM", "SeekSpeedup", 1, cdrom_seek_speeds.data(), cdrom_seek_speeds.size());
 
@@ -3793,10 +3788,22 @@ void FullscreenUI::SavePostProcessingChain()
   if (bsi->GetBoolValue("Display", "PostProcessing", false))
     g_host_display->SetPostProcessingChain(config);
   if (IsEditingGameSettings(bsi))
+  {
     s_game_settings_interface->Save();
+  }
   else
-    Host::CommitBaseSettingChanges();
+  {
+    s_settings_changed.store(true, std::memory_order_release);
+  }
 }
+
+enum
+{
+  POSTPROCESSING_ACTION_NONE = 0,
+  POSTPROCESSING_ACTION_REMOVE,
+  POSTPROCESSING_ACTION_MOVE_UP,
+  POSTPROCESSING_ACTION_MOVE_DOWN,
+};
 
 void FullscreenUI::DrawPostProcessingSettingsPage()
 {
@@ -3861,36 +3868,40 @@ void FullscreenUI::DrawPostProcessingSettingsPage()
 
         s_postprocessing_chain.ClearStages();
         ShowToast(std::string(), "Post-processing chain cleared.");
+        SavePostProcessingChain();
       });
   }
 
+  u32 postprocessing_action = POSTPROCESSING_ACTION_NONE;
+  u32 postprocessing_action_index;
+
   SmallString str;
   SmallString tstr;
-  for (u32 stage_index = 0; stage_index < s_postprocessing_chain.GetStageCount();)
+  for (u32 stage_index = 0; stage_index < s_postprocessing_chain.GetStageCount(); stage_index++)
   {
+    ImGui::PushID(stage_index);
     FrontendCommon::PostProcessingShader& stage = s_postprocessing_chain.GetShaderStage(stage_index);
     str.Fmt("Stage {}: {}", stage_index + 1, stage.GetName());
     MenuHeading(str);
 
     if (MenuButton(ICON_FA_TIMES " Remove From Chain", "Removes this shader from the chain."))
     {
-      ShowToast(std::string(), fmt::format("Removed stage {} ({}).", stage_index + 1, stage.GetName()));
-      s_postprocessing_chain.RemoveStage(stage_index);
-      continue;
+      postprocessing_action = POSTPROCESSING_ACTION_REMOVE;
+      postprocessing_action_index = stage_index;
     }
 
     if (MenuButton(ICON_FA_ARROW_UP " Move Up", "Moves this shader higher in the chain, applying it earlier.",
                    (stage_index > 0)))
     {
-      s_postprocessing_chain.MoveStageUp(stage_index);
-      continue;
+      postprocessing_action = POSTPROCESSING_ACTION_MOVE_UP;
+      postprocessing_action_index = stage_index;
     }
 
     if (MenuButton(ICON_FA_ARROW_DOWN " Move Down", "Moves this shader lower in the chain, applying it later.",
                    (stage_index != (s_postprocessing_chain.GetStageCount() - 1))))
     {
-      s_postprocessing_chain.MoveStageDown(stage_index);
-      continue;
+      postprocessing_action = POSTPROCESSING_ACTION_MOVE_DOWN;
+      postprocessing_action_index = stage_index;
     }
 
     for (FrontendCommon::PostProcessingShader::Option& opt : stage.GetOptions())
@@ -4118,7 +4129,33 @@ void FullscreenUI::DrawPostProcessingSettingsPage()
       }
     }
 
-    stage_index++;
+    ImGui::PopID();
+  }
+
+  switch (postprocessing_action)
+  {
+    case POSTPROCESSING_ACTION_REMOVE:
+    {
+      FrontendCommon::PostProcessingShader& stage = s_postprocessing_chain.GetShaderStage(postprocessing_action_index);
+      ShowToast(std::string(), fmt::format("Removed stage {} ({}).", postprocessing_action_index + 1, stage.GetName()));
+      s_postprocessing_chain.RemoveStage(postprocessing_action_index);
+      SavePostProcessingChain();
+    }
+    break;
+    case POSTPROCESSING_ACTION_MOVE_UP:
+    {
+      s_postprocessing_chain.MoveStageUp(postprocessing_action_index);
+      SavePostProcessingChain();
+    }
+    break;
+    case POSTPROCESSING_ACTION_MOVE_DOWN:
+    {
+      s_postprocessing_chain.MoveStageDown(postprocessing_action_index);
+      SavePostProcessingChain();
+    }
+    break;
+    default:
+      break;
   }
 
   EndMenuButtons();

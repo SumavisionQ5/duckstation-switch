@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "common/assert.h"
 #include "common/crash_handler.h"
 #include "common/file_system.h"
@@ -352,9 +355,9 @@ void Host::OnInputDeviceDisconnected(const std::string_view& identifier)
   // noop
 }
 
-void* Host::GetTopLevelWindowHandle()
+std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
 {
-  return nullptr;
+  return std::nullopt;
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 
 #include "../types.h"
@@ -50,7 +53,7 @@ public:
 
   // Creates a new context and sets it up as global.
   static bool Create(std::string_view gpu_name, const WindowInfo* wi, std::unique_ptr<SwapChain>* out_swap_chain,
-                     bool threaded_presentation, bool enable_debug_utils, bool enable_validation_layer);
+                     bool threaded_presentation, bool enable_debug_utils, bool enable_validation_layer, bool vsync);
 
   // Creates a new context from a pre-existing instance.
   static bool CreateFromExistingInstance(VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface,

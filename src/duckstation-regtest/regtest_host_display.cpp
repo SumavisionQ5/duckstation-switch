@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "regtest_host_display.h"
 #include "common/align.h"
 #include "common/assert.h"
@@ -18,48 +21,48 @@ RenderAPI RegTestHostDisplay::GetRenderAPI() const
   return RenderAPI::None;
 }
 
-void* RegTestHostDisplay::GetRenderDevice() const
+void* RegTestHostDisplay::GetDevice() const
 {
   return nullptr;
 }
 
-void* RegTestHostDisplay::GetRenderContext() const
+void* RegTestHostDisplay::GetContext() const
 {
   return nullptr;
 }
 
-bool RegTestHostDisplay::HasRenderDevice() const
+bool RegTestHostDisplay::HasDevice() const
 {
   return true;
 }
 
-bool RegTestHostDisplay::HasRenderSurface() const
+bool RegTestHostDisplay::HasSurface() const
 {
   return true;
 }
 
-bool RegTestHostDisplay::CreateRenderDevice(const WindowInfo& wi)
+bool RegTestHostDisplay::CreateDevice(const WindowInfo& wi, bool vsync)
 {
   m_window_info = wi;
   return true;
 }
 
-bool RegTestHostDisplay::InitializeRenderDevice()
+bool RegTestHostDisplay::SetupDevice()
 {
   return true;
 }
 
-bool RegTestHostDisplay::MakeRenderContextCurrent()
+bool RegTestHostDisplay::MakeCurrent()
 {
   return true;
 }
 
-bool RegTestHostDisplay::DoneRenderContextCurrent()
+bool RegTestHostDisplay::DoneCurrent()
 {
   return true;
 }
 
-void RegTestHostDisplay::DestroyRenderSurface() {}
+void RegTestHostDisplay::DestroySurface() {}
 
 bool RegTestHostDisplay::CreateResources()
 {
@@ -89,13 +92,13 @@ bool RegTestHostDisplay::UpdateImGuiFontTexture()
   return true;
 }
 
-bool RegTestHostDisplay::ChangeRenderWindow(const WindowInfo& wi)
+bool RegTestHostDisplay::ChangeWindow(const WindowInfo& wi)
 {
   m_window_info = wi;
   return true;
 }
 
-void RegTestHostDisplay::ResizeRenderWindow(s32 new_window_width, s32 new_window_height)
+void RegTestHostDisplay::ResizeWindow(s32 new_window_width, s32 new_window_height)
 {
   m_window_info.surface_width = new_window_width;
   m_window_info.surface_height = new_window_height;

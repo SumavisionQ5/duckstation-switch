@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "host_display.h"
 #include "common/align.h"
 #include "common/assert.h"
@@ -115,6 +118,24 @@ bool HostDisplay::ShouldSkipDisplayingFrame()
 
   m_last_frame_displayed_time = now;
   return false;
+}
+
+void HostDisplay::ThrottlePresentation()
+{
+  const float throttle_rate = (m_window_info.surface_refresh_rate > 0.0f) ? m_window_info.surface_refresh_rate : 60.0f;
+
+  const u64 sleep_period = Common::Timer::ConvertNanosecondsToValue(1e+9f / static_cast<double>(throttle_rate));
+  const u64 current_ts = Common::Timer::GetCurrentValue();
+
+  // Allow it to fall behind/run ahead up to 2*period. Sleep isn't that precise, plus we need to
+  // allow time for the actual rendering.
+  const u64 max_variance = sleep_period * 2;
+  if (static_cast<u64>(std::abs(static_cast<s64>(current_ts - m_last_frame_displayed_time))) > max_variance)
+    m_last_frame_displayed_time = current_ts + sleep_period;
+  else
+    m_last_frame_displayed_time += sleep_period;
+
+  Common::Timer::SleepUntil(m_last_frame_displayed_time, false);
 }
 
 bool HostDisplay::GetHostRefreshRate(float* refresh_rate)

@@ -1,4 +1,7 @@
-﻿#include "vulkan_host_display.h"
+﻿// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
+#include "vulkan_host_display.h"
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/log.h"
@@ -43,17 +46,17 @@ RenderAPI VulkanHostDisplay::GetRenderAPI() const
   return RenderAPI::Vulkan;
 }
 
-void* VulkanHostDisplay::GetRenderDevice() const
+void* VulkanHostDisplay::GetDevice() const
 {
   return nullptr;
 }
 
-void* VulkanHostDisplay::GetRenderContext() const
+void* VulkanHostDisplay::GetContext() const
 {
   return nullptr;
 }
 
-bool VulkanHostDisplay::ChangeRenderWindow(const WindowInfo& new_wi)
+bool VulkanHostDisplay::ChangeWindow(const WindowInfo& new_wi)
 {
   g_vulkan_context->WaitForGPUIdle();
 
@@ -95,10 +98,11 @@ bool VulkanHostDisplay::ChangeRenderWindow(const WindowInfo& new_wi)
   }
 
   m_window_info = m_swap_chain->GetWindowInfo();
+  m_vsync_enabled = m_swap_chain->IsVSyncEnabled();
   return true;
 }
 
-void VulkanHostDisplay::ResizeRenderWindow(s32 new_window_width, s32 new_window_height)
+void VulkanHostDisplay::ResizeWindow(s32 new_window_width, s32 new_window_height)
 {
   g_vulkan_context->WaitForGPUIdle();
 
@@ -106,6 +110,7 @@ void VulkanHostDisplay::ResizeRenderWindow(s32 new_window_width, s32 new_window_
     Panic("Failed to resize swap chain");
 
   m_window_info = m_swap_chain->GetWindowInfo();
+  m_vsync_enabled = m_swap_chain->IsVSyncEnabled();
 }
 
 bool VulkanHostDisplay::SupportsFullscreen() const
@@ -128,7 +133,7 @@ HostDisplay::AdapterAndModeList VulkanHostDisplay::GetAdapterAndModeList()
   return StaticGetAdapterAndModeList(m_window_info.type != WindowInfo::Type::Surfaceless ? &m_window_info : nullptr);
 }
 
-void VulkanHostDisplay::DestroyRenderSurface()
+void VulkanHostDisplay::DestroySurface()
 {
   m_window_info.SetSurfaceless();
   g_vulkan_context->WaitForGPUIdle();
@@ -206,19 +211,31 @@ bool VulkanHostDisplay::SupportsTextureFormat(GPUTexture::Format format) const
 
 void VulkanHostDisplay::SetVSync(bool enabled)
 {
-  if (!m_swap_chain)
+  if (!m_swap_chain || m_swap_chain->IsVSyncEnabled() == enabled)
     return;
 
   // This swap chain should not be used by the current buffer, thus safe to destroy.
   g_vulkan_context->WaitForGPUIdle();
   m_swap_chain->SetVSync(enabled);
+  m_vsync_enabled = m_swap_chain->IsVSyncEnabled();
 }
 
-bool VulkanHostDisplay::CreateRenderDevice(const WindowInfo& wi)
+bool VulkanHostDisplay::CreateDevice(const WindowInfo& wi, bool vsync)
 {
   WindowInfo local_wi(wi);
-  if (!Vulkan::Context::Create(g_settings.gpu_adapter, &local_wi, &m_swap_chain, g_settings.gpu_threaded_presentation,
-                               g_settings.gpu_use_debug_device, false))
+  bool result =
+    Vulkan::Context::Create(g_settings.gpu_adapter, &local_wi, &m_swap_chain, g_settings.gpu_threaded_presentation,
+                            g_settings.gpu_use_debug_device, g_settings.gpu_use_debug_device, vsync);
+
+  // If validation layers were enabled, try without.
+  if (!result && g_settings.gpu_use_debug_device)
+  {
+    Log_WarningPrintf("Failed to create Vulkan context with validation layers, trying without.");
+    result = Vulkan::Context::Create(g_settings.gpu_adapter, &local_wi, &m_swap_chain,
+                                     g_settings.gpu_threaded_presentation, false, false, vsync);
+  }
+
+  if (!result)
   {
     Log_ErrorPrintf("Failed to create Vulkan context");
     m_window_info = {};
@@ -231,10 +248,11 @@ bool VulkanHostDisplay::CreateRenderDevice(const WindowInfo& wi)
                  g_vulkan_context->GetDeviceDriverProperties().driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);
 
   m_window_info = m_swap_chain ? m_swap_chain->GetWindowInfo() : local_wi;
+  m_vsync_enabled = m_swap_chain ? m_swap_chain->IsVSyncEnabled() : false;
   return true;
 }
 
-bool VulkanHostDisplay::InitializeRenderDevice()
+bool VulkanHostDisplay::SetupDevice()
 {
   if (!CreateResources())
     return false;
@@ -242,12 +260,12 @@ bool VulkanHostDisplay::InitializeRenderDevice()
   return true;
 }
 
-bool VulkanHostDisplay::HasRenderDevice() const
+bool VulkanHostDisplay::HasDevice() const
 {
   return static_cast<bool>(g_vulkan_context);
 }
 
-bool VulkanHostDisplay::HasRenderSurface() const
+bool VulkanHostDisplay::HasSurface() const
 {
   return static_cast<bool>(m_swap_chain);
 }
@@ -571,12 +589,12 @@ bool VulkanHostDisplay::UpdateImGuiFontTexture()
   return ImGui_ImplVulkan_CreateFontsTexture();
 }
 
-bool VulkanHostDisplay::MakeRenderContextCurrent()
+bool VulkanHostDisplay::MakeCurrent()
 {
   return true;
 }
 
-bool VulkanHostDisplay::DoneRenderContextCurrent()
+bool VulkanHostDisplay::DoneCurrent()
 {
   return true;
 }
@@ -599,7 +617,7 @@ bool VulkanHostDisplay::Render(bool skip_present)
   {
     if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
     {
-      ResizeRenderWindow(0, 0);
+      ResizeWindow(0, 0);
       res = m_swap_chain->AcquireNextImage();
     }
     else if (res == VK_ERROR_SURFACE_LOST_KHR)
