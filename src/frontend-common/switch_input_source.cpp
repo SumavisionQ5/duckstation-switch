@@ -47,6 +47,14 @@ bool SwitchInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::
   padInitialize(&m_controllers[1].pad_state, HidNpadIdType_No2);
   padInitialize(&m_controllers[2].pad_state, HidNpadIdType_No3);
   padInitialize(&m_controllers[3].pad_state, HidNpadIdType_No4);
+
+  for (u32 i = 0; i < 4; i++)
+  {
+    hidInitializeVibrationDevices(m_controllers[i].vibration_handles, 2, static_cast<HidNpadIdType>(i),
+                                             HidNpadStyleSet_NpadStandard);
+  }
+  hidInitializeVibrationDevices(&m_controllers[0].vibration_handles[2], 2, HidNpadIdType_Handheld,
+                                           HidNpadStyleTag_NpadHandheld);
   return true;
 }
 void SwitchInputSource::UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) {}
@@ -125,8 +133,24 @@ std::vector<std::pair<std::string, std::string>> SwitchInputSource::EnumerateDev
 
 std::vector<InputBindingKey> SwitchInputSource::EnumerateMotors()
 {
-  return std::vector<InputBindingKey>();
+  std::vector<InputBindingKey> ret;
+
+  InputBindingKey key = {};
+  key.source_type = InputSourceType::Switch;
+
+  for (u32 i = 0; i < 4; i++)
+  {
+    key.source_index = i;
+    key.source_subtype = InputSubclass::ControllerMotor;
+    key.data = 0;
+    ret.push_back(key);
+    key.data = 1;
+    ret.push_back(key);
+  }
+
+  return ret;
 }
+
 bool SwitchInputSource::GetGenericBindingMapping(const std::string_view& device, GenericInputBindingMapping* mapping)
 {
   for (u32 i = 0; i < NUM_AXIS; i++)
@@ -142,6 +166,9 @@ bool SwitchInputSource::GetGenericBindingMapping(const std::string_view& device,
       mapping->emplace_back(s_switch_generic_binding_button_mapping[i],
                             StringUtil::StdStringFromFormat("P%c/%s", device[1], s_switch_button_names[i]));
   }
+
+  mapping->emplace_back(GenericInputBinding::SmallMotor, StringUtil::StdStringFromFormat("P%c/SmallMotor", device[1]));
+  mapping->emplace_back(GenericInputBinding::LargeMotor, StringUtil::StdStringFromFormat("P%c/LargeMotor", device[1]));
   return true;
 }
 
@@ -149,6 +176,39 @@ void SwitchInputSource::UpdateMotorState(InputBindingKey key, float intensity) {
 void SwitchInputSource::UpdateMotorState(InputBindingKey large_key, InputBindingKey small_key, float large_intensity,
                                          float small_intensity)
 {
+  if (large_key.source_index != small_key.source_index)
+    return;
+
+  ControllerData& data = m_controllers[large_key.source_index];
+
+  if (data.connected)
+  {
+    float intensities[] = {large_intensity, small_intensity};
+    for (u32 i = 0; i < 2; i++)
+    {
+      HidVibrationValue value = {0};
+      if (large_intensity != 0.f || small_intensity != 0.f)
+      {
+        value.freq_low = 75.f;
+        value.freq_high = 150.f;
+        value.amp_low = intensities[0];
+        value.amp_high = intensities[1];
+        if (i == 0)
+          value.amp_high *= 0.5f;
+        else
+          value.amp_low *= 0.5f;
+      }
+      else
+      {
+        value.freq_low = 160.0f;
+        value.freq_high = 320.0f;
+      }
+
+      hidSendVibrationValue(data.vibration_handles[i], &value);
+      if (large_key.source_index == 0)
+        hidSendVibrationValue(data.vibration_handles[i + 2], &value);
+    }
+  }
 }
 
 std::optional<InputBindingKey> SwitchInputSource::ParseKeyString(const std::string_view& device,
@@ -175,6 +235,21 @@ std::optional<InputBindingKey> SwitchInputSource::ParseKeyString(const std::stri
         return key;
       }
     }
+  }
+  else if (StringUtil::EndsWith(binding, "Motor"))
+  {
+    key.source_subtype = InputSubclass::ControllerMotor;
+    if (binding == "LargeMotor")
+    {
+      key.data = 0;
+      return key;
+    }
+    else if (binding == "SmallMotor")
+    {
+      key.data = 1;
+      return key;
+    }
+    return std::nullopt;
   }
   else
   {
@@ -209,10 +284,10 @@ std::string SwitchInputSource::ConvertKeyToString(InputBindingKey key)
     {
       ret = StringUtil::StdStringFromFormat("P%u/%s", key.source_index, s_switch_button_names[key.data]);
     }
-    /*else if (key.source_subtype == InputSubclass::ControllerMotor)
+    else if (key.source_subtype == InputSubclass::ControllerMotor)
     {
-      ret = StringUtil::StdStringFromFormat("XInput-%u/%sMotor", key.source_index, key.data ? "Large" : "Small");
-    }*/
+      ret = StringUtil::StdStringFromFormat("P%u/%sMotor", key.source_index, key.data ? "Small" : "Large");
+    }
   }
 
   return ret;

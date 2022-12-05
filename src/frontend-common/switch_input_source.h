@@ -38,9 +38,10 @@ public:
     NUM_AXIS = 4,
   };
 private:
-
   struct ControllerData
   {
+    HidVibrationDeviceHandle vibration_handles[4];
+
     PadState pad_state;
     bool connected = false;
     u64 buttons = 0;
