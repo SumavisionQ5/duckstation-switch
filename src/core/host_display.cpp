@@ -98,7 +98,7 @@ std::string HostDisplay::GetFullscreenModeString(u32 width, u32 height, float re
 bool HostDisplay::UsesLowerLeftOrigin() const
 {
   const RenderAPI api = GetRenderAPI();
-  return (api == RenderAPI::OpenGL || api == RenderAPI::OpenGLES);
+  return (api == RenderAPI::OpenGL || api == RenderAPI::OpenGLES || api == RenderAPI::Deko3D);
 }
 
 void HostDisplay::SetDisplayMaxFPS(float max_fps)

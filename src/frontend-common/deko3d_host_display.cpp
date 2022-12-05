@@ -487,14 +487,14 @@ void Deko3DHostDisplay::RenderDisplay(const Deko3D::Texture* final_target)
   cmdbuf.bindUniformBuffer(DkStage_Vertex, 1, heap.GpuAddr(m_uniform_buffer), m_uniform_buffer.size);
   cmdbuf.bindUniformBuffer(DkStage_Fragment, 1, heap.GpuAddr(m_uniform_buffer), m_uniform_buffer.size);
 
-  const auto [left, top, width, height] = CalculateDrawRect(GetWindowWidth(), GetWindowHeight());
+  const auto [left, top, width, height] = CalculateDrawRect(final_target->GetWidth(), final_target->GetHeight());
 
   if (!m_post_processing_chain.IsEmpty())
   {
-    ApplyPostProcessingChain(final_target, left, GetWindowHeight() - top - height, width, height,
+    ApplyPostProcessingChain(final_target, left, final_target->GetHeight() - top - height, width, height,
                              static_cast<Deko3D::Texture*>(m_display_texture), m_display_texture_view_x,
                              m_display_texture_view_y, m_display_texture_view_width, m_display_texture_view_height,
-                             GetWindowWidth(), GetWindowHeight());
+                             final_target->GetWidth(), final_target->GetHeight());
     return;
   }
 
