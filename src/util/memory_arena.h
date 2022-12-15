@@ -56,7 +56,7 @@ public:
   std::optional<View> CreateView(size_t offset, size_t size, bool writable, bool executable,
                                  void* fixed_address = nullptr);
 
-  std::optional<View> CreateReservedView(size_t size,  void* fixed_address = nullptr);
+  std::optional<View> CreateReservedView(size_t size, void* fixed_address = nullptr);
 
   void* CreateViewPtr(size_t offset, size_t size, bool writable, bool executable, void* fixed_address = nullptr);
   bool FlushViewPtr(void* address, size_t size);
@@ -77,10 +77,24 @@ private:
   void* m_mapping_base;
   VirtmemReservation* m_mapping_base_reservation;
 
+  static void* m_fastmem_base;
+
   struct Mirror
   {
-    void* address, *source;
+    void *address, *source;
     VirtmemReservation* reservation;
+    u64 size;
+    std::vector<bool> mapping_state;
+
+    u64 FindIslandSize(u64 offset)
+    {
+      bool start_state = mapping_state[offset >> 12];
+      u64 island_size = 0x1000;
+      while ((offset + island_size) < size && mapping_state[(offset + island_size) >> 12] == start_state)
+        island_size += 0x1000;
+
+      return island_size;
+    }
   };
   struct Reservation
   {

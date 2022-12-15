@@ -71,6 +71,10 @@ MemoryArena::~MemoryArena()
   Destroy();
 }
 
+#ifdef __SWITCH__
+void* MemoryArena::m_fastmem_base = nullptr;
+#endif
+
 void* MemoryArena::FindBaseAddressForMapping(size_t size)
 {
   void* base_address;
@@ -86,6 +90,15 @@ void* MemoryArena::FindBaseAddressForMapping(size_t size)
   base_address = mmap(nullptr, size, PROT_NONE, MAP_ANON | MAP_SHARED, -1, 0);
   if (base_address)
     munmap(base_address, size);
+#elif defined(__SWITCH__)
+  if (m_fastmem_base)
+    return m_fastmem_base;
+
+  virtmemLock();
+  base_address = virtmemFindAslr(size, 0x1000);
+  virtmemAddReservation(base_address, size);
+  m_fastmem_base = base_address;
+  virtmemUnlock();
 #else
   base_address = nullptr;
 #endif
@@ -222,7 +235,8 @@ bool MemoryArena::Create(size_t size, bool writable, bool executable)
   m_mapping_base = virtmemFindCodeMemory(size, 0x1000);
   m_mapping_base_reservation = virtmemAddReservation(m_mapping_base_reservation, size);
   virtmemUnlock();
-  return R_SUCCEEDED(svcMapProcessCodeMemory(envGetOwnProcessHandle(), (u64)m_mapping_base, (u64)m_underlying_memory, size));
+  return R_SUCCEEDED(
+    svcMapProcessCodeMemory(envGetOwnProcessHandle(), (u64)m_mapping_base, (u64)m_underlying_memory, size));
 #else
   return false;
 #endif
@@ -294,19 +308,18 @@ void* MemoryArena::CreateViewPtr(size_t offset, size_t size, bool writable, bool
   Assert(writable && !executable);
   VirtmemReservation* reservation = nullptr;
   virtmemLock();
-  base_pointer = fixed_address
-    ? fixed_address
-    : virtmemFindAslr(size, 0x1000);
+  base_pointer = fixed_address ? fixed_address : virtmemFindAslr(size, 0x1000);
 
   u64 source = (u64)m_mapping_base + offset;
 
-  if (R_FAILED(svcMapProcessMemory(base_pointer, envGetOwnProcessHandle(), source, size)))
+  reservation = virtmemAddReservation(base_pointer, size);
+  m_mirrors.push_back({base_pointer, (void*)source, reservation, size, std::vector<bool>(size >> 12)});
+
+  if (!SetPageProtection(base_pointer, size, true, true, false))
   {
     virtmemUnlock();
     return nullptr;
   }
-  virtmemAddReservation(base_pointer, size);
-  m_mirrors.push_back({base_pointer, (void*)source, reservation});
   virtmemUnlock();
 #else
   return nullptr;
@@ -342,7 +355,7 @@ bool MemoryArena::ReleaseViewPtr(void* address, size_t size)
   {
     if (it->address == address)
     {
-      result = R_SUCCEEDED(svcUnmapProcessMemory(address, envGetOwnProcessHandle(), (u64)it->source, size));
+      result = SetPageProtection(address, size, false, false, false);
       if (result)
       {
         if (it->reservation)
@@ -384,9 +397,7 @@ void* MemoryArena::CreateReservedPtr(size_t size, void* fixed_address /*= nullpt
     return nullptr;
 #elif defined(__SWITCH__)
   virtmemLock();
-  base_pointer = fixed_address
-    ? fixed_address
-    : virtmemFindAslr(size, 0x1000);
+  base_pointer = fixed_address ? fixed_address : virtmemFindAslr(size, 0x1000);
   m_reserved_regions.push_back({fixed_address, virtmemAddReservation(fixed_address, size)});
   virtmemUnlock();
 #else
@@ -447,6 +458,68 @@ bool MemoryArena::SetPageProtection(void* address, size_t length, bool readable,
   const int prot = (readable ? PROT_READ : 0) | (writable ? PROT_WRITE : 0) | (executable ? PROT_EXEC : 0);
   return (mprotect(address, length, prot) >= 0);
 #else
+  if (executable)
+    return false;
+
+  if (length == 0)
+    return true;
+
+  for (auto it = m_mirrors.begin(); it != m_mirrors.end(); ++it)
+  {
+    if (reinterpret_cast<u64>(address) >= reinterpret_cast<u64>(it->address) &&
+        reinterpret_cast<u64>(address) + length <= reinterpret_cast<u64>(it->address) + it->size)
+    {
+      u64 offset = reinterpret_cast<u64>(address) - reinterpret_cast<u64>(it->address);
+      u64 src = reinterpret_cast<u64>(it->source);
+
+      //printf("set page protection %d %d %x %x %x\n", readable, writable, offset, length, it->size);
+
+      while (length > 0)
+      {
+        u64 island_size = it->FindIslandSize(offset);
+        if (island_size > length)
+          island_size = length;
+
+        if (readable && writable)
+        {
+          if (!it->mapping_state[offset >> 12])
+          {
+            if (R_FAILED(svcMapProcessMemory(reinterpret_cast<void*>(reinterpret_cast<u64>(it->address) + offset),
+                                            envGetOwnProcessHandle(), src + offset, island_size)))
+            {
+              Log_ErrorPrintf("map process memory failed\n");
+              return false;
+            }
+          }
+        }
+        else
+        {
+          if (it->mapping_state[offset >> 12])
+          {
+            if (R_FAILED(svcUnmapProcessMemory(reinterpret_cast<void*>(reinterpret_cast<u64>(it->address) + offset),
+                                              envGetOwnProcessHandle(), src + offset, island_size)))
+            {
+              Log_ErrorPrintf("unmap process memory failed %lx %lx\n", offset, island_size);
+              return false;
+            }
+          }
+        }
+
+        bool original_state = it->mapping_state[(offset >> 12)];
+        for (u64 i = 0; i < island_size >> 12; i++)
+        {
+          DebugAssert(it->mapping_state[(offset >> 12) + i] == original_state);
+          it->mapping_state[(offset >> 12) + i] = readable && writable;
+        }
+
+        offset += island_size;
+        length -= island_size;
+      }
+
+      return true;
+    }
+  }
+
   return false;
 #endif
 }
@@ -455,7 +528,8 @@ MemoryArena::View::View(MemoryArena* parent, void* base_pointer, size_t arena_of
                         bool writable)
   : m_parent(parent), m_base_pointer(base_pointer), m_arena_offset(arena_offset), m_mapping_size(mapping_size),
     m_writable(writable)
-{}
+{
+}
 
 MemoryArena::View::View(View&& view)
   : m_parent(view.m_parent), m_base_pointer(view.m_base_pointer), m_arena_offset(view.m_arena_offset),

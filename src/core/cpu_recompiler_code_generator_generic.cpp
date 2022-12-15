@@ -44,6 +44,9 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
     {
       Value result = m_register_cache.AllocateScratch(size);
 
+      // on Switch we can't do read only mappings
+      // so all memory accesses need to be patchable
+#ifndef __SWITCH__
       if (g_settings.IsUsingFastmem() && Bus::IsRAMAddress(static_cast<u32>(address.constant_value)))
       {
         // have to mask away the high bits for mirrors, since we don't map them in fastmem
@@ -51,6 +54,7 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
                                 size, result);
       }
       else
+#endif
       {
         EmitLoadGlobal(result.GetHostRegister(), size, ptr);
       }
