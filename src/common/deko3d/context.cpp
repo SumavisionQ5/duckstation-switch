@@ -10,7 +10,7 @@ Log_SetChannel(Deko3DContext);
 namespace Deko3D {
 
 constexpr size_t GeneralHeapSize = 1024 * 1024 * 128;
-constexpr size_t ImageHeapSize = 1024 * 1024 * 128;
+constexpr size_t ImageHeapSize = 1024 * 1024 * 256;
 constexpr size_t ShaderHeapSize = 1024 * 1024 * 32;
 
 constexpr u32 TextureUploadBufferSize = 1024 * 1024 * 32;
