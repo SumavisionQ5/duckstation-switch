@@ -183,20 +183,25 @@ void SwitchInputSource::UpdateMotorState(InputBindingKey large_key, InputBinding
 
   if (data.connected)
   {
-    float intensities[] = {large_intensity, small_intensity};
     for (u32 i = 0; i < 2; i++)
     {
       HidVibrationValue value = {0};
-      if (large_intensity != 0.f || small_intensity != 0.f)
+      float intensity = i == 0 ? small_intensity : large_intensity;
+      if (intensity != 0.f)
       {
-        value.freq_low = 75.f;
-        value.freq_high = 150.f;
-        value.amp_low = intensities[0];
-        value.amp_high = intensities[1];
         if (i == 0)
-          value.amp_high *= 0.5f;
+        {
+          value.freq_low = 172.f;
+          value.freq_high = 260.f;
+          value.amp_low = value.amp_high = intensity * 0.9f;
+        }
         else
-          value.amp_low *= 0.5f;
+        {
+          value.freq_low = 195.f;
+          value.freq_high = 195.f;
+          value.amp_low = intensity * 0.8f;
+          value.amp_high = intensity * 0.9f;
+        }
       }
       else
       {
