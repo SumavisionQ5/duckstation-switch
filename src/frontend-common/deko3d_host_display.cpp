@@ -109,7 +109,15 @@ bool Deko3DHostDisplay::ChangeWindow(const WindowInfo& new_wi)
   return false;
 }
 
-void Deko3DHostDisplay::ResizeWindow(s32 new_window_width, s32 new_window_height) {}
+void Deko3DHostDisplay::ResizeWindow(s32 new_window_width, s32 new_window_height) {
+  g_deko3d_context->WaitGPUIdle();
+
+  m_window_info.surface_width = new_window_width;
+  m_window_info.surface_height = new_window_height;
+
+  m_swap_chain.reset();
+  m_swap_chain = Deko3D::SwapChain::Create(m_window_info);
+}
 
 bool Deko3DHostDisplay::SupportsFullscreen() const
 {

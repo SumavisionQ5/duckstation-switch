@@ -11,8 +11,8 @@ SwapChain::SwapChain(const WindowInfo& wi) : m_window_info(wi) {}
 
 SwapChain::~SwapChain()
 {
-  FreeImages();
   FreeSwapchain();
+  FreeImages();
 }
 
 std::unique_ptr<SwapChain> SwapChain::Create(const WindowInfo& wi)
