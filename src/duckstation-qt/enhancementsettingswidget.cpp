@@ -5,10 +5,10 @@
 #include "core/gpu.h"
 #include "core/settings.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
 
-EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
@@ -20,7 +20,9 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.gpuDownsampleMode, "GPU", "DownsampleMode",
                                                &Settings::ParseDownsampleModeName, &Settings::GetDownsampleModeName,
                                                Settings::DEFAULT_GPU_DOWNSAMPLE_MODE);
+  SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.gpuDownsampleScale, "GPU", "DownsampleScale", 1);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.trueColor, "GPU", "TrueColor", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.debanding, "GPU", "Debanding", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.scaledDithering, "GPU", "ScaledDithering", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.disableInterlacing, "GPU", "DisableInterlacing", true);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.forceNTSCTimings, "GPU", "ForceNTSCTimings", false);
@@ -42,9 +44,12 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.pgxpCPU, "GPU", "PGXPCPU", false);
 
   connect(m_ui.resolutionScale, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          &EnhancementSettingsWidget::updateScaledDitheringEnabled);
-  connect(m_ui.trueColor, &QCheckBox::stateChanged, this, &EnhancementSettingsWidget::updateScaledDitheringEnabled);
-  updateScaledDitheringEnabled();
+          &EnhancementSettingsWidget::onTrueColorChanged);
+  connect(m_ui.gpuDownsampleMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &EnhancementSettingsWidget::updateDownsampleScaleVisible);
+  connect(m_ui.trueColor, &QCheckBox::stateChanged, this, &EnhancementSettingsWidget::onTrueColorChanged);
+  updateDownsampleScaleVisible();
+  onTrueColorChanged();
 
   connect(m_ui.pgxpEnable, &QCheckBox::stateChanged, this, &EnhancementSettingsWidget::updatePGXPSettingsEnabled);
   connect(m_ui.pgxpTextureCorrection, &QCheckBox::stateChanged, this,
@@ -55,8 +60,11 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
     m_ui.gpuDownsampleMode, tr("Downsampling"), tr("Disabled"),
     tr("Downsamples the rendered image prior to displaying it. Can improve overall image quality in mixed 2D/3D games, "
        "but should be disabled for pure 3D games. Only applies to the hardware renderers."));
+  dialog->registerWidgetHelp(m_ui.gpuDownsampleScale, tr("Downsampling Display Scale"), tr("1x"),
+                             tr("Selects the resolution scale that will be applied to the final image. 1x will "
+                                "downsample to the original console resolution."));
   dialog->registerWidgetHelp(
-    m_ui.disableInterlacing, tr("Disable Interlacing (force progressive render/scan)"), tr("Unchecked"),
+    m_ui.disableInterlacing, tr("Disable Interlacing"), tr("Checked"),
     tr(
       "Forces the rendering and display of frames to progressive mode. <br>This removes the \"combing\" effect seen in "
       "480i games by rendering them in 480p. Usually safe to enable.<br> "
@@ -67,14 +75,20 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
        "to the hardware backends. <br>This option is usually safe, with most games looking fine at "
        "higher resolutions. Higher resolutions require a more powerful GPU."));
   dialog->registerWidgetHelp(
-    m_ui.trueColor, tr("True Color Rendering (24-bit, disables dithering)"), tr("Unchecked"),
+    m_ui.trueColor, tr("True Color Rendering"), tr("Checked"),
     tr("Forces the precision of colours output to the console's framebuffer to use the full 8 bits of precision per "
        "channel. This produces nicer looking gradients at the cost of making some colours look slightly different. "
        "Disabling the option also enables dithering, which makes the transition between colours less sharp by applying "
        "a pattern around those pixels. Most games are compatible with this option, but there is a number which aren't "
        "and will have broken effects with it enabled. Only applies to the hardware renderers."));
   dialog->registerWidgetHelp(
-    m_ui.scaledDithering, tr("Scaled Dithering (scale dither pattern to resolution)"), tr("Checked"),
+    m_ui.debanding, tr("True Color Debanding"), tr("Unchecked"),
+    tr("Applies modern dithering techniques to further smooth out gradients when true color is enabled. "
+       "This debanding is performed during rendering (as opposed to a post-processing step), which allows it to be "
+       "fast while preserving detail. "
+       "Debanding increases the file size of screenshots due to the subtle dithering pattern present in screenshots."));
+  dialog->registerWidgetHelp(
+    m_ui.scaledDithering, tr("Scaled Dithering"), tr("Checked"),
     tr("Scales the dither pattern to the resolution scale of the emulated GPU. This makes the dither pattern much less "
        "obvious at higher resolutions. <br>Usually safe to enable, and only supported by the hardware renderers."));
   dialog->registerWidgetHelp(m_ui.forceNTSCTimings, tr("Force NTSC Timings (60hz-on-PAL)"), tr("Unchecked"),
@@ -91,7 +105,7 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
                                 "Only applies to the hardware renderers."));
   dialog->registerWidgetHelp(
     m_ui.textureFiltering, tr("Texture Filtering"),
-    qApp->translate("GPUTextureFilter", Settings::GetTextureFilterDisplayName(GPUTextureFilter::Nearest)),
+    QString::fromUtf8(Settings::GetTextureFilterDisplayName(GPUTextureFilter::Nearest)),
     tr("Smooths out the blockiness of magnified textures on 3D object by using filtering. <br>Will have a "
        "greater effect on higher resolution scales. Only applies to the hardware renderers. <br>The JINC2 and "
        "especially xBR filtering modes are very demanding, and may not be worth the speed penalty."));
@@ -133,12 +147,37 @@ EnhancementSettingsWidget::EnhancementSettingsWidget(SettingsDialog* dialog, QWi
 
 EnhancementSettingsWidget::~EnhancementSettingsWidget() = default;
 
-void EnhancementSettingsWidget::updateScaledDitheringEnabled()
+void EnhancementSettingsWidget::onTrueColorChanged()
 {
   const int resolution_scale = m_ui.resolutionScale->currentIndex();
   const bool true_color = m_ui.trueColor->isChecked();
   const bool allow_scaled_dithering = (resolution_scale != 1 && !true_color);
+  const bool allow_debanding = true_color;
   m_ui.scaledDithering->setEnabled(allow_scaled_dithering);
+  m_ui.debanding->setEnabled(allow_debanding);
+}
+
+void EnhancementSettingsWidget::updateDownsampleScaleVisible()
+{
+  const GPUDownsampleMode mode =
+    Settings::ParseDownsampleModeName(
+      m_dialog
+        ->getEffectiveStringValue("GPU", "DownsampleMode",
+                                  Settings::GetDownsampleModeName(Settings::DEFAULT_GPU_DOWNSAMPLE_MODE))
+        .c_str())
+      .value_or(Settings::DEFAULT_GPU_DOWNSAMPLE_MODE);
+
+  const bool visible = (mode == GPUDownsampleMode::Box);
+  if (visible && m_ui.gpuDownsampleLayout->indexOf(m_ui.gpuDownsampleScale) < 0)
+  {
+    m_ui.gpuDownsampleScale->setVisible(true);
+    m_ui.gpuDownsampleLayout->addWidget(m_ui.gpuDownsampleScale, 0);
+  }
+  else if (!visible && m_ui.gpuDownsampleLayout->indexOf(m_ui.gpuDownsampleScale) >= 0)
+  {
+    m_ui.gpuDownsampleScale->setVisible(false);
+    m_ui.gpuDownsampleLayout->removeWidget(m_ui.gpuDownsampleScale);
+  }
 }
 
 void EnhancementSettingsWidget::setupAdditionalUi()
@@ -148,13 +187,13 @@ void EnhancementSettingsWidget::setupAdditionalUi()
   for (u32 i = 0; i < static_cast<u32>(GPUTextureFilter::Count); i++)
   {
     m_ui.textureFiltering->addItem(
-      qApp->translate("GPUTextureFilter", Settings::GetTextureFilterDisplayName(static_cast<GPUTextureFilter>(i))));
+      QString::fromUtf8(Settings::GetTextureFilterDisplayName(static_cast<GPUTextureFilter>(i))));
   }
 
   for (u32 i = 0; i < static_cast<u32>(GPUDownsampleMode::Count); i++)
   {
     m_ui.gpuDownsampleMode->addItem(
-      qApp->translate("GPUDownsampleMode", Settings::GetDownsampleModeDisplayName(static_cast<GPUDownsampleMode>(i))));
+      QString::fromUtf8(Settings::GetDownsampleModeDisplayName(static_cast<GPUDownsampleMode>(i))));
   }
 }
 

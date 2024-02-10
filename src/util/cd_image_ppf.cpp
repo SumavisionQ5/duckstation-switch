@@ -1,16 +1,21 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
+
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <map>
 #include <unordered_map>
+
 Log_SetChannel(CDImagePPF);
+
+namespace {
 
 enum : u32
 {
@@ -28,6 +33,7 @@ public:
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasNonStandardSubchannel() const override;
+  s64 GetSizeOnDisk() const override;
 
   std::string GetMetadata(const std::string_view& type) const override;
   std::string GetSubImageMetadata(u32 index, const std::string_view& type) const override;
@@ -48,8 +54,11 @@ private:
   std::unique_ptr<CDImage> m_parent_image;
   std::vector<u8> m_replacement_data;
   std::unordered_map<u32, u32> m_replacement_map;
+  s64 m_patch_size = 0;
   u32 m_replacement_offset = 0;
 };
+
+} // namespace
 
 CDImagePPF::CDImagePPF() = default;
 
@@ -63,6 +72,8 @@ bool CDImagePPF::Open(const char* filename, std::unique_ptr<CDImage> parent_imag
     Log_ErrorPrintf("Failed to open '%s'", filename);
     return false;
   }
+
+  m_patch_size = FileSystem::FSize64(fp.get());
 
   u32 magic;
   if (std::fread(&magic, sizeof(magic), 1, fp.get()) != 1)
@@ -436,6 +447,11 @@ bool CDImagePPF::ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_i
 
   std::memcpy(buffer, &m_replacement_data[it->second], RAW_SECTOR_SIZE);
   return true;
+}
+
+s64 CDImagePPF::GetSizeOnDisk() const
+{
+  return m_patch_size + m_parent_image->GetSizeOnDisk();
 }
 
 std::unique_ptr<CDImage>

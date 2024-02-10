@@ -2,15 +2,19 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "gte.h"
-#include "common/assert.h"
-#include "common/bitutils.h"
-#include "util/state_wrapper.h"
+
 #include "cpu_core.h"
 #include "cpu_core_private.h"
-#include "host_display.h"
-#include "pgxp.h"
+#include "cpu_pgxp.h"
 #include "settings.h"
 #include "timing_event.h"
+
+#include "util/gpu_device.h"
+#include "util/state_wrapper.h"
+
+#include "common/assert.h"
+#include "common/bitutils.h"
+
 #include <algorithm>
 #include <array>
 #include <numeric>
@@ -158,24 +162,67 @@ ALWAYS_INLINE static u32 TruncateRGB(s32 value)
   return static_cast<u32>(value);
 }
 
-void Initialize()
+static void SetOTZ(s32 value);
+static void PushSXY(s32 x, s32 y);
+static void PushSZ(s32 value);
+static void PushRGBFromMAC();
+static u32 UNRDivide(u32 lhs, u32 rhs);
+
+static void MulMatVec(const s16* M_, const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm);
+static void MulMatVec(const s16* M_, const s32 T[3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm);
+static void MulMatVecBuggy(const s16* M_, const s32 T[3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm);
+
+static void InterpolateColor(s64 in_MAC1, s64 in_MAC2, s64 in_MAC3, u8 shift, bool lm);
+static void RTPS(const s16 V[3], u8 shift, bool lm, bool last);
+static void NCS(const s16 V[3], u8 shift, bool lm);
+static void NCCS(const s16 V[3], u8 shift, bool lm);
+static void NCDS(const s16 V[3], u8 shift, bool lm);
+static void DPCS(const u8 color[3], u8 shift, bool lm);
+
+static void Execute_MVMVA(Instruction inst);
+static void Execute_SQR(Instruction inst);
+static void Execute_OP(Instruction inst);
+static void Execute_RTPS(Instruction inst);
+static void Execute_RTPT(Instruction inst);
+static void Execute_NCLIP(Instruction inst);
+static void Execute_NCLIP_PGXP(Instruction inst);
+static void Execute_AVSZ3(Instruction inst);
+static void Execute_AVSZ4(Instruction inst);
+static void Execute_NCS(Instruction inst);
+static void Execute_NCT(Instruction inst);
+static void Execute_NCCS(Instruction inst);
+static void Execute_NCCT(Instruction inst);
+static void Execute_NCDS(Instruction inst);
+static void Execute_NCDT(Instruction inst);
+static void Execute_CC(Instruction inst);
+static void Execute_CDP(Instruction inst);
+static void Execute_DPCS(Instruction inst);
+static void Execute_DPCT(Instruction inst);
+static void Execute_DCPL(Instruction inst);
+static void Execute_INTPL(Instruction inst);
+static void Execute_GPL(Instruction inst);
+static void Execute_GPF(Instruction inst);
+
+} // namespace GTE
+
+void GTE::Initialize()
 {
   s_aspect_ratio = DisplayAspectRatio::R4_3;
   Reset();
 }
 
-void Reset()
+void GTE::Reset()
 {
   std::memset(&REGS, 0, sizeof(REGS));
 }
 
-bool DoState(StateWrapper& sw)
+bool GTE::DoState(StateWrapper& sw)
 {
   sw.DoArray(REGS.r32, NUM_DATA_REGS + NUM_CONTROL_REGS);
   return !sw.HasError();
 }
 
-void UpdateAspectRatio()
+void GTE::UpdateAspectRatio()
 {
   if (!g_settings.gpu_widescreen_hack)
   {
@@ -190,14 +237,14 @@ void UpdateAspectRatio()
   {
     case DisplayAspectRatio::MatchWindow:
     {
-      if (!g_host_display)
+      if (!g_gpu_device)
       {
         s_aspect_ratio = DisplayAspectRatio::R4_3;
         return;
       }
 
-      num = g_host_display->GetWindowWidth();
-      denom = g_host_display->GetWindowHeight();
+      num = g_gpu_device->GetWindowWidth();
+      denom = g_gpu_device->GetWindowHeight();
     }
     break;
 
@@ -223,7 +270,7 @@ void UpdateAspectRatio()
   s_custom_aspect_ratio_f = static_cast<float>((4.0 / 3.0) / (static_cast<double>(num) / static_cast<double>(denom)));
 }
 
-u32 ReadRegister(u32 index)
+u32 GTE::ReadRegister(u32 index)
 {
   DebugAssert(index < countof(REGS.r32));
 
@@ -250,7 +297,7 @@ u32 ReadRegister(u32 index)
   }
 }
 
-void WriteRegister(u32 index, u32 value)
+void GTE::WriteRegister(u32 index, u32 value)
 {
 #if 0
   if (index < 32)
@@ -345,12 +392,12 @@ void WriteRegister(u32 index, u32 value)
   }
 }
 
-u32* GetRegisterPtr(u32 index)
+u32* GTE::GetRegisterPtr(u32 index)
 {
   return &REGS.r32[index];
 }
 
-ALWAYS_INLINE static void SetOTZ(s32 value)
+ALWAYS_INLINE void GTE::SetOTZ(s32 value)
 {
   if (value < 0)
   {
@@ -366,7 +413,7 @@ ALWAYS_INLINE static void SetOTZ(s32 value)
   REGS.dr32[7] = static_cast<u32>(value);
 }
 
-ALWAYS_INLINE static void PushSXY(s32 x, s32 y)
+ALWAYS_INLINE void GTE::PushSXY(s32 x, s32 y)
 {
   if (x < -1024)
   {
@@ -395,7 +442,7 @@ ALWAYS_INLINE static void PushSXY(s32 x, s32 y)
   REGS.dr32[14] = (static_cast<u32>(x) & 0xFFFFu) | (static_cast<u32>(y) << 16);
 }
 
-ALWAYS_INLINE static void PushSZ(s32 value)
+ALWAYS_INLINE void GTE::PushSZ(s32 value)
 {
   if (value < 0)
   {
@@ -414,7 +461,7 @@ ALWAYS_INLINE static void PushSZ(s32 value)
   REGS.dr32[19] = static_cast<u32>(value); // SZ3 <- value
 }
 
-static void PushRGBFromMAC()
+ALWAYS_INLINE void GTE::PushRGBFromMAC()
 {
   // Note: SHR 4 used instead of /16 as the results are different.
   const u32 r = TruncateRGB<0>(static_cast<u32>(REGS.MAC1 >> 4));
@@ -427,7 +474,7 @@ static void PushRGBFromMAC()
   REGS.dr32[22] = r | (g << 8) | (b << 16) | (c << 24); // RGB2 <- Value
 }
 
-ALWAYS_INLINE static u32 UNRDivide(u32 lhs, u32 rhs)
+ALWAYS_INLINE u32 GTE::UNRDivide(u32 lhs, u32 rhs)
 {
   if (rhs * 2 <= lhs)
   {
@@ -471,11 +518,12 @@ ALWAYS_INLINE static u32 UNRDivide(u32 lhs, u32 rhs)
   return std::min<u32>(0x1FFFF, result);
 }
 
-static void MulMatVec(const s16 M[3][3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm)
+void GTE::MulMatVec(const s16* M_, const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm)
 {
+#define M(i, j) M_[((i)*3) + (j)]
 #define dot3(i)                                                                                                        \
-  TruncateAndSetMACAndIR<i + 1>(SignExtendMACResult<i + 1>((s64(M[i][0]) * s64(Vx)) + (s64(M[i][1]) * s64(Vy))) +      \
-                                  (s64(M[i][2]) * s64(Vz)),                                                            \
+  TruncateAndSetMACAndIR<i + 1>(SignExtendMACResult<i + 1>((s64(M(i, 0)) * s64(Vx)) + (s64(M(i, 1)) * s64(Vy))) +      \
+                                  (s64(M(i, 2)) * s64(Vz)),                                                            \
                                 shift, lm)
 
   dot3(0);
@@ -483,15 +531,17 @@ static void MulMatVec(const s16 M[3][3], const s16 Vx, const s16 Vy, const s16 V
   dot3(2);
 
 #undef dot3
+#undef M
 }
 
-static void MulMatVec(const s16 M[3][3], const s32 T[3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm)
+void GTE::MulMatVec(const s16* M_, const s32 T[3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm)
 {
+#define M(i, j) M_[((i)*3) + (j)]
 #define dot3(i)                                                                                                        \
   TruncateAndSetMACAndIR<i + 1>(                                                                                       \
-    SignExtendMACResult<i + 1>(SignExtendMACResult<i + 1>((s64(T[i]) << 12) + (s64(M[i][0]) * s64(Vx))) +              \
-                               (s64(M[i][1]) * s64(Vy))) +                                                             \
-      (s64(M[i][2]) * s64(Vz)),                                                                                        \
+    SignExtendMACResult<i + 1>(SignExtendMACResult<i + 1>((s64(T[i]) << 12) + (s64(M(i, 0)) * s64(Vx))) +              \
+                               (s64(M(i, 1)) * s64(Vy))) +                                                             \
+      (s64(M(i, 2)) * s64(Vz)),                                                                                        \
     shift, lm)
 
   dot3(0);
@@ -499,19 +549,20 @@ static void MulMatVec(const s16 M[3][3], const s32 T[3], const s16 Vx, const s16
   dot3(2);
 
 #undef dot3
+#undef M
 }
 
-static void MulMatVecBuggy(const s16 M[3][3], const s32 T[3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift,
-                           bool lm)
+void GTE::MulMatVecBuggy(const s16* M_, const s32 T[3], const s16 Vx, const s16 Vy, const s16 Vz, u8 shift, bool lm)
 {
+#define M(i, j) M_[((i)*3) + (j)]
 #define dot3(i)                                                                                                        \
   do                                                                                                                   \
   {                                                                                                                    \
     TruncateAndSetIR<i + 1>(static_cast<s32>(SignExtendMACResult<i + 1>(SignExtendMACResult<i + 1>(                    \
-                                               (s64(T[i]) << 12) + (s64(M[i][0]) * s64(Vx)))) >>                       \
+                                               (s64(T[i]) << 12) + (s64(M(i, 0)) * s64(Vx)))) >>                       \
                                              shift),                                                                   \
                             false);                                                                                    \
-    TruncateAndSetMACAndIR<i + 1>(SignExtendMACResult<i + 1>((s64(M[i][1]) * s64(Vy))) + (s64(M[i][2]) * s64(Vz)),     \
+    TruncateAndSetMACAndIR<i + 1>(SignExtendMACResult<i + 1>((s64(M(i, 1)) * s64(Vy))) + (s64(M(i, 2)) * s64(Vz)),     \
                                   shift, lm);                                                                          \
   } while (0)
 
@@ -520,87 +571,55 @@ static void MulMatVecBuggy(const s16 M[3][3], const s32 T[3], const s16 Vx, cons
   dot3(2);
 
 #undef dot3
+#undef M
 }
 
-static void Execute_MVMVA(Instruction inst)
+void GTE::Execute_MVMVA(Instruction inst)
 {
   REGS.FLAG.Clear();
 
-  // TODO: Remove memcpy..
-  s16 M[3][3];
-  switch (inst.mvmva_multiply_matrix)
+  static constexpr const s16* M_lookup[4] = {&REGS.RT[0][0], &REGS.LLM[0][0], &REGS.LCM[0][0], nullptr};
+  static constexpr const s16* V_lookup[4][3] = {
+    {&REGS.V0[0], &REGS.V0[1], &REGS.V0[2]},
+    {&REGS.V1[0], &REGS.V1[1], &REGS.V1[2]},
+    {&REGS.V2[0], &REGS.V2[1], &REGS.V2[2]},
+    {&REGS.IR1, &REGS.IR2, &REGS.IR3},
+  };
+  static constexpr const s32 zero_T[3] = {};
+  static constexpr const s32* T_lookup[4] = {REGS.TR, REGS.BK, REGS.FC, zero_T};
+
+  const s16* M = M_lookup[inst.mvmva_multiply_matrix];
+  const s16* const* const V = V_lookup[inst.mvmva_multiply_vector];
+  const s32* const T = T_lookup[inst.mvmva_translation_vector];
+  s16 buggy_M[3][3];
+
+  if (!M)
   {
-    case 0:
-      std::memcpy(M, REGS.RT, sizeof(s16) * 3 * 3);
-      break;
-    case 1:
-      std::memcpy(M, REGS.LLM, sizeof(s16) * 3 * 3);
-      break;
-    case 2:
-      std::memcpy(M, REGS.LCM, sizeof(s16) * 3 * 3);
-      break;
-    default:
-    {
-      // buggy
-      M[0][0] = -static_cast<s16>(ZeroExtend16(REGS.RGBC[0]) << 4);
-      M[0][1] = static_cast<s16>(ZeroExtend16(REGS.RGBC[0]) << 4);
-      M[0][2] = REGS.IR0;
-      M[1][0] = REGS.RT[0][2];
-      M[1][1] = REGS.RT[0][2];
-      M[1][2] = REGS.RT[0][2];
-      M[2][0] = REGS.RT[1][1];
-      M[2][1] = REGS.RT[1][1];
-      M[2][2] = REGS.RT[1][1];
-    }
-    break;
+    // buggy
+    buggy_M[0][0] = -static_cast<s16>(ZeroExtend16(REGS.RGBC[0]) << 4);
+    buggy_M[0][1] = static_cast<s16>(ZeroExtend16(REGS.RGBC[0]) << 4);
+    buggy_M[0][2] = REGS.IR0;
+    buggy_M[1][0] = REGS.RT[0][2];
+    buggy_M[1][1] = REGS.RT[0][2];
+    buggy_M[1][2] = REGS.RT[0][2];
+    buggy_M[2][0] = REGS.RT[1][1];
+    buggy_M[2][1] = REGS.RT[1][1];
+    buggy_M[2][2] = REGS.RT[1][1];
+    M = &buggy_M[0][0];
   }
 
-  s16 Vx, Vy, Vz;
-  switch (inst.mvmva_multiply_vector)
-  {
-    case 0:
-      Vx = REGS.V0[0];
-      Vy = REGS.V0[1];
-      Vz = REGS.V0[2];
-      break;
-    case 1:
-      Vx = REGS.V1[0];
-      Vy = REGS.V1[1];
-      Vz = REGS.V1[2];
-      break;
-    case 2:
-      Vx = REGS.V2[0];
-      Vy = REGS.V2[1];
-      Vz = REGS.V2[2];
-      break;
-    default:
-      Vx = REGS.IR1;
-      Vy = REGS.IR2;
-      Vz = REGS.IR3;
-      break;
-  }
-
-  static const s32 zero_T[3] = {};
-  switch (inst.mvmva_translation_vector)
-  {
-    case 0:
-      MulMatVec(M, REGS.TR, Vx, Vy, Vz, inst.GetShift(), inst.lm);
-      break;
-    case 1:
-      MulMatVec(M, REGS.BK, Vx, Vy, Vz, inst.GetShift(), inst.lm);
-      break;
-    case 2:
-      MulMatVecBuggy(M, REGS.FC, Vx, Vy, Vz, inst.GetShift(), inst.lm);
-      break;
-    default:
-      MulMatVec(M, zero_T, Vx, Vy, Vz, inst.GetShift(), inst.lm);
-      break;
-  }
+  const s16 Vx = *V[0];
+  const s16 Vy = *V[1];
+  const s16 Vz = *V[2];
+  if (inst.mvmva_translation_vector != 2)
+    MulMatVec(M, T, Vx, Vy, Vz, inst.GetShift(), inst.lm);
+  else
+    MulMatVecBuggy(M, T, Vx, Vy, Vz, inst.GetShift(), inst.lm);
 
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_SQR(Instruction inst)
+void GTE::Execute_SQR(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -618,7 +637,7 @@ static void Execute_SQR(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_OP(Instruction inst)
+void GTE::Execute_OP(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -641,7 +660,7 @@ static void Execute_OP(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void RTPS(const s16 V[3], u8 shift, bool lm, bool last)
+void GTE::RTPS(const s16 V[3], u8 shift, bool lm, bool last)
 {
 #define dot3(i)                                                                                                        \
   SignExtendMACResult<i + 1>(SignExtendMACResult<i + 1>((s64(REGS.TR[i]) << 12) + (s64(REGS.RT[i][0]) * s64(V[0]))) +  \
@@ -775,7 +794,7 @@ static void RTPS(const s16 V[3], u8 shift, bool lm, bool last)
 
     precise_x = std::clamp<float>(precise_x, -1024.0f, 1023.0f);
     precise_y = std::clamp<float>(precise_y, -1024.0f, 1023.0f);
-    PGXP::GTE_PushSXYZ2f(precise_x, precise_y, precise_z, REGS.dr32[14]);
+    CPU::PGXP::GTE_PushSXYZ2f(precise_x, precise_y, precise_z, REGS.dr32[14]);
   }
 
   if (last)
@@ -787,14 +806,14 @@ static void RTPS(const s16 V[3], u8 shift, bool lm, bool last)
   }
 }
 
-static void Execute_RTPS(Instruction inst)
+void GTE::Execute_RTPS(Instruction inst)
 {
   REGS.FLAG.Clear();
   RTPS(REGS.V0, inst.GetShift(), inst.lm, true);
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_RTPT(Instruction inst)
+void GTE::Execute_RTPT(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -808,7 +827,7 @@ static void Execute_RTPT(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_NCLIP(Instruction inst)
+void GTE::Execute_NCLIP(Instruction inst)
 {
   // MAC0 =   SX0*SY1 + SX1*SY2 + SX2*SY0 - SX0*SY2 - SX1*SY0 - SX2*SY1
   REGS.FLAG.Clear();
@@ -821,12 +840,12 @@ static void Execute_NCLIP(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_NCLIP_PGXP(Instruction inst)
+void GTE::Execute_NCLIP_PGXP(Instruction inst)
 {
-  if (PGXP::GTE_NCLIP_valid(REGS.dr32[12], REGS.dr32[13], REGS.dr32[14]))
+  if (CPU::PGXP::GTE_NCLIP_valid(REGS.dr32[12], REGS.dr32[13], REGS.dr32[14]))
   {
     REGS.FLAG.Clear();
-    REGS.MAC0 = static_cast<s32>(PGXP::GTE_NCLIP());
+    REGS.MAC0 = static_cast<s32>(CPU::PGXP::GTE_NCLIP());
   }
   else
   {
@@ -834,7 +853,7 @@ static void Execute_NCLIP_PGXP(Instruction inst)
   }
 }
 
-static void Execute_AVSZ3(Instruction inst)
+void GTE::Execute_AVSZ3(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -845,7 +864,7 @@ static void Execute_AVSZ3(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_AVSZ4(Instruction inst)
+void GTE::Execute_AVSZ4(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -856,7 +875,7 @@ static void Execute_AVSZ4(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static ALWAYS_INLINE void InterpolateColor(s64 in_MAC1, s64 in_MAC2, s64 in_MAC3, u8 shift, bool lm)
+ALWAYS_INLINE void GTE::InterpolateColor(s64 in_MAC1, s64 in_MAC2, s64 in_MAC3, u8 shift, bool lm)
 {
   // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
   //   [IR1,IR2,IR3] = (([RFC,GFC,BFC] SHL 12) - [MAC1,MAC2,MAC3]) SAR (sf*12)
@@ -871,19 +890,19 @@ static ALWAYS_INLINE void InterpolateColor(s64 in_MAC1, s64 in_MAC2, s64 in_MAC3
   TruncateAndSetMACAndIR<3>(s64(s32(REGS.IR3) * s32(REGS.IR0)) + in_MAC3, shift, lm);
 }
 
-static void NCS(const s16 V[3], u8 shift, bool lm)
+void GTE::NCS(const s16 V[3], u8 shift, bool lm)
 {
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
-  MulMatVec(REGS.LLM, V[0], V[1], V[2], shift, lm);
+  MulMatVec(&REGS.LLM[0][0], V[0], V[1], V[2], shift, lm);
 
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-  MulMatVec(REGS.LCM, REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
+  MulMatVec(&REGS.LCM[0][0], REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
 
   // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
   PushRGBFromMAC();
 }
 
-static void Execute_NCS(Instruction inst)
+void GTE::Execute_NCS(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -892,7 +911,7 @@ static void Execute_NCS(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_NCT(Instruction inst)
+void GTE::Execute_NCT(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -906,13 +925,13 @@ static void Execute_NCT(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void NCCS(const s16 V[3], u8 shift, bool lm)
+void GTE::NCCS(const s16 V[3], u8 shift, bool lm)
 {
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
-  MulMatVec(REGS.LLM, V[0], V[1], V[2], shift, lm);
+  MulMatVec(&REGS.LLM[0][0], V[0], V[1], V[2], shift, lm);
 
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-  MulMatVec(REGS.LCM, REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
+  MulMatVec(&REGS.LCM[0][0], REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
 
   // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4          ;<--- for NCDx/NCCx
   // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)       ;<--- for NCDx/NCCx
@@ -924,7 +943,7 @@ static void NCCS(const s16 V[3], u8 shift, bool lm)
   PushRGBFromMAC();
 }
 
-static void Execute_NCCS(Instruction inst)
+void GTE::Execute_NCCS(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -933,7 +952,7 @@ static void Execute_NCCS(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_NCCT(Instruction inst)
+void GTE::Execute_NCCT(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -947,13 +966,13 @@ static void Execute_NCCT(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void NCDS(const s16 V[3], u8 shift, bool lm)
+void GTE::NCDS(const s16 V[3], u8 shift, bool lm)
 {
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
-  MulMatVec(REGS.LLM, V[0], V[1], V[2], shift, lm);
+  MulMatVec(&REGS.LLM[0][0], V[0], V[1], V[2], shift, lm);
 
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-  MulMatVec(REGS.LCM, REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
+  MulMatVec(&REGS.LCM[0][0], REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
 
   // No need to assign these to MAC[1-3], as it'll never overflow.
   // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4          ;<--- for NCDx/NCCx
@@ -968,7 +987,7 @@ static void NCDS(const s16 V[3], u8 shift, bool lm)
   PushRGBFromMAC();
 }
 
-static void Execute_NCDS(Instruction inst)
+void GTE::Execute_NCDS(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -977,7 +996,7 @@ static void Execute_NCDS(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_NCDT(Instruction inst)
+void GTE::Execute_NCDT(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -991,7 +1010,7 @@ static void Execute_NCDT(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_CC(Instruction inst)
+void GTE::Execute_CC(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -999,7 +1018,7 @@ static void Execute_CC(Instruction inst)
   const bool lm = inst.lm;
 
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-  MulMatVec(REGS.LCM, REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
+  MulMatVec(&REGS.LCM[0][0], REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
 
   // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
   // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
@@ -1013,7 +1032,7 @@ static void Execute_CC(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_CDP(Instruction inst)
+void GTE::Execute_CDP(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1021,7 +1040,7 @@ static void Execute_CDP(Instruction inst)
   const bool lm = inst.lm;
 
   // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-  MulMatVec(REGS.LCM, REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
+  MulMatVec(&REGS.LCM[0][0], REGS.BK, REGS.IR1, REGS.IR2, REGS.IR3, shift, lm);
 
   // No need to assign these to MAC[1-3], as it'll never overflow.
   // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
@@ -1039,7 +1058,7 @@ static void Execute_CDP(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void DPCS(const u8 color[3], u8 shift, bool lm)
+void GTE::DPCS(const u8 color[3], u8 shift, bool lm)
 {
   // In: [IR1,IR2,IR3]=Vector, FC=Far Color, IR0=Interpolation value, CODE=MSB of RGBC
   // [MAC1,MAC2,MAC3] = [R,G,B] SHL 16                     ;<--- for DPCS/DPCT
@@ -1054,7 +1073,7 @@ static void DPCS(const u8 color[3], u8 shift, bool lm)
   PushRGBFromMAC();
 }
 
-static void Execute_DPCS(Instruction inst)
+void GTE::Execute_DPCS(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1063,7 +1082,7 @@ static void Execute_DPCS(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_DPCT(Instruction inst)
+void GTE::Execute_DPCT(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1076,7 +1095,7 @@ static void Execute_DPCT(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_DCPL(Instruction inst)
+void GTE::Execute_DCPL(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1098,7 +1117,7 @@ static void Execute_DCPL(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_INTPL(Instruction inst)
+void GTE::Execute_INTPL(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1116,7 +1135,7 @@ static void Execute_INTPL(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_GPL(Instruction inst)
+void GTE::Execute_GPL(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1135,7 +1154,7 @@ static void Execute_GPL(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-static void Execute_GPF(Instruction inst)
+void GTE::Execute_GPF(Instruction inst)
 {
   REGS.FLAG.Clear();
 
@@ -1154,7 +1173,7 @@ static void Execute_GPF(Instruction inst)
   REGS.FLAG.UpdateError();
 }
 
-void ExecuteInstruction(u32 inst_bits)
+void GTE::ExecuteInstruction(u32 inst_bits)
 {
   const Instruction inst{inst_bits};
   switch (inst.command)
@@ -1280,7 +1299,7 @@ void ExecuteInstruction(u32 inst_bits)
   }
 }
 
-InstructionImpl GetInstructionImpl(u32 inst_bits, TickCount* ticks)
+GTE::InstructionImpl GTE::GetInstructionImpl(u32 inst_bits, TickCount* ticks)
 {
   const Instruction inst{inst_bits};
   switch (inst.command)
@@ -1380,8 +1399,5 @@ InstructionImpl GetInstructionImpl(u32 inst_bits, TickCount* ticks)
 
     default:
       Panic("Missing handler");
-      return nullptr;
   }
 }
-
-} // namespace GTE

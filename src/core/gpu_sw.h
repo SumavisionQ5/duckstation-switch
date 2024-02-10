@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/heap_array.h"
 #include "gpu.h"
 #include "gpu_sw_backend.h"
-#include "host_display.h"
+
+#include "util/gpu_device.h"
+
+#include "common/heap_array.h"
+
 #include <array>
 #include <memory>
 #include <vector>
 
-namespace Threading
-{
+namespace Threading {
 class Thread;
 }
 
@@ -25,13 +27,13 @@ public:
 
   ALWAYS_INLINE const GPU_SW_Backend& GetBackend() const { return m_backend; }
 
-  GPURenderer GetRendererType() const override;
   const Threading::Thread* GetSWThread() const override;
+  bool IsHardwareRenderer() const override;
 
   bool Initialize() override;
   bool DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_display) override;
   void Reset(bool clear_vram) override;
-  void UpdateSettings() override;
+  void UpdateSettings(const Settings& old_settings) override;
 
 protected:
   void ReadVRAM(u32 x, u32 y, u32 width, u32 height) override;
@@ -60,10 +62,10 @@ protected:
 
   GPUTexture* GetDisplayTexture(u32 width, u32 height, GPUTexture::Format format);
 
-  HeapArray<u8, GPU_MAX_DISPLAY_WIDTH * GPU_MAX_DISPLAY_HEIGHT * sizeof(u32)> m_display_texture_buffer;
+  FixedHeapArray<u8, GPU_MAX_DISPLAY_WIDTH * GPU_MAX_DISPLAY_HEIGHT * sizeof(u32)> m_display_texture_buffer;
   GPUTexture::Format m_16bit_display_format = GPUTexture::Format::RGB565;
   GPUTexture::Format m_24bit_display_format = GPUTexture::Format::RGBA8;
-  std::unique_ptr<GPUTexture> m_display_texture;
+  std::unique_ptr<GPUTexture> m_private_display_texture; // TODO: Move to base.
 
   GPU_SW_Backend m_backend;
 };

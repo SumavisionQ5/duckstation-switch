@@ -1,12 +1,16 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "updater.h"
+
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/minizip_helpers.h"
+#include "common/path.h"
+#include "common/progress_callback.h"
 #include "common/string_util.h"
-#include "common/win32_progress_callback.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -16,7 +20,14 @@
 #include <vector>
 
 #ifdef _WIN32
+#include "common/windows_headers.h"
 #include <shellapi.h>
+#else
+#include <sys/stat.h>
+#endif
+
+#ifdef __APPLE__
+#include "common/cocoa_tools.h"
 #endif
 
 Updater::Updater(ProgressCallback* progress) : m_progress(progress)
@@ -26,23 +37,15 @@ Updater::Updater(ProgressCallback* progress) : m_progress(progress)
 
 Updater::~Updater()
 {
-  if (m_zf)
-    unzClose(m_zf);
+  CloseUpdateZip();
 }
 
-bool Updater::Initialize(std::string destination_directory)
+bool Updater::Initialize(std::string staging_directory, std::string destination_directory)
 {
+  m_staging_directory = std::move(staging_directory);
   m_destination_directory = std::move(destination_directory);
-  m_staging_directory = StringUtil::StdStringFromFormat("%s" FS_OSPATH_SEPARATOR_STR "%s",
-                                                        m_destination_directory.c_str(), "UPDATE_STAGING");
   m_progress->DisplayFormattedInformation("Destination directory: '%s'", m_destination_directory.c_str());
   m_progress->DisplayFormattedInformation("Staging directory: '%s'", m_staging_directory.c_str());
-
-  // log everything to file as well
-  Log::SetFileOutputParams(
-    true, StringUtil::StdStringFromFormat("%s" FS_OSPATH_SEPARATOR_STR "updater.log", m_destination_directory.c_str())
-            .c_str());
-
   return true;
 }
 
@@ -52,13 +55,38 @@ bool Updater::OpenUpdateZip(const char* path)
   if (!m_zf)
     return false;
 
+  m_zip_path = path;
+
   m_progress->SetStatusText("Parsing update zip...");
   return ParseZip();
 }
 
-bool Updater::RecursiveDeleteDirectory(const char* path)
+void Updater::CloseUpdateZip()
+{
+  if (m_zf)
+  {
+    unzClose(m_zf);
+    m_zf = nullptr;
+  }
+}
+
+void Updater::RemoveUpdateZip()
+{
+  if (m_zip_path.empty())
+    return;
+
+  CloseUpdateZip();
+
+  if (!FileSystem::DeleteFile(m_zip_path.c_str()))
+    m_progress->DisplayFormattedError("Failed to remove update zip '%s'", m_zip_path.c_str());
+}
+
+bool Updater::RecursiveDeleteDirectory(const char* path, bool remove_dir)
 {
 #ifdef _WIN32
+  if (!remove_dir)
+    return false;
+
   // making this safer on Win32...
   std::wstring wpath(StringUtil::UTF8StringToWideString(path));
   wpath += L'\0';
@@ -70,7 +98,31 @@ bool Updater::RecursiveDeleteDirectory(const char* path)
 
   return (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted);
 #else
-  return FileSystem::DeleteDirectory(path, true);
+  FileSystem::FindResultsArray results;
+  if (FileSystem::FindFiles(path, "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES,
+                            &results))
+  {
+    for (const FILESYSTEM_FIND_DATA& fd : results)
+    {
+      if (fd.Attributes & FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY)
+      {
+        if (!RecursiveDeleteDirectory(fd.FileName.c_str(), true))
+          return false;
+      }
+      else
+      {
+        m_progress->DisplayFormattedInformation("Removing directory '%s'.", fd.FileName.c_str());
+        if (!FileSystem::DeleteFile(fd.FileName.c_str()))
+          return false;
+      }
+    }
+  }
+
+  if (!remove_dir)
+    return true;
+
+  m_progress->DisplayFormattedInformation("Removing directory '%s'.", path);
+  return FileSystem::DeleteDirectory(path);
 #endif
 }
 
@@ -108,13 +160,33 @@ bool Updater::ParseZip()
     while (zip_filename_buffer[0] == FS_OSPATH_SEPARATOR_CHARACTER)
       std::memmove(&zip_filename_buffer[1], &zip_filename_buffer[0], --len);
 
+#ifdef _WIN32
+    entry.file_mode = 0;
+#else
+    // Preserve permissions on Unix.
+    static constexpr u32 PERMISSION_MASK = (S_IRWXO | S_IRWXG | S_IRWXU);
+    entry.file_mode =
+      ((file_info.external_fa >> 16) & 0x01FFu) & PERMISSION_MASK; // https://stackoverflow.com/a/28753385
+#endif
+
     // skip directories (we sort them out later)
     if (len > 0 && zip_filename_buffer[len - 1] != FS_OSPATH_SEPARATOR_CHARACTER)
     {
+      bool process_file = true;
+      const char* filename_to_add = zip_filename_buffer;
+#ifdef _WIN32
       // skip updater itself, since it was already pre-extracted.
-      if (StringUtil::Strcasecmp(zip_filename_buffer, "updater.exe") != 0)
+      process_file = process_file && (StringUtil::Strcasecmp(zip_filename_buffer, "updater.exe") != 0);
+#elif defined(__APPLE__)
+      // on MacOS, we want to remove the DuckStation.app prefix.
+      static constexpr const char* PREFIX_PATH = "DuckStation.app/";
+      const size_t prefix_length = std::strlen(PREFIX_PATH);
+      process_file = process_file && (std::strncmp(zip_filename_buffer, PREFIX_PATH, prefix_length) == 0);
+      filename_to_add += prefix_length;
+#endif
+      if (process_file)
       {
-        entry.destination_filename = zip_filename_buffer;
+        entry.destination_filename = filename_to_add;
         m_progress->DisplayFormattedInformation("Found file in zip: '%s'", entry.destination_filename.c_str());
         m_update_paths.push_back(std::move(entry));
       }
@@ -165,7 +237,7 @@ bool Updater::PrepareStagingDirectory()
   if (FileSystem::DirectoryExists(m_staging_directory.c_str()))
   {
     m_progress->DisplayFormattedWarning("Update staging directory already exists, removing");
-    if (!RecursiveDeleteDirectory(m_staging_directory.c_str()) ||
+    if (!RecursiveDeleteDirectory(m_staging_directory.c_str(), true) ||
         FileSystem::DirectoryExists(m_staging_directory.c_str()))
     {
       m_progress->ModalError("Failed to remove old staging directory");
@@ -202,7 +274,8 @@ bool Updater::StageUpdate()
 
   for (const FileToUpdate& ftu : m_update_paths)
   {
-    m_progress->SetFormattedStatusText("Extracting '%s'...", ftu.original_zip_filename.c_str());
+    m_progress->SetFormattedStatusText("Extracting '%s' (mode %o)...", ftu.original_zip_filename.c_str(),
+                                       ftu.file_mode);
 
     if (unzLocateFile(m_zf, ftu.original_zip_filename.c_str(), 0) != UNZ_OK)
     {
@@ -256,6 +329,23 @@ bool Updater::StageUpdate()
       }
     }
 
+#ifndef _WIN32
+    if (ftu.file_mode != 0)
+    {
+      const int fd = fileno(fp);
+      const int res = (fd >= 0) ? fchmod(fd, ftu.file_mode) : -1;
+      if (res < 0)
+      {
+        m_progress->DisplayFormattedModalError("Failed to set mode for file '%s' (fd %d) to %u: errno %d",
+                                               destination_file.c_str(), fd, res, errno);
+        std::fclose(fp);
+        FileSystem::DeleteFile(destination_file.c_str());
+        unzCloseCurrentFile(m_zf);
+        return false;
+      }
+    }
+#endif
+
     std::fclose(fp);
     unzCloseCurrentFile(m_zf);
     m_progress->IncrementProgressValue();
@@ -289,17 +379,23 @@ bool Updater::CommitUpdate()
     const std::string dest_file_name = StringUtil::StdStringFromFormat(
       "%s" FS_OSPATH_SEPARATOR_STR "%s", m_destination_directory.c_str(), ftu.destination_filename.c_str());
     m_progress->DisplayFormattedInformation("Moving '%s' to '%s'", staging_file_name.c_str(), dest_file_name.c_str());
+
+    Error error;
 #ifdef _WIN32
     const bool result =
       MoveFileExW(StringUtil::UTF8StringToWideString(staging_file_name).c_str(),
                   StringUtil::UTF8StringToWideString(dest_file_name).c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (!result)
+      error.SetWin32(GetLastError());
+#elif defined(__APPLE__)
+    const bool result = CocoaTools::MoveFile(staging_file_name.c_str(), dest_file_name.c_str(), &error);
 #else
     const bool result = (rename(staging_file_name.c_str(), dest_file_name.c_str()) == 0);
 #endif
     if (!result)
     {
-      m_progress->DisplayFormattedModalError("Failed to rename '%s' to '%s'", staging_file_name.c_str(),
-                                             dest_file_name.c_str());
+      m_progress->DisplayFormattedModalError("Failed to rename '%s' to '%s': %s", staging_file_name.c_str(),
+                                             dest_file_name.c_str(), error.GetDescription().c_str());
       return false;
     }
   }
@@ -310,6 +406,11 @@ bool Updater::CommitUpdate()
 void Updater::CleanupStagingDirectory()
 {
   // remove staging directory itself
-  if (!RecursiveDeleteDirectory(m_staging_directory.c_str()))
+  if (!RecursiveDeleteDirectory(m_staging_directory.c_str(), true))
     m_progress->DisplayFormattedError("Failed to remove staging directory '%s'", m_staging_directory.c_str());
+}
+
+bool Updater::ClearDestinationDirectory()
+{
+  return RecursiveDeleteDirectory(m_destination_directory.c_str(), false);
 }

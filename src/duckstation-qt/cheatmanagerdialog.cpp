@@ -22,9 +22,9 @@
 #include <utility>
 
 static constexpr std::array<const char*, 6> s_size_strings = {
-  {TRANSLATABLE("CheatManagerDialog", "Byte"), TRANSLATABLE("CheatManagerDialog", "Halfword"),
-   TRANSLATABLE("CheatManagerDialog", "Word"), TRANSLATABLE("CheatManagerDialog", "Signed Byte"),
-   TRANSLATABLE("CheatManagerDialog", "Signed Halfword"), TRANSLATABLE("CheatManagerDialog", "Signed Word")}};
+  {TRANSLATE_NOOP("CheatManagerDialog", "Byte"), TRANSLATE_NOOP("CheatManagerDialog", "Halfword"),
+   TRANSLATE_NOOP("CheatManagerDialog", "Word"), TRANSLATE_NOOP("CheatManagerDialog", "Signed Byte"),
+   TRANSLATE_NOOP("CheatManagerDialog", "Signed Halfword"), TRANSLATE_NOOP("CheatManagerDialog", "Signed Word")}};
 
 static QString formatHexValue(u32 value, u8 size)
 {
@@ -162,8 +162,8 @@ void CheatManagerDialog::connectUi()
     }
     else if (index == 1)
     {
-      m_ui.scanStartAddress->setText(formatHexValue(CPU::DCACHE_LOCATION, 8));
-      m_ui.scanEndAddress->setText(formatHexValue(CPU::DCACHE_LOCATION + CPU::DCACHE_SIZE, 8));
+      m_ui.scanStartAddress->setText(formatHexValue(CPU::SCRATCHPAD_ADDR, 8));
+      m_ui.scanEndAddress->setText(formatHexValue(CPU::SCRATCHPAD_ADDR + CPU::SCRATCHPAD_SIZE, 8));
     }
     else
     {
@@ -748,7 +748,7 @@ void CheatManagerDialog::addToWatchClicked()
   for (int index = indexFirst; index <= indexLast; index++)
   {
     const MemoryScan::Result& res = m_scanner.GetResults()[static_cast<u32>(index)];
-    m_watch.AddEntry(StringUtil::StdStringFromFormat("0x%08x", res.address), res.address, m_scanner.GetSize(),
+    m_watch.AddEntry(fmt::format("0x{:08x}", res.address), res.address, m_scanner.GetSize(),
                      m_scanner.GetValueSigned(), false);
     updateWatch();
   }
@@ -775,7 +775,7 @@ void CheatManagerDialog::addManualWatchAddressClicked()
   else if (index == 2 || index == 5)
     address.value() &= 0xFFFFFFFC;
 
-  m_watch.AddEntry(StringUtil::StdStringFromFormat("0x%08x", address.value()), address.value(),
+  m_watch.AddEntry(fmt::format("0x{:08x}", address.value()), address.value(),
                    static_cast<MemoryAccessSize>(index % 3), (index > 3), false);
   updateWatch();
 }

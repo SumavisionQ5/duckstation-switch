@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "inputbindingwidgets.h"
-#include "common/bitutils.h"
-#include "controllersettingsdialog.h"
-#include "core/host_settings.h"
+#include "controllersettingswindow.h"
 #include "inputbindingdialog.h"
 #include "qthost.h"
 #include "qtutils.h"
+
+#include "core/host.h"
+
+#include "common/bitutils.h"
+
 #include <QtCore/QTimer>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
@@ -22,8 +25,8 @@ InputBindingWidget::InputBindingWidget(QWidget* parent) : QPushButton(parent)
   connect(this, &QPushButton::clicked, this, &InputBindingWidget::onClicked);
 }
 
-InputBindingWidget::InputBindingWidget(QWidget* parent, SettingsInterface* sif, std::string section_name,
-                                       std::string key_name)
+InputBindingWidget::InputBindingWidget(QWidget* parent, SettingsInterface* sif, InputBindingInfo::Type bind_type,
+                                       std::string section_name, std::string key_name)
   : QPushButton(parent)
 {
   setMinimumWidth(225);
@@ -31,7 +34,7 @@ InputBindingWidget::InputBindingWidget(QWidget* parent, SettingsInterface* sif, 
 
   connect(this, &QPushButton::clicked, this, &InputBindingWidget::onClicked);
 
-  initialize(sif, std::move(section_name), std::move(key_name));
+  initialize(sif, bind_type, std::move(section_name), std::move(key_name));
 }
 
 InputBindingWidget::~InputBindingWidget()
@@ -39,14 +42,17 @@ InputBindingWidget::~InputBindingWidget()
   Q_ASSERT(!isListeningForInput());
 }
 
-bool InputBindingWidget::isMouseMappingEnabled()
+bool InputBindingWidget::isMouseMappingEnabled(SettingsInterface* sif)
 {
-  return Host::GetBaseBoolSettingValue("UI", "EnableMouseMapping", false);
+  return sif ? sif->GetBoolValue("UI", "EnableMouseMapping", false) :
+               Host::GetBaseBoolSettingValue("UI", "EnableMouseMapping", false);
 }
 
-void InputBindingWidget::initialize(SettingsInterface* sif, std::string section_name, std::string key_name)
+void InputBindingWidget::initialize(SettingsInterface* sif, InputBindingInfo::Type bind_type, std::string section_name,
+                                    std::string key_name)
 {
   m_sif = sif;
+  m_bind_type = bind_type;
   m_section_name = std::move(section_name);
   m_key_name = std::move(key_name);
   reloadBinding();
@@ -120,7 +126,7 @@ bool InputBindingWidget::eventFilter(QObject* watched, QEvent* event)
     if (dx != 0.0f)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::WheelX));
-      key.negative = (dx < 0.0f);
+      key.modifier = dx < 0.0f ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
     }
 
@@ -128,7 +134,7 @@ bool InputBindingWidget::eventFilter(QObject* watched, QEvent* event)
     if (dy != 0.0f)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::WheelY));
-      key.negative = (dy < 0.0f);
+      key.modifier = dy < 0.0f ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
     }
 
@@ -145,20 +151,20 @@ bool InputBindingWidget::eventFilter(QObject* watched, QEvent* event)
     // if we've moved more than a decent distance from the center of the widget, bind it.
     // this is so we don't accidentally bind to the mouse if you bump it while reaching for your pad.
     static constexpr const s32 THRESHOLD = 50;
-    const QPointF diff(static_cast<QMouseEvent*>(event)->globalPosition() - m_input_listen_start_position);
+    const QPoint diff(static_cast<QMouseEvent*>(event)->globalPosition().toPoint() - m_input_listen_start_position);
     bool has_one = false;
 
     if (std::abs(diff.x()) >= THRESHOLD)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::X));
-      key.negative = (diff.x() < 0);
+      key.modifier = diff.x() < 0 ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
       has_one = true;
     }
     if (std::abs(diff.y()) >= THRESHOLD)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::Y));
-      key.negative = (diff.y() < 0);
+      key.modifier = diff.y() < 0 ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
       has_one = true;
     }
@@ -205,8 +211,8 @@ void InputBindingWidget::setNewBinding()
   if (m_new_bindings.empty())
     return;
 
-  const std::string new_binding(
-    InputManager::ConvertInputBindingKeysToString(m_new_bindings.data(), m_new_bindings.size()));
+  std::string new_binding(
+    InputManager::ConvertInputBindingKeysToString(m_bind_type, m_new_bindings.data(), m_new_bindings.size()));
   if (!new_binding.empty())
   {
     if (m_sif)
@@ -280,8 +286,9 @@ void InputBindingWidget::onInputListenTimerTimeout()
 
 void InputBindingWidget::startListeningForInput(u32 timeout_in_seconds)
 {
+  m_value_ranges.clear();
   m_new_bindings.clear();
-  m_mouse_mapping_enabled = isMouseMappingEnabled();
+  m_mouse_mapping_enabled = isMouseMappingEnabled(m_sif);
   m_input_listen_start_position = QCursor::pos();
   m_input_listen_timer = new QTimer(this);
   m_input_listen_timer->setSingleShot(false);
@@ -315,14 +322,37 @@ void InputBindingWidget::stopListeningForInput()
 
 void InputBindingWidget::inputManagerHookCallback(InputBindingKey key, float value)
 {
-  const float abs_value = std::abs(value);
+  if (!isListeningForInput())
+    return;
 
-  for (InputBindingKey other_key : m_new_bindings)
+  float initial_value = value;
+  float min_value = value;
+  auto it = std::find_if(m_value_ranges.begin(), m_value_ranges.end(),
+                         [key](const auto& it) { return it.first.bits == key.bits; });
+  if (it != m_value_ranges.end())
+  {
+    initial_value = it->second.first;
+    min_value = it->second.second = std::min(it->second.second, value);
+  }
+  else
+  {
+    m_value_ranges.emplace_back(key, std::make_pair(initial_value, min_value));
+  }
+
+  const float abs_value = std::abs(value);
+  const bool reverse_threshold = (key.source_subtype == InputSubclass::ControllerAxis && initial_value > 0.5f);
+
+  for (InputBindingKey& other_key : m_new_bindings)
   {
     if (other_key.MaskDirection() == key.MaskDirection())
     {
-      if (abs_value < 0.5f)
+      // for pedals, we wait for it to go back to near its starting point to commit the binding
+      if ((reverse_threshold ? ((initial_value - value) <= 0.25f) : (abs_value < 0.5f)))
       {
+        // did we go the full range?
+        if (reverse_threshold && initial_value > 0.5f && min_value <= -0.5f)
+          other_key.modifier = InputModifier::FullAxis;
+
         // if this key is in our new binding list, it's a "release", and we're done
         setNewBinding();
         stopListeningForInput();
@@ -335,10 +365,11 @@ void InputBindingWidget::inputManagerHookCallback(InputBindingKey key, float val
   }
 
   // new binding, add it to the list, but wait for a decent distance first, and then wait for release
-  if (abs_value >= 0.5f)
+  if ((reverse_threshold ? (abs_value < 0.5f) : (abs_value >= 0.5f)))
   {
     InputBindingKey key_to_add = key;
-    key_to_add.negative = (value < 0.0f);
+    key_to_add.modifier = (value < 0.0f && !reverse_threshold) ? InputModifier::Negate : InputModifier::None;
+    key_to_add.invert = reverse_threshold;
     m_new_bindings.push_back(key_to_add);
   }
 }
@@ -359,7 +390,8 @@ void InputBindingWidget::unhookInputManager()
 
 void InputBindingWidget::openDialog()
 {
-  InputBindingDialog binding_dialog(m_sif, m_section_name, m_key_name, m_bindings, QtUtils::GetRootWidget(this));
+  InputBindingDialog binding_dialog(m_sif, m_bind_type, m_section_name, m_key_name, m_bindings,
+                                    QtUtils::GetRootWidget(this));
   binding_dialog.exec();
   reloadBinding();
 }
@@ -369,7 +401,7 @@ InputVibrationBindingWidget::InputVibrationBindingWidget(QWidget* parent)
   connect(this, &QPushButton::clicked, this, &InputVibrationBindingWidget::onClicked);
 }
 
-InputVibrationBindingWidget::InputVibrationBindingWidget(QWidget* parent, ControllerSettingsDialog* dialog,
+InputVibrationBindingWidget::InputVibrationBindingWidget(QWidget* parent, ControllerSettingsWindow* dialog,
                                                          std::string section_name, std::string key_name)
 {
   setMinimumWidth(225);
@@ -380,9 +412,11 @@ InputVibrationBindingWidget::InputVibrationBindingWidget(QWidget* parent, Contro
   setKey(dialog, std::move(section_name), std::move(key_name));
 }
 
-InputVibrationBindingWidget::~InputVibrationBindingWidget() {}
+InputVibrationBindingWidget::~InputVibrationBindingWidget()
+{
+}
 
-void InputVibrationBindingWidget::setKey(ControllerSettingsDialog* dialog, std::string section_name,
+void InputVibrationBindingWidget::setKey(ControllerSettingsWindow* dialog, std::string section_name,
                                          std::string key_name)
 {
   m_dialog = dialog;

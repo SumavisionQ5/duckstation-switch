@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "debuggermodels.h"
+
 #include "core/cpu_core.h"
 #include "core/cpu_core_private.h"
 #include "core/cpu_disasm.h"
+
+#include "common/small_string.h"
+
 #include <QtGui/QColor>
 #include <QtGui/QIcon>
 #include <QtGui/QPalette>
@@ -21,7 +25,9 @@ DebuggerCodeModel::DebuggerCodeModel(QObject* parent /*= nullptr*/) : QAbstractT
   m_breakpoint_pixmap = QIcon(QStringLiteral(":/icons/media-record.png")).pixmap(QSize(12, 12));
 }
 
-DebuggerCodeModel::~DebuggerCodeModel() {}
+DebuggerCodeModel::~DebuggerCodeModel()
+{
+}
 
 int DebuggerCodeModel::rowCount(const QModelIndex& parent /*= QModelIndex()*/) const
 {
@@ -92,7 +98,7 @@ QVariant DebuggerCodeModel::data(const QModelIndex& index, int role /*= Qt::Disp
 
         SmallString str;
         CPU::DisassembleInstruction(&str, address, instruction_bits);
-        return QString::fromUtf8(str.GetCharArray(), static_cast<int>(str.GetLength()));
+        return QString::fromUtf8(str.c_str(), static_cast<int>(str.length()));
       }
 
       case 4:
@@ -106,8 +112,8 @@ QVariant DebuggerCodeModel::data(const QModelIndex& index, int role /*= Qt::Disp
           return tr("<invalid>");
 
         TinyString str;
-        CPU::DisassembleInstructionComment(&str, address, instruction_bits, &CPU::g_state.regs);
-        return QString::fromUtf8(str.GetCharArray(), static_cast<int>(str.GetLength()));
+        CPU::DisassembleInstructionComment(&str, address, instruction_bits);
+        return QString::fromUtf8(str.c_str(), static_cast<int>(str.length()));
       }
 
       default:
@@ -287,13 +293,17 @@ void DebuggerCodeModel::setBreakpointState(VirtualMemoryAddress address, bool en
   }
 }
 
-DebuggerRegistersModel::DebuggerRegistersModel(QObject* parent /*= nullptr*/) : QAbstractListModel(parent) {}
+DebuggerRegistersModel::DebuggerRegistersModel(QObject* parent /*= nullptr*/) : QAbstractListModel(parent)
+{
+}
 
-DebuggerRegistersModel::~DebuggerRegistersModel() {}
+DebuggerRegistersModel::~DebuggerRegistersModel()
+{
+}
 
 int DebuggerRegistersModel::rowCount(const QModelIndex& parent /*= QModelIndex()*/) const
 {
-  return static_cast<int>(CPU::Reg::count);
+  return static_cast<int>(CPU::NUM_DEBUGGER_REGISTER_LIST_ENTRIES);
 }
 
 int DebuggerRegistersModel::columnCount(const QModelIndex& parent /*= QModelIndex()*/) const
@@ -304,7 +314,7 @@ int DebuggerRegistersModel::columnCount(const QModelIndex& parent /*= QModelInde
 QVariant DebuggerRegistersModel::data(const QModelIndex& index, int role /*= Qt::DisplayRole*/) const
 {
   u32 reg_index = static_cast<u32>(index.row());
-  if (reg_index >= static_cast<u32>(CPU::Reg::count))
+  if (reg_index >= CPU::NUM_DEBUGGER_REGISTER_LIST_ENTRIES)
     return QVariant();
 
   if (index.column() < 0 || index.column() > 1)
@@ -315,7 +325,7 @@ QVariant DebuggerRegistersModel::data(const QModelIndex& index, int role /*= Qt:
     case 0: // address
     {
       if (role == Qt::DisplayRole)
-        return QString::fromUtf8(CPU::GetRegName(static_cast<CPU::Reg>(reg_index)));
+        return QString::fromUtf8(CPU::g_debugger_register_list[reg_index].name);
     }
     break;
 
@@ -323,11 +333,11 @@ QVariant DebuggerRegistersModel::data(const QModelIndex& index, int role /*= Qt:
     {
       if (role == Qt::DisplayRole)
       {
-        return QString::asprintf("0x%08X", CPU::g_state.regs.r[reg_index]);
+        return QString::asprintf("0x%08X", *CPU::g_debugger_register_list[reg_index].value_ptr);
       }
       else if (role == Qt::ForegroundRole)
       {
-        if (CPU::g_state.regs.r[reg_index] != m_old_reg_values[reg_index])
+        if (*CPU::g_debugger_register_list[reg_index].value_ptr != m_old_reg_values[reg_index])
           return QColor(255, 50, 50);
       }
     }
@@ -372,9 +382,13 @@ void DebuggerRegistersModel::saveCurrentValues()
     m_old_reg_values[i] = CPU::g_state.regs.r[i];
 }
 
-DebuggerStackModel::DebuggerStackModel(QObject* parent /*= nullptr*/) : QAbstractListModel(parent) {}
+DebuggerStackModel::DebuggerStackModel(QObject* parent /*= nullptr*/) : QAbstractListModel(parent)
+{
+}
 
-DebuggerStackModel::~DebuggerStackModel() {}
+DebuggerStackModel::~DebuggerStackModel()
+{
+}
 
 int DebuggerStackModel::rowCount(const QModelIndex& parent /*= QModelIndex()*/) const
 {

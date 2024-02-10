@@ -2,24 +2,23 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "audiosettingswidget.h"
-#include "core/spu.h"
-#include "frontend-common/common_host.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
+
+#include "core/spu.h"
+
 #include "util/audio_stream.h"
+
 #include <cmath>
 
-AudioSettingsWidget::AudioSettingsWidget(SettingsDialog* dialog, QWidget* parent) : QWidget(parent), m_dialog(dialog)
+AudioSettingsWidget::AudioSettingsWidget(SettingsWindow* dialog, QWidget* parent) : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
 
   m_ui.setupUi(this);
 
   for (u32 i = 0; i < static_cast<u32>(AudioBackend::Count); i++)
-  {
-    m_ui.audioBackend->addItem(
-      qApp->translate("AudioBackend", Settings::GetAudioBackendDisplayName(static_cast<AudioBackend>(i))));
-  }
+    m_ui.audioBackend->addItem(QString::fromUtf8(Settings::GetAudioBackendDisplayName(static_cast<AudioBackend>(i))));
 
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.audioBackend, "Audio", "Backend", &Settings::ParseAudioBackend,
                                                &Settings::GetAudioBackendName, Settings::DEFAULT_AUDIO_BACKEND);
@@ -67,7 +66,7 @@ AudioSettingsWidget::AudioSettingsWidget(SettingsDialog* dialog, QWidget* parent
        "lowest latency, if you encounter issues, try the SDL backend. The null backend disables all host audio "
        "output."));
   dialog->registerWidgetHelp(
-    m_ui.outputLatencyMS, tr("Output Latency"), QStringLiteral("50 ms"),
+    m_ui.outputLatencyMS, tr("Output Latency"), tr("50 ms"),
     tr("The buffer size determines the size of the chunks of audio which will be pulled by the "
        "host. Smaller values reduce the output latency, but may cause hitches if the emulation "
        "speed is inconsistent. Note that the Cubeb backend uses smaller chunks regardless of "
@@ -102,26 +101,50 @@ void AudioSettingsWidget::updateDriverNames()
       .value_or(Settings::DEFAULT_AUDIO_BACKEND);
 
   std::vector<std::string> names;
+  std::vector<std::pair<std::string, std::string>> devices;
 
-#ifdef WITH_CUBEB
+#ifdef ENABLE_CUBEB
   if (backend == AudioBackend::Cubeb)
-    names = CommonHost::GetCubebDriverNames();
+  {
+    names = AudioStream::GetCubebDriverNames();
+    devices = AudioStream::GetCubebOutputDevices(m_dialog->getEffectiveStringValue("Audio", "Driver", "").c_str());
+  }
 #endif
 
   m_ui.driver->disconnect();
+  m_ui.driver->clear();
   if (names.empty())
   {
+    m_ui.driver->addItem(tr("Default"));
     m_ui.driver->setEnabled(false);
-    m_ui.driver->clear();
-    return;
+  }
+  else
+  {
+    m_ui.driver->setEnabled(true);
+    for (const std::string& name : names)
+      m_ui.driver->addItem(QString::fromStdString(name));
+
+    SettingWidgetBinder::BindWidgetToStringSetting(m_dialog->getSettingsInterface(), m_ui.driver, "Audio", "Driver",
+                                                   std::move(names.front()));
+    connect(m_ui.driver, &QComboBox::currentIndexChanged, this, &AudioSettingsWidget::updateDriverNames);
   }
 
-  m_ui.driver->setEnabled(true);
-  for (const std::string& name : names)
-    m_ui.driver->addItem(QString::fromStdString(name));
+  m_ui.outputDevice->disconnect();
+  m_ui.outputDevice->clear();
+  if (names.empty())
+  {
+    m_ui.outputDevice->addItem(tr("Default"));
+    m_ui.outputDevice->setEnabled(false);
+  }
+  else
+  {
+    m_ui.outputDevice->setEnabled(true);
+    for (const auto& [id, name] : devices)
+      m_ui.outputDevice->addItem(QString::fromStdString(name), QString::fromStdString(id));
 
-  SettingWidgetBinder::BindWidgetToStringSetting(m_dialog->getSettingsInterface(), m_ui.driver, "Audio", "Driver",
-                                                 std::move(names.front()));
+    SettingWidgetBinder::BindWidgetToStringSetting(m_dialog->getSettingsInterface(), m_ui.outputDevice, "Audio",
+                                                   "OutputDevice", std::move(devices.front().first));
+  }
 }
 
 void AudioSettingsWidget::updateLatencyLabel()

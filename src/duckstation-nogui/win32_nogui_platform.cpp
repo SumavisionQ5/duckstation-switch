@@ -1,21 +1,22 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "win32_nogui_platform.h"
-#include "common/log.h"
-#include "common/scoped_guard.h"
-#include "common/string_util.h"
-#include "common/threading.h"
-#include "core/host.h"
-#include "core/host_settings.h"
-#include "frontend-common/imgui_manager.h"
 #include "nogui_host.h"
 #include "resource.h"
 #include "win32_key_names.h"
+
+#include "core/host.h"
+
+#include "util/imgui_manager.h"
+
+#include "common/scoped_guard.h"
+#include "common/string_util.h"
+#include "common/threading.h"
+
 #include <Dbt.h>
 #include <shellapi.h>
 #include <tchar.h>
-Log_SetChannel(Win32HostInterface);
 
 static constexpr LPCWSTR WINDOW_CLASS_NAME = L"DuckStationNoGUI";
 static constexpr DWORD WINDOWED_STYLE = WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_MINIMIZEBOX | WS_SYSMENU | WS_SIZEBOX;
@@ -127,11 +128,17 @@ bool Win32NoGUIPlatform::CreatePlatformWindow(std::string title)
     SetFullscreen(true);
 
   // We use these notifications to detect when a controller is connected or disconnected.
-  DEV_BROADCAST_DEVICEINTERFACE_W filter = {sizeof(DEV_BROADCAST_DEVICEINTERFACE_W), DBT_DEVTYP_DEVICEINTERFACE};
+  DEV_BROADCAST_DEVICEINTERFACE_W filter = {
+    sizeof(DEV_BROADCAST_DEVICEINTERFACE_W), DBT_DEVTYP_DEVICEINTERFACE, 0, {}, {}};
   m_dev_notify_handle =
     RegisterDeviceNotificationW(hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE | DEVICE_NOTIFY_ALL_INTERFACE_CLASSES);
 
   return true;
+}
+
+bool Win32NoGUIPlatform::HasPlatformWindow() const
+{
+  return (m_hwnd != NULL);
 }
 
 void Win32NoGUIPlatform::DestroyPlatformWindow()
@@ -161,7 +168,7 @@ std::optional<WindowInfo> Win32NoGUIPlatform::GetPlatformWindowInfo()
     return std::nullopt;
 
   RECT rc = {};
-  GetWindowRect(m_hwnd, &rc);
+  GetClientRect(m_hwnd, &rc);
 
   WindowInfo wi;
   wi.surface_width = static_cast<u32>(rc.right - rc.left);
@@ -243,7 +250,7 @@ void Win32NoGUIPlatform::SetFullscreen(bool enabled)
     if (!monitor)
       return;
 
-    MONITORINFO mi = {sizeof(MONITORINFO)};
+    MONITORINFO mi = {sizeof(MONITORINFO), {}, {}, 0u};
     if (!GetMonitorInfo(monitor, &mi) || !GetWindowRect(m_hwnd, &m_windowed_rect))
       return;
 
@@ -338,7 +345,7 @@ LRESULT CALLBACK Win32NoGUIPlatform::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
         const WCHAR utf16[1] = {static_cast<WCHAR>(wParam)};
         char utf8[8] = {};
         const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, utf16, static_cast<int>(std::size(utf16)), utf8,
-                                                 static_cast<int>(sizeof(utf8)) - 1, nullptr, nullptr);
+                                                 static_cast<int>(sizeof(utf8) - 1), nullptr, nullptr);
         if (utf8_len > 0)
         {
           utf8[utf8_len] = 0;
@@ -399,7 +406,8 @@ LRESULT CALLBACK Win32NoGUIPlatform::WndProc(HWND hwnd, UINT msg, WPARAM wParam,
     case WM_CLOSE:
     case WM_QUIT:
     {
-      Host::RunOnCPUThread([]() { Host::RequestExit(g_settings.save_state_on_exit); });
+      Host::RunOnCPUThread([]() { Host::RequestExit(false); });
+      return 0;
     }
     break;
 

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -19,6 +19,18 @@ class Controller;
 struct CheatCode;
 class CheatList;
 
+class GPUTexture;
+class GrowableMemoryByteStream;
+
+namespace BIOS {
+struct ImageInfo;
+struct Hash;
+} // namespace BIOS
+
+namespace GameDatabase {
+struct Entry;
+}
+
 struct SystemBootParameters
 {
   SystemBootParameters();
@@ -29,12 +41,16 @@ struct SystemBootParameters
 
   std::string filename;
   std::string save_state;
+  std::string override_exe;
+  std::string override_bios;
   std::optional<bool> override_fast_boot;
   std::optional<bool> override_fullscreen;
   std::optional<bool> override_start_paused;
   u32 media_playlist_index = 0;
   bool load_image_to_ram = false;
   bool force_software_renderer = false;
+  bool fast_forward_to_first_frame = false;
+  bool disable_achievements_hardcore_mode = false;
 };
 
 struct SaveStateInfo
@@ -63,7 +79,10 @@ enum : u32
 {
   // 5 megabytes is sufficient for now, at the moment they're around 4.3MB, or 10.3MB with 8MB RAM enabled.
   MAX_SAVE_STATE_SIZE = 11 * 1024 * 1024,
+};
 
+enum : s32
+{
   PER_GAME_SAVE_STATE_SLOTS = 10,
   GLOBAL_SAVE_STATE_SLOTS = 10
 };
@@ -78,8 +97,11 @@ enum class State
   Shutdown,
   Starting,
   Running,
-  Paused
+  Paused,
+  Stopping,
 };
+
+using GameHash = u64;
 
 extern TickCount g_ticks_per_second;
 
@@ -98,12 +120,11 @@ bool IsSaveStateFilename(const std::string_view& path);
 /// Returns the preferred console type for a disc.
 ConsoleRegion GetConsoleRegionForDiscRegion(DiscRegion region);
 
-std::string GetExecutableNameForImage(CDImage* cdi);
+std::string GetExecutableNameForImage(CDImage* cdi, bool strip_subdirectories);
 bool ReadExecutableFromImage(CDImage* cdi, std::string* out_executable_name, std::vector<u8>* out_executable_data);
 
-std::string GetGameHashIdFromImage(CDImage* cdi);
-std::string GetGameIdFromImage(CDImage* cdi, bool fallback_to_hash);
-std::string GetGameSerialForPath(const char* image_path, bool fallback_to_hash);
+std::string GetGameHashId(GameHash hash);
+bool GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash* out_hash);
 DiscRegion GetRegionForSerial(std::string_view serial);
 DiscRegion GetRegionFromSystemArea(CDImage* cdi);
 DiscRegion GetRegionForImage(CDImage* cdi);
@@ -120,12 +141,16 @@ std::string GetInputProfilePath(const std::string_view& name);
 State GetState();
 void SetState(State new_state);
 bool IsRunning();
+bool IsExecutionInterrupted();
 bool IsPaused();
 bool IsShutdown();
 bool IsValid();
+bool IsValidOrInitializing();
+bool IsExecuting();
 
 bool IsStartupCancelled();
 void CancelPendingStartup();
+void InterruptExecution();
 
 ConsoleRegion GetRegion();
 DiscRegion GetDiscRegion();
@@ -167,20 +192,33 @@ bool InjectEXEFromBuffer(const void* buffer, u32 buffer_size, bool patch_loader 
 
 u32 GetFrameNumber();
 u32 GetInternalFrameNumber();
-void FrameDone();
 void IncrementInternalFrameNumber();
+void FrameDone();
 
-const std::string& GetRunningPath();
-const std::string& GetRunningSerial();
-const std::string& GetRunningTitle();
-bool IsRunningBIOS();
+const std::string& GetDiscPath();
+const std::string& GetGameSerial();
+const std::string& GetGameTitle();
+const GameDatabase::Entry* GetGameDatabaseEntry();
+GameHash GetGameHash();
+bool IsRunningUnknownGame();
+bool WasFastBooted();
+
+/// Returns the time elapsed in the current play session.
+u64 GetSessionPlayedTime();
+
+const BIOS::ImageInfo* GetBIOSImageInfo();
+const BIOS::Hash& GetBIOSHash();
 
 // TODO: Move to PerformanceMetrics
+static constexpr u32 NUM_FRAME_TIME_SAMPLES = 150;
+using FrameTimeHistory = std::array<float, NUM_FRAME_TIME_SAMPLES>;
+
 float GetFPS();
 float GetVPS();
 float GetEmulationSpeed();
 float GetAverageFrameTime();
-float GetWorstFrameTime();
+float GetMinimumFrameTime();
+float GetMaximumFrameTime();
 float GetThrottleFrequency();
 float GetCPUThreadUsage();
 float GetCPUThreadAverageTime();
@@ -188,6 +226,8 @@ float GetSWThreadUsage();
 float GetSWThreadAverageTime();
 float GetGPUUsage();
 float GetGPUAverageTime();
+const FrameTimeHistory& GetFrameTimeHistory();
+u32 GetFrameTimeHistoryPos();
 
 /// Loads global settings (i.e. EmuConfig).
 void LoadSettings(bool display_osd_messages);
@@ -208,6 +248,18 @@ bool LoadState(const char* filename);
 bool SaveState(const char* filename, bool backup_existing_save);
 bool SaveResumeState();
 
+/// Memory save states - only for internal use.
+struct MemorySaveState
+{
+  std::unique_ptr<GPUTexture> vram_texture;
+  std::unique_ptr<GrowableMemoryByteStream> state_stream;
+};
+bool SaveMemoryState(MemorySaveState* mss);
+bool LoadMemoryState(const MemorySaveState& mss);
+bool LoadStateFromStream(ByteStream* stream, bool update_display, bool ignore_media = false);
+bool SaveStateToStream(ByteStream* state, u32 screenshot_size = 256, u32 compression_method = 0,
+                       bool ignore_media = false);
+
 /// Runs the VM until the CPU execution is canceled.
 void Execute();
 
@@ -215,11 +267,9 @@ void Execute();
 void RecreateSystem();
 
 /// Recreates the GPU component, saving/loading the state so it is preserved. Call when the GPU renderer changes.
-bool RecreateGPU(GPURenderer renderer, bool force_recreate_display = false, bool update_display = true);
+bool RecreateGPU(GPURenderer renderer, bool force_recreate_device = false, bool update_display = true);
 
 void SingleStepCPU();
-void RunFrame();
-void RunFrames();
 
 /// Sets target emulation speed.
 float GetTargetSpeed();
@@ -230,9 +280,6 @@ void SetThrottleFrequency(float frequency);
 /// Updates the throttle period, call when target emulation speed changes.
 void UpdateThrottlePeriod();
 void ResetThrottler();
-
-/// Throttles the system, i.e. sleeps until it's time to execute the next frame.
-void Throttle();
 
 void UpdatePerformanceCounters();
 void ResetPerformanceCounters();
@@ -399,12 +446,6 @@ void SetCheatCodeState(u32 index, bool enabled, bool save_to_file);
 /// Immediately applies the specified cheat code.
 void ApplyCheatCode(u32 index);
 
-/// Temporarily toggles post-processing on/off.
-void TogglePostProcessing();
-
-/// Reloads post processing shaders with the current configuration.
-void ReloadPostProcessingShaders();
-
 /// Toggle Widescreen Hack and Aspect Ratio
 void ToggleWidescreen();
 
@@ -417,9 +458,6 @@ bool ShouldUseVSync();
 /// Quick switch between software and hardware rendering.
 void ToggleSoftwareRendering();
 
-/// Updates software cursor state, based on controllers.
-void UpdateSoftwareCursor();
-
 /// Resizes the render window to the display size, with an optional scale.
 /// If the scale is set to 0, the internal resolution will be used, otherwise it is treated as a multiplier to 1x.
 void RequestDisplaySize(float scale = 0.0f);
@@ -427,14 +465,34 @@ void RequestDisplaySize(float scale = 0.0f);
 /// Call when host display size changes, use with "match display" aspect ratio setting.
 void HostDisplayResized();
 
+/// Renders the display.
+bool PresentDisplay(bool allow_skip_present);
+void InvalidateDisplay();
+
 //////////////////////////////////////////////////////////////////////////
 // Memory Save States (Rewind and Runahead)
 //////////////////////////////////////////////////////////////////////////
-void CalculateRewindMemoryUsage(u32 num_saves, u64* ram_usage, u64* vram_usage);
+void CalculateRewindMemoryUsage(u32 num_saves, u32 resolution_scale, u64* ram_usage, u64* vram_usage);
 void ClearMemorySaveStates();
 void UpdateMemorySaveStateSettings();
 bool LoadRewindState(u32 skip_saves = 0, bool consume_state = true);
 void SetRunaheadReplayFlag();
+
+#ifdef ENABLE_DISCORD_PRESENCE
+/// Called when rich presence changes.
+void UpdateDiscordPresence(bool update_session_time);
+#endif
+
+namespace Internal {
+/// Called on process startup.
+void ProcessStartup();
+
+/// Called on process shutdown.
+void ProcessShutdown();
+
+/// Polls input, updates subsystems which are present while paused/inactive.
+void IdlePollUpdate();
+} // namespace Internal
 
 } // namespace System
 
@@ -460,6 +518,9 @@ void OnSystemPaused();
 /// Called when the VM is resumed after being paused.
 void OnSystemResumed();
 
+/// Called when the pause state changes, or fullscreen UI opens.
+void OnIdleStateChanged();
+
 /// Called when performance metrics are updated, approximately once a second.
 void OnPerformanceCountersUpdated();
 
@@ -472,16 +533,6 @@ void PumpMessagesOnCPUThread();
 /// Requests a specific display window size.
 void RequestResizeHostDisplay(s32 width, s32 height);
 
-/// Requests shut down and exit of the hosting application. This may not actually exit,
-/// if the user cancels the shutdown confirmation.
-void RequestExit(bool save_state_if_running);
-
 /// Requests shut down of the current virtual machine.
 void RequestSystemShutdown(bool allow_confirm, bool save_state);
-
-/// Returns true if the hosting application is currently fullscreen.
-bool IsFullscreen();
-
-/// Alters fullscreen state of hosting application.
-void SetFullscreen(bool enabled);
 } // namespace Host

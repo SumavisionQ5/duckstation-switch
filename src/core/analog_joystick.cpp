@@ -1,13 +1,21 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "analog_joystick.h"
-#include "common/log.h"
-#include "common/string_util.h"
 #include "host.h"
 #include "system.h"
+
+#include "util/imgui_manager.h"
 #include "util/state_wrapper.h"
+
+#include "common/bitutils.h"
+#include "common/log.h"
+#include "common/string_util.h"
+
+#include "IconsPromptFont.h"
+
 #include <cmath>
+
 Log_SetChannel(AnalogJoystick);
 
 AnalogJoystick::AnalogJoystick(u32 index) : Controller(index)
@@ -58,9 +66,8 @@ bool AnalogJoystick::DoState(StateWrapper& sw, bool apply_input_state)
   if (sw.IsReading() && (old_analog_mode != m_analog_mode))
   {
     Host::AddFormattedOSDMessage(5.0f,
-                                 m_analog_mode ?
-                                   Host::TranslateString("AnalogJoystick", "Controller %u switched to analog mode.") :
-                                   Host::TranslateString("AnalogJoystick", "Controller %u switched to digital mode."),
+                                 m_analog_mode ? TRANSLATE("AnalogJoystick", "Controller %u switched to analog mode.") :
+                                                 TRANSLATE("AnalogJoystick", "Controller %u switched to digital mode."),
                                  m_index + 1u);
   }
   return true;
@@ -234,9 +241,8 @@ void AnalogJoystick::ToggleAnalogMode()
 
   Log_InfoPrintf("Joystick %u switched to %s mode.", m_index + 1u, m_analog_mode ? "analog" : "digital");
   Host::AddFormattedOSDMessage(5.0f,
-                               m_analog_mode ?
-                                 Host::TranslateString("AnalogJoystick", "Controller %u switched to analog mode.") :
-                                 Host::TranslateString("AnalogJoystick", "Controller %u switched to digital mode."),
+                               m_analog_mode ? TRANSLATE("AnalogJoystick", "Controller %u switched to analog mode.") :
+                                               TRANSLATE("AnalogJoystick", "Controller %u switched to digital mode."),
                                m_index + 1u);
 }
 
@@ -333,76 +339,79 @@ std::unique_ptr<AnalogJoystick> AnalogJoystick::Create(u32 index)
 }
 
 static const Controller::ControllerBindingInfo s_binding_info[] = {
-#define BUTTON(name, display_name, button, genb)                                                                       \
+#define BUTTON(name, display_name, icon_name, button, genb)                                                            \
   {                                                                                                                    \
-    name, display_name, static_cast<u32>(button), Controller::ControllerBindingType::Button, genb                      \
+    name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb                      \
   }
-#define AXIS(name, display_name, halfaxis, genb)                                                                       \
+#define AXIS(name, display_name, icon_name, halfaxis, genb)                                                            \
   {                                                                                                                    \
-    name, display_name, static_cast<u32>(AnalogJoystick::Button::Count) + static_cast<u32>(halfaxis),                  \
-      Controller::ControllerBindingType::HalfAxis, genb                                                                \
+    name, display_name, icon_name, static_cast<u32>(AnalogJoystick::Button::Count) + static_cast<u32>(halfaxis),       \
+      InputBindingInfo::Type::HalfAxis, genb                                                                           \
   }
 
-  BUTTON("Up", "D-Pad Up", AnalogJoystick::Button::Up, GenericInputBinding::DPadUp),
-  BUTTON("Right", "D-Pad Right", AnalogJoystick::Button::Right, GenericInputBinding::DPadRight),
-  BUTTON("Down", "D-Pad Down", AnalogJoystick::Button::Down, GenericInputBinding::DPadDown),
-  BUTTON("Left", "D-Pad Left", AnalogJoystick::Button::Left, GenericInputBinding::DPadLeft),
-  BUTTON("Triangle", "Triangle", AnalogJoystick::Button::Triangle, GenericInputBinding::Triangle),
-  BUTTON("Circle", "Circle", AnalogJoystick::Button::Circle, GenericInputBinding::Circle),
-  BUTTON("Cross", "Cross", AnalogJoystick::Button::Cross, GenericInputBinding::Cross),
-  BUTTON("Square", "Square", AnalogJoystick::Button::Square, GenericInputBinding::Square),
-  BUTTON("Select", "Select", AnalogJoystick::Button::Select, GenericInputBinding::Select),
-  BUTTON("Start", "Start", AnalogJoystick::Button::Start, GenericInputBinding::Start),
-  BUTTON("Mode", "Mode Toggle", AnalogJoystick::Button::Mode, GenericInputBinding::System),
-  BUTTON("L1", "L1", AnalogJoystick::Button::L1, GenericInputBinding::L1),
-  BUTTON("R1", "R1", AnalogJoystick::Button::R1, GenericInputBinding::R1),
-  BUTTON("L2", "L2", AnalogJoystick::Button::L2, GenericInputBinding::L2),
-  BUTTON("R2", "R2", AnalogJoystick::Button::R2, GenericInputBinding::R2),
-  BUTTON("L3", "L3", AnalogJoystick::Button::L3, GenericInputBinding::L3),
-  BUTTON("R3", "R3", AnalogJoystick::Button::R3, GenericInputBinding::R3),
+  // clang-format off
+  BUTTON("Up", TRANSLATE_NOOP("AnalogJoystick", "D-Pad Up"), ICON_PF_DPAD_UP, AnalogJoystick::Button::Up, GenericInputBinding::DPadUp),
+  BUTTON("Right", TRANSLATE_NOOP("AnalogJoystick", "D-Pad Right"), ICON_PF_DPAD_RIGHT, AnalogJoystick::Button::Right, GenericInputBinding::DPadRight),
+  BUTTON("Down", TRANSLATE_NOOP("AnalogJoystick", "D-Pad Down"), ICON_PF_DPAD_DOWN, AnalogJoystick::Button::Down, GenericInputBinding::DPadDown),
+  BUTTON("Left", TRANSLATE_NOOP("AnalogJoystick", "D-Pad Left"), ICON_PF_DPAD_LEFT, AnalogJoystick::Button::Left, GenericInputBinding::DPadLeft),
+  BUTTON("Triangle", TRANSLATE_NOOP("AnalogJoystick", "Triangle"), ICON_PF_BUTTON_TRIANGLE, AnalogJoystick::Button::Triangle, GenericInputBinding::Triangle),
+  BUTTON("Circle", TRANSLATE_NOOP("AnalogJoystick", "Circle"), ICON_PF_BUTTON_CIRCLE, AnalogJoystick::Button::Circle, GenericInputBinding::Circle),
+  BUTTON("Cross", TRANSLATE_NOOP("AnalogJoystick", "Cross"), ICON_PF_BUTTON_CROSS, AnalogJoystick::Button::Cross, GenericInputBinding::Cross),
+  BUTTON("Square", TRANSLATE_NOOP("AnalogJoystick", "Square"), ICON_PF_BUTTON_SQUARE, AnalogJoystick::Button::Square, GenericInputBinding::Square),
+  BUTTON("Select", TRANSLATE_NOOP("AnalogJoystick", "Select"), ICON_PF_SELECT_SHARE, AnalogJoystick::Button::Select, GenericInputBinding::Select),
+  BUTTON("Start", TRANSLATE_NOOP("AnalogJoystick", "Start"), ICON_PF_START, AnalogJoystick::Button::Start, GenericInputBinding::Start),
+  BUTTON("Mode", TRANSLATE_NOOP("AnalogJoystick", "Mode Toggle"), ICON_PF_ANALOG_LEFT_RIGHT, AnalogJoystick::Button::Mode, GenericInputBinding::System),
+  BUTTON("L1", TRANSLATE_NOOP("AnalogJoystick", "L1"), ICON_PF_LEFT_SHOULDER_L1, AnalogJoystick::Button::L1, GenericInputBinding::L1),
+  BUTTON("R1", TRANSLATE_NOOP("AnalogJoystick", "R1"), ICON_PF_RIGHT_SHOULDER_R1, AnalogJoystick::Button::R1, GenericInputBinding::R1),
+  BUTTON("L2", TRANSLATE_NOOP("AnalogJoystick", "L2"), ICON_PF_LEFT_TRIGGER_L2, AnalogJoystick::Button::L2, GenericInputBinding::L2),
+  BUTTON("R2", TRANSLATE_NOOP("AnalogJoystick", "R2"), ICON_PF_RIGHT_TRIGGER_R2, AnalogJoystick::Button::R2, GenericInputBinding::R2),
+  BUTTON("L3", TRANSLATE_NOOP("AnalogJoystick", "L3"), ICON_PF_LEFT_ANALOG_CLICK, AnalogJoystick::Button::L3, GenericInputBinding::L3),
+  BUTTON("R3", TRANSLATE_NOOP("AnalogJoystick", "R3"), ICON_PF_RIGHT_ANALOG_CLICK, AnalogJoystick::Button::R3, GenericInputBinding::R3),
 
-  AXIS("LLeft", "Left Stick Left", AnalogJoystick::HalfAxis::LLeft, GenericInputBinding::LeftStickLeft),
-  AXIS("LRight", "Left Stick Right", AnalogJoystick::HalfAxis::LRight, GenericInputBinding::LeftStickRight),
-  AXIS("LDown", "Left Stick Down", AnalogJoystick::HalfAxis::LDown, GenericInputBinding::LeftStickDown),
-  AXIS("LUp", "Left Stick Up", AnalogJoystick::HalfAxis::LUp, GenericInputBinding::LeftStickUp),
-  AXIS("RLeft", "Right Stick Left", AnalogJoystick::HalfAxis::RLeft, GenericInputBinding::RightStickLeft),
-  AXIS("RRight", "Right Stick Right", AnalogJoystick::HalfAxis::RRight, GenericInputBinding::RightStickRight),
-  AXIS("RDown", "Right Stick Down", AnalogJoystick::HalfAxis::RDown, GenericInputBinding::RightStickDown),
-  AXIS("RUp", "Right Stick Up", AnalogJoystick::HalfAxis::RUp, GenericInputBinding::RightStickUp),
+  AXIS("LLeft", TRANSLATE_NOOP("AnalogJoystick", "Left Stick Left"), ICON_PF_LEFT_ANALOG_LEFT, AnalogJoystick::HalfAxis::LLeft, GenericInputBinding::LeftStickLeft),
+  AXIS("LRight", TRANSLATE_NOOP("AnalogJoystick", "Left Stick Right"), ICON_PF_LEFT_ANALOG_RIGHT, AnalogJoystick::HalfAxis::LRight, GenericInputBinding::LeftStickRight),
+  AXIS("LDown", TRANSLATE_NOOP("AnalogJoystick", "Left Stick Down"), ICON_PF_LEFT_ANALOG_DOWN, AnalogJoystick::HalfAxis::LDown, GenericInputBinding::LeftStickDown),
+  AXIS("LUp", TRANSLATE_NOOP("AnalogJoystick", "Left Stick Up"), ICON_PF_LEFT_ANALOG_UP, AnalogJoystick::HalfAxis::LUp, GenericInputBinding::LeftStickUp),
+  AXIS("RLeft", TRANSLATE_NOOP("AnalogJoystick", "Right Stick Left"), ICON_PF_RIGHT_ANALOG_LEFT, AnalogJoystick::HalfAxis::RLeft, GenericInputBinding::RightStickLeft),
+  AXIS("RRight", TRANSLATE_NOOP("AnalogJoystick", "Right Stick Right"), ICON_PF_RIGHT_ANALOG_RIGHT, AnalogJoystick::HalfAxis::RRight, GenericInputBinding::RightStickRight),
+  AXIS("RDown", TRANSLATE_NOOP("AnalogJoystick", "Right Stick Down"), ICON_PF_RIGHT_ANALOG_DOWN, AnalogJoystick::HalfAxis::RDown, GenericInputBinding::RightStickDown),
+  AXIS("RUp", TRANSLATE_NOOP("AnalogJoystick", "Right Stick Up"), ICON_PF_RIGHT_ANALOG_UP, AnalogJoystick::HalfAxis::RUp, GenericInputBinding::RightStickUp),
+// clang-format on
 
 #undef AXIS
 #undef BUTTON
 };
 
-static const char* s_invert_settings[] = {TRANSLATABLE("AnalogJoystick", "Not Inverted"),
-                                          TRANSLATABLE("AnalogJoystick", "Invert Left/Right"),
-                                          TRANSLATABLE("AnalogJoystick", "Invert Up/Down"),
-                                          TRANSLATABLE("AnalogJoystick", "Invert Left/Right + Up/Down"), nullptr};
+static const char* s_invert_settings[] = {TRANSLATE_NOOP("AnalogJoystick", "Not Inverted"),
+                                          TRANSLATE_NOOP("AnalogJoystick", "Invert Left/Right"),
+                                          TRANSLATE_NOOP("AnalogJoystick", "Invert Up/Down"),
+                                          TRANSLATE_NOOP("AnalogJoystick", "Invert Left/Right + Up/Down"), nullptr};
 
 static const SettingInfo s_settings[] = {
-  {SettingInfo::Type::Float, "AnalogDeadzone", TRANSLATABLE("AnalogJoystick", "Analog Deadzone"),
-   TRANSLATABLE("AnalogJoystick",
-                "Sets the analog stick deadzone, i.e. the fraction of the stick movement which will be ignored."),
+  {SettingInfo::Type::Float, "AnalogDeadzone", TRANSLATE_NOOP("AnalogJoystick", "Analog Deadzone"),
+   TRANSLATE_NOOP("AnalogJoystick",
+                  "Sets the analog stick deadzone, i.e. the fraction of the stick movement which will be ignored."),
    "1.00f", "0.00f", "1.00f", "0.01f", "%.0f%%", nullptr, 100.0f},
-  {SettingInfo::Type::Float, "AnalogSensitivity", TRANSLATABLE("AnalogJoystick", "Analog Sensitivity"),
-   TRANSLATABLE(
+  {SettingInfo::Type::Float, "AnalogSensitivity", TRANSLATE_NOOP("AnalogJoystick", "Analog Sensitivity"),
+   TRANSLATE_NOOP(
      "AnalogJoystick",
      "Sets the analog stick axis scaling factor. A value between 130% and 140% is recommended when using recent "
      "controllers, e.g. DualShock 4, Xbox One Controller."),
    "1.33f", "0.01f", "2.00f", "0.01f", "%.0f%%", nullptr, 100.0f},
-  {SettingInfo::Type::IntegerList, "InvertLeftStick", "Invert Left Stick",
-   "Inverts the direction of the left analog stick.", "0", "0", "3", nullptr, nullptr, s_invert_settings, 0.0f},
-  {SettingInfo::Type::IntegerList, "InvertRightStick", "Invert Right Stick",
-   "Inverts the direction of the right analog stick.", "0", "0", "3", nullptr, nullptr, s_invert_settings, 0.0f},
+  {SettingInfo::Type::IntegerList, "InvertLeftStick", TRANSLATE_NOOP("AnalogJoystick", "Invert Left Stick"),
+   TRANSLATE_NOOP("AnalogJoystick", "Inverts the direction of the left analog stick."), "0", "0", "3", nullptr, nullptr,
+   s_invert_settings, 0.0f},
+  {SettingInfo::Type::IntegerList, "InvertRightStick", TRANSLATE_NOOP("AnalogJoystick", "Invert Right Stick"),
+   TRANSLATE_NOOP("AnalogJoystick", "Inverts the direction of the right analog stick."), "0", "0", "3", nullptr,
+   nullptr, s_invert_settings, 0.0f},
 };
 
 const Controller::ControllerInfo AnalogJoystick::INFO = {ControllerType::AnalogJoystick,
                                                          "AnalogJoystick",
-                                                         TRANSLATABLE("ControllerType", "Analog Joystick"),
+                                                         TRANSLATE_NOOP("ControllerType", "Analog Joystick"),
+                                                         ICON_PF_GAMEPAD,
                                                          s_binding_info,
-                                                         countof(s_binding_info),
                                                          s_settings,
-                                                         countof(s_settings),
                                                          Controller::VibrationCapabilities::NoVibration};
 
 void AnalogJoystick::LoadSettings(SettingsInterface& si, const char* section)

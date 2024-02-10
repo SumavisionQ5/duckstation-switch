@@ -8,6 +8,7 @@
 #include "types.h"
 #include <array>
 #include <optional>
+#include <string>
 #include <vector>
 
 class StateWrapper;
@@ -20,10 +21,10 @@ enum : VirtualMemoryAddress
 };
 enum : PhysicalMemoryAddress
 {
-  DCACHE_LOCATION = UINT32_C(0x1F800000),
-  DCACHE_LOCATION_MASK = UINT32_C(0xFFFFFC00),
-  DCACHE_OFFSET_MASK = UINT32_C(0x000003FF),
-  DCACHE_SIZE = UINT32_C(0x00000400),
+  SCRATCHPAD_ADDR = UINT32_C(0x1F800000),
+  SCRATCHPAD_ADDR_MASK = UINT32_C(0x7FFFFC00),
+  SCRATCHPAD_OFFSET_MASK = UINT32_C(0x000003FF),
+  SCRATCHPAD_SIZE = UINT32_C(0x00000400),
   ICACHE_SIZE = UINT32_C(0x00001000),
   ICACHE_SLOTS = ICACHE_SIZE / sizeof(u32),
   ICACHE_LINE_SIZE = 16,
@@ -46,6 +47,20 @@ union CacheControl
   BitField<u32, bool, 11, 1> icache_enable;
 };
 
+struct PGXP_value
+{
+  float x;
+  float y;
+  float z;
+  u32 value;
+  union
+  {
+    u32 flags;
+    u8 compFlags[4];
+    u16 halfFlags[2];
+  };
+};
+
 struct State
 {
   // ticks the CPU has executed
@@ -55,7 +70,9 @@ struct State
 
   Registers regs = {};
   Cop0Registers cop0_regs = {};
-  Instruction next_instruction = {};
+
+  u32 pc;  // at execution time: the address of the next instruction to execute (already fetched)
+  u32 npc; // at execution time: the address of the next instruction to fetch
 
   // address of the instruction currently being executed
   Instruction current_instruction = {};
@@ -65,15 +82,15 @@ struct State
   bool next_instruction_is_branch_delay_slot = false;
   bool branch_was_taken = false;
   bool exception_raised = false;
-  bool interrupt_delay = false;
-  bool frame_done = false;
+  bool bus_error = false;
 
   // load delays
   Reg load_delay_reg = Reg::count;
-  u32 load_delay_value = 0;
   Reg next_load_delay_reg = Reg::count;
+  u32 load_delay_value = 0;
   u32 next_load_delay_value = 0;
 
+  Instruction next_instruction = {};
   CacheControl cache_control{0};
 
   // GTE registers are stored here so we can access them on ARM with a single instruction
@@ -82,61 +99,65 @@ struct State
   // 4 bytes of padding here on x64
   bool use_debug_dispatcher = false;
 
-  u8* fastmem_base = nullptr;
+  void* fastmem_base = nullptr;
+  void** memory_handlers = nullptr;
 
-  // data cache (used as scratchpad)
-  std::array<u8, DCACHE_SIZE> dcache = {};
   std::array<u32, ICACHE_LINES> icache_tags = {};
   std::array<u8, ICACHE_SIZE> icache_data = {};
+
+  std::array<u8, SCRATCHPAD_SIZE> scratchpad = {};
+
+  PGXP_value pgxp_gpr[static_cast<u8>(Reg::count)];
+  PGXP_value pgxp_cop0[32];
+  PGXP_value pgxp_gte[64];
 
   static constexpr u32 GPRRegisterOffset(u32 index) { return offsetof(State, regs.r) + (sizeof(u32) * index); }
   static constexpr u32 GTERegisterOffset(u32 index) { return offsetof(State, gte_regs.r32) + (sizeof(u32) * index); }
 };
 
 extern State g_state;
-extern bool g_using_interpreter;
 
 void Initialize();
 void Shutdown();
 void Reset();
 bool DoState(StateWrapper& sw);
 void ClearICache();
-void UpdateFastmemBase();
+void UpdateMemoryPointers();
+void ExecutionModeChanged();
 
 /// Executes interpreter loop.
 void Execute();
-void ExecuteDebug();
 void SingleStep();
 
 // Forces an early exit from the CPU dispatcher.
-void ForceDispatcherExit();
+void ExitExecution();
 
-ALWAYS_INLINE Registers& GetRegs()
+ALWAYS_INLINE static Registers& GetRegs()
 {
   return g_state.regs;
 }
 
-ALWAYS_INLINE TickCount GetPendingTicks()
+ALWAYS_INLINE static TickCount GetPendingTicks()
 {
   return g_state.pending_ticks;
 }
-ALWAYS_INLINE void ResetPendingTicks()
+ALWAYS_INLINE static void ResetPendingTicks()
 {
   g_state.gte_completion_tick =
     (g_state.pending_ticks < g_state.gte_completion_tick) ? (g_state.gte_completion_tick - g_state.pending_ticks) : 0;
   g_state.pending_ticks = 0;
 }
-ALWAYS_INLINE void AddPendingTicks(TickCount ticks)
+ALWAYS_INLINE static void AddPendingTicks(TickCount ticks)
 {
   g_state.pending_ticks += ticks;
 }
 
 // state helpers
-ALWAYS_INLINE bool InUserMode()
+ALWAYS_INLINE static bool InUserMode()
 {
   return g_state.cop0_regs.sr.KUc;
 }
-ALWAYS_INLINE bool InKernelMode()
+ALWAYS_INLINE static bool InKernelMode()
 {
   return !g_state.cop0_regs.sr.KUc;
 }
@@ -147,6 +168,7 @@ ALWAYS_INLINE bool InKernelMode()
 bool SafeReadMemoryByte(VirtualMemoryAddress addr, u8* value);
 bool SafeReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value);
 bool SafeReadMemoryWord(VirtualMemoryAddress addr, u32* value);
+bool SafeReadMemoryCString(VirtualMemoryAddress addr, std::string* value, u32 max_length = 1024);
 bool SafeWriteMemoryByte(VirtualMemoryAddress addr, u8 value);
 bool SafeWriteMemoryHalfWord(VirtualMemoryAddress addr, u16 value);
 bool SafeWriteMemoryWord(VirtualMemoryAddress addr, u32 value);
@@ -194,5 +216,15 @@ bool AddStepOverBreakpoint();
 bool AddStepOutBreakpoint(u32 max_instructions_to_search = 1000);
 
 extern bool TRACE_EXECUTION;
+
+// Debug register introspection
+struct DebuggerRegisterListEntry
+{
+  const char* name;
+  u32* value_ptr;
+};
+
+static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 104;
+extern const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list;
 
 } // namespace CPU

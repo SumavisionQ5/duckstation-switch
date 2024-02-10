@@ -37,6 +37,7 @@ enum class DiscRegion : u8
   NTSC_U, // SCEA
   PAL,    // SCEE
   Other,
+  NonPS1,
   Count
 };
 
@@ -45,6 +46,7 @@ enum class CPUExecutionMode : u8
   Interpreter,
   CachedInterpreter,
   Recompiler,
+  NewRec,
   Count
 };
 
@@ -57,14 +59,18 @@ enum class PGXPMode : u8
 
 enum class GPURenderer : u8
 {
+  Automatic,
 #ifdef _WIN32
   HardwareD3D11,
   HardwareD3D12,
 #endif
-#ifdef WITH_VULKAN
+#ifdef __APPLE__
+  HardwareMetal,
+#endif
+#ifdef ENABLE_VULKAN
   HardwareVulkan,
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
   HardwareOpenGL,
 #endif
 #ifdef __SWITCH__
@@ -94,6 +100,14 @@ enum class GPUDownsampleMode : u8
   Count
 };
 
+enum class GPUWireframeMode : u8
+{
+  Disabled,
+  OverlayWireframe,
+  OnlyWireframe,
+  Count,
+};
+
 enum class DisplayCropMode : u8
 {
   None,
@@ -115,7 +129,7 @@ enum class DisplayAspectRatio : u8
   Count
 };
 
-enum class DisplayAlignment
+enum class DisplayAlignment : u8
 {
   LeftOrTop,
   Center,
@@ -123,10 +137,27 @@ enum class DisplayAlignment
   Count
 };
 
+enum class DisplayScalingMode : u8
+{
+  Nearest,
+  BilinearSmooth,
+  NearestInteger,
+  BilinearSharp,
+  Count
+};
+
+enum class DisplayExclusiveFullscreenControl : u8
+{
+  Automatic,
+  Disallowed,
+  Allowed,
+  Count
+};
+
 enum class AudioBackend : u8
 {
   Null,
-#ifdef WITH_CUBEB
+#ifdef ENABLE_CUBEB
   Cubeb,
 #endif
 #ifdef _WIN32
@@ -188,8 +219,21 @@ enum class CPUFastmemMode
   Count
 };
 
-enum : size_t
+enum class CDROMMechaconVersion : u8
 {
-  HOST_PAGE_SIZE = 4096,
-  HOST_PAGE_OFFSET_MASK = HOST_PAGE_SIZE - 1,
+  VC0A,
+  VC0B,
+  VC1A,
+  VC1B,
+  VD1,
+  VC2,
+  VC1,
+  VC2J,
+  VC2A,
+  VC2B,
+  VC3A,
+  VC3B,
+  VC3C,
+
+  Count,
 };

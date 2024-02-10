@@ -10,9 +10,6 @@
     <height>525</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>Form</string>
-  </property>
   <layout class="QVBoxLayout" name="verticalLayout_2">
    <property name="leftMargin">
     <number>0</number>
@@ -154,40 +151,19 @@
       <item row="1" column="1">
        <widget class="QComboBox" name="displayCropMode"/>
       </item>
-      <item row="2" column="0">
+      <item row="3" column="0">
        <widget class="QLabel" name="label_7">
         <property name="text">
          <string>Position:</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+      <item row="3" column="1">
        <widget class="QComboBox" name="displayAlignment"/>
       </item>
-      <item row="3" column="0" colspan="2">
+      <item row="4" column="0" colspan="2">
        <layout class="QGridLayout" name="gridLayout">
-        <item row="0" column="0">
-         <widget class="QCheckBox" name="displayIntegerScaling">
-          <property name="text">
-           <string>Integer Upscaling</string>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="1">
-         <widget class="QCheckBox" name="displayStretch">
-          <property name="text">
-           <string>Stretch To Fill</string>
-          </property>
-         </widget>
-        </item>
         <item row="1" column="0">
-         <widget class="QCheckBox" name="displayLinearFiltering">
-          <property name="text">
-           <string>Linear Upscaling</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="1">
          <widget class="QCheckBox" name="internalResolutionScreenshots">
           <property name="text">
            <string>Internal Resolution Screenshots</string>
@@ -195,6 +171,16 @@
          </widget>
         </item>
        </layout>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_6">
+        <property name="text">
+         <string>Scaling:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QComboBox" name="displayScaling"/>
       </item>
      </layout>
     </widget>
@@ -255,9 +241,9 @@
        </widget>
       </item>
       <item row="5" column="1">
-       <widget class="QCheckBox" name="showSettings">
+       <widget class="QCheckBox" name="showGPUStatistics">
         <property name="text">
-         <string>Show Settings Overlay</string>
+         <string>Show GPU Statistics</string>
         </property>
        </widget>
       </item>

@@ -5,27 +5,29 @@
 #include <QtWidgets/QWidget>
 #include "ui_achievementsettingswidget.h"
 
-class SettingsDialog;
+class SettingsWindow;
 
 class AchievementSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  explicit AchievementSettingsWidget(SettingsDialog* dialog, QWidget* parent);
+  explicit AchievementSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~AchievementSettingsWidget();
 
 private Q_SLOTS:
   void updateEnableState();
-  void onChallengeModeStateChanged();
+  void onHardcoreModeStateChanged();
+  void onAchievementsNotificationDurationSliderChanged();
+  void onLeaderboardsNotificationDurationSliderChanged();
   void onLoginLogoutPressed();
   void onViewProfilePressed();
-  void onAchievementsRefreshed(quint32 id, const QString& game_info_string, quint32 total, quint32 points);
+  void onAchievementsRefreshed(quint32 id, const QString& game_info_string);
 
 private:
   void updateLoginState();
 
   Ui::AchievementSettingsWidget m_ui;
 
-  SettingsDialog* m_dialog;
+  SettingsWindow* m_dialog;
 };

@@ -4,8 +4,11 @@
 #include "log.h"
 #include "assert.h"
 #include "file_system.h"
-#include "string.h"
+#include "small_string.h"
 #include "timer.h"
+
+#include "fmt/format.h"
+
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -18,62 +21,98 @@
 #include <unistd.h>
 #endif
 
+using namespace std::string_view_literals;
+
 namespace Log {
+namespace {
+struct RegisteredCallback
+{
+  Log::CallbackFunctionType Function;
+  void* Parameter;
+};
+} // namespace
+
+static void RegisterCallback(CallbackFunctionType callbackFunction, void* pUserParam,
+                             const std::unique_lock<std::mutex>& lock);
+static void UnregisterCallback(CallbackFunctionType callbackFunction, void* pUserParam,
+                               const std::unique_lock<std::mutex>& lock);
+static bool FilterTest(LOGLEVEL level, const char* channelName, const std::unique_lock<std::mutex>& lock);
+static void ExecuteCallbacks(const char* channelName, const char* functionName, LOGLEVEL level,
+                             std::string_view message, const std::unique_lock<std::mutex>& lock);
+static void FormatLogMessageForDisplay(fmt::memory_buffer& buffer, const char* channelName, const char* functionName,
+                                       LOGLEVEL level, std::string_view message, bool timestamp, bool ansi_color_code,
+                                       bool newline);
+static void ConsoleOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName,
+                                     LOGLEVEL level, std::string_view message);
+static void DebugOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
+                                   std::string_view message);
+static void FileOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
+                                  std::string_view message);
+template<typename T>
+static void FormatLogMessageAndPrint(const char* channelName, const char* functionName, LOGLEVEL level,
+                                     std::string_view message, bool timestamp, bool ansi_color_code, bool newline,
+                                     const T& callback);
+#ifdef _WIN32
+template<typename T>
+static void FormatLogMessageAndPrintW(const char* channelName, const char* functionName, LOGLEVEL level,
+                                      std::string_view message, bool timestamp, bool ansi_color_code, bool newline,
+                                      const T& callback);
+#endif
 
 static const char s_log_level_characters[LOGLEVEL_COUNT] = {'X', 'E', 'W', 'P', 'I', 'V', 'D', 'R', 'B', 'T'};
 
-struct RegisteredCallback
-{
-  CallbackFunctionType Function;
-  void* Parameter;
-};
-
-std::vector<RegisteredCallback> s_callbacks;
+static std::vector<RegisteredCallback> s_callbacks;
 static std::mutex s_callback_mutex;
 
-static LOGLEVEL s_filter_level = LOGLEVEL_TRACE;
+static Common::Timer::Value s_start_timestamp = Common::Timer::GetCurrentValue();
 
-static Common::Timer::Value s_startTimeStamp = Common::Timer::GetCurrentValue();
-
+static std::string s_log_filter;
+static LOGLEVEL s_log_level = LOGLEVEL_TRACE;
 static bool s_console_output_enabled = false;
-static String s_console_output_channel_filter;
-static LOGLEVEL s_console_output_level_filter = LOGLEVEL_TRACE;
+static bool s_console_output_timestamps = true;
+static bool s_file_output_enabled = false;
+static bool s_file_output_timestamp = false;
+static bool s_debug_output_enabled = false;
 
 #ifdef _WIN32
 static HANDLE s_hConsoleStdIn = NULL;
 static HANDLE s_hConsoleStdOut = NULL;
 static HANDLE s_hConsoleStdErr = NULL;
 #endif
+} // namespace Log
 
-static bool s_debug_output_enabled = false;
-static String s_debug_output_channel_filter;
-static LOGLEVEL s_debug_output_level_filter = LOGLEVEL_TRACE;
-
-static bool s_file_output_enabled = false;
-static bool s_file_output_timestamp = false;
-static String s_file_output_channel_filter;
-static LOGLEVEL s_file_output_level_filter = LOGLEVEL_TRACE;
-std::unique_ptr<std::FILE, void (*)(std::FILE*)> s_fileOutputHandle(nullptr, [](std::FILE* fp) {
+std::unique_ptr<std::FILE, void (*)(std::FILE*)> s_file_handle(nullptr, [](std::FILE* fp) {
   if (fp)
   {
     std::fclose(fp);
   }
 });
 
-void RegisterCallback(CallbackFunctionType callbackFunction, void* pUserParam)
+void Log::RegisterCallback(CallbackFunctionType callbackFunction, void* pUserParam)
+{
+  std::unique_lock lock(s_callback_mutex);
+  RegisterCallback(callbackFunction, pUserParam, lock);
+}
+
+void Log::RegisterCallback(CallbackFunctionType callbackFunction, void* pUserParam,
+                           const std::unique_lock<std::mutex>& lock)
 {
   RegisteredCallback Callback;
   Callback.Function = callbackFunction;
   Callback.Parameter = pUserParam;
 
-  std::lock_guard<std::mutex> guard(s_callback_mutex);
   s_callbacks.push_back(std::move(Callback));
 }
 
-void UnregisterCallback(CallbackFunctionType callbackFunction, void* pUserParam)
+void Log::UnregisterCallback(CallbackFunctionType callbackFunction, void* pUserParam)
 {
-  std::lock_guard<std::mutex> guard(s_callback_mutex);
+  std::unique_lock lock(s_callback_mutex);
+  UnregisterCallback(callbackFunction, pUserParam, lock);
+}
 
+void Log::UnregisterCallback(CallbackFunctionType callbackFunction, void* pUserParam,
+                             const std::unique_lock<std::mutex>& lock)
+{
   for (auto iter = s_callbacks.begin(); iter != s_callbacks.end(); ++iter)
   {
     if (iter->Function == callbackFunction && iter->Parameter == pUserParam)
@@ -84,142 +123,126 @@ void UnregisterCallback(CallbackFunctionType callbackFunction, void* pUserParam)
   }
 }
 
-bool IsConsoleOutputEnabled()
+float Log::GetCurrentMessageTime()
+{
+  return static_cast<float>(Common::Timer::ConvertValueToSeconds(Common::Timer::GetCurrentValue() - s_start_timestamp));
+}
+
+bool Log::IsConsoleOutputEnabled()
 {
   return s_console_output_enabled;
 }
 
-bool IsDebugOutputEnabled()
+bool Log::IsDebugOutputEnabled()
 {
   return s_debug_output_enabled;
 }
 
-static void ExecuteCallbacks(const char* channelName, const char* functionName, LOGLEVEL level, const char* message)
+void Log::ExecuteCallbacks(const char* channelName, const char* functionName, LOGLEVEL level, std::string_view message,
+                           const std::unique_lock<std::mutex>& lock)
 {
-  std::lock_guard<std::mutex> guard(s_callback_mutex);
   for (RegisteredCallback& callback : s_callbacks)
     callback.Function(callback.Parameter, channelName, functionName, level, message);
 }
 
-static int FormatLogMessageForDisplay(char* buffer, size_t buffer_size, const char* channelName,
-                                      const char* functionName, LOGLEVEL level, const char* message, bool timestamp,
-                                      bool ansi_color_code, bool newline)
+ALWAYS_INLINE_RELEASE void Log::FormatLogMessageForDisplay(fmt::memory_buffer& buffer, const char* channelName,
+                                                           const char* functionName, LOGLEVEL level,
+                                                           std::string_view message, bool timestamp,
+                                                           bool ansi_color_code, bool newline)
 {
-  static const char* s_ansi_color_codes[LOGLEVEL_COUNT] = {
-    "\033[0m",    // NONE
-    "\033[1;31m", // ERROR
-    "\033[1;33m", // WARNING
-    "\033[1;35m", // PERF
-    "\033[1;37m", // INFO
-    "\033[1;32m", // VERBOSE
-    "\033[0;37m", // DEV
-    "\033[1;36m", // PROFILE
-    "\033[0;32m", // DEBUG
-    "\033[0;34m", // TRACE
+  static constexpr std::string_view s_ansi_color_codes[LOGLEVEL_COUNT] = {
+    "\033[0m"sv,    // NONE
+    "\033[1;31m"sv, // ERROR
+    "\033[1;33m"sv, // WARNING
+    "\033[1;35m"sv, // PERF
+    "\033[1;37m"sv, // INFO
+    "\033[1;32m"sv, // VERBOSE
+    "\033[0;37m"sv, // DEV
+    "\033[1;36m"sv, // PROFILE
+    "\033[0;32m"sv, // DEBUG
+    "\033[0;34m"sv, // TRACE
   };
 
-  const char* color_start = ansi_color_code ? s_ansi_color_codes[level] : "";
-  const char* color_end = ansi_color_code ? s_ansi_color_codes[0] : "";
-  const char* message_end = newline ? "\n" : "";
+  std::string_view color_start = ansi_color_code ? s_ansi_color_codes[level] : ""sv;
+  std::string_view color_end = ansi_color_code ? s_ansi_color_codes[0] : ""sv;
+  std::string_view message_end = newline ? "\n"sv : ""sv;
+
+  auto appender = std::back_inserter(buffer);
 
   if (timestamp)
   {
     // find time since start of process
-    const float message_time =
-      static_cast<float>(Common::Timer::ConvertValueToSeconds(Common::Timer::GetCurrentValue() - s_startTimeStamp));
+    const float message_time = Log::GetCurrentMessageTime();
 
     if (level <= LOGLEVEL_PERF)
     {
-      return std::snprintf(buffer, buffer_size, "%s[%10.4f] %c(%s): %s%s%s", color_start, message_time,
-                           s_log_level_characters[level], functionName, message, color_end, message_end);
+      fmt::format_to(appender, "[{:10.4f}] {}{}({}): {}{}{}", message_time, color_start, s_log_level_characters[level],
+                     functionName, message, color_end, message_end);
     }
     else
     {
-      return std::snprintf(buffer, buffer_size, "%s[%10.4f] %c/%s: %s%s%s", color_start, message_time,
-                           s_log_level_characters[level], channelName, message, color_end, message_end);
+      fmt::format_to(appender, "[{:10.4f}] {}{}/{}: {}{}{}", message_time, color_start, s_log_level_characters[level],
+                     channelName, message, color_end, message_end);
     }
   }
   else
   {
     if (level <= LOGLEVEL_PERF)
     {
-      return std::snprintf(buffer, buffer_size, "%s%c(%s): %s%s%s", color_start, s_log_level_characters[level],
-                           functionName, message, color_end, message_end);
+      fmt::format_to(appender, "{}{}({}): {}{}{}", color_start, s_log_level_characters[level], functionName, message,
+                     color_end, message_end);
     }
     else
     {
-      return std::snprintf(buffer, buffer_size, "%s%c/%s: %s%s%s", color_start, s_log_level_characters[level],
-                           channelName, message, color_end, message_end);
+      fmt::format_to(appender, "{}{}/{}: {}{}{}", color_start, s_log_level_characters[level], channelName, message,
+                     color_end, message_end);
     }
   }
 }
 
 template<typename T>
-static ALWAYS_INLINE void FormatLogMessageAndPrint(const char* channelName, const char* functionName, LOGLEVEL level,
-                                                   const char* message, bool timestamp, bool ansi_color_code,
-                                                   bool newline, const T& callback)
+ALWAYS_INLINE_RELEASE void Log::FormatLogMessageAndPrint(const char* channelName, const char* functionName,
+                                                         LOGLEVEL level, std::string_view message, bool timestamp,
+                                                         bool ansi_color_code, bool newline, const T& callback)
 {
-  char buf[512];
-  char* message_buf = buf;
-  int message_len;
-  if ((message_len = FormatLogMessageForDisplay(message_buf, sizeof(buf), channelName, functionName, level, message,
-                                                timestamp, ansi_color_code, newline)) >
-      static_cast<int>(sizeof(buf) - 1))
-  {
-    message_buf = static_cast<char*>(std::malloc(message_len + 1));
-    message_len = FormatLogMessageForDisplay(message_buf, message_len + 1, channelName, functionName, level, message,
-                                             timestamp, ansi_color_code, newline);
-  }
-
-  callback(message_buf, message_len);
-
-  if (message_buf != buf)
-    std::free(message_buf);
+  fmt::memory_buffer buffer;
+  Log::FormatLogMessageForDisplay(buffer, channelName, functionName, level, message, timestamp, ansi_color_code,
+                                  newline);
+  callback(std::string_view(buffer.data(), buffer.size()));
 }
 
 #ifdef _WIN32
 
 template<typename T>
-static ALWAYS_INLINE void FormatLogMessageAndPrintW(const char* channelName, const char* functionName, LOGLEVEL level,
-                                                    const char* message, bool timestamp, bool ansi_color_code,
-                                                    bool newline, const T& callback)
+ALWAYS_INLINE_RELEASE void Log::FormatLogMessageAndPrintW(const char* channelName, const char* functionName,
+                                                          LOGLEVEL level, std::string_view message, bool timestamp,
+                                                          bool ansi_color_code, bool newline, const T& callback)
 {
-  char buf[512];
-  char* message_buf = buf;
-  int message_len;
-  if ((message_len = FormatLogMessageForDisplay(message_buf, sizeof(buf), channelName, functionName, level, message,
-                                                timestamp, ansi_color_code, newline)) > (sizeof(buf) - 1))
-  {
-    message_buf = static_cast<char*>(std::malloc(message_len + 1));
-    message_len = FormatLogMessageForDisplay(message_buf, message_len + 1, channelName, functionName, level, message,
-                                             timestamp, ansi_color_code, newline);
-  }
-  if (message_len <= 0)
-    return;
+  fmt::memory_buffer buffer;
+  Log::FormatLogMessageForDisplay(buffer, channelName, functionName, level, message, timestamp, ansi_color_code,
+                                  newline);
 
   // Convert to UTF-16 first so unicode characters display correctly. NT is going to do it
   // anyway...
   wchar_t wbuf[512];
   wchar_t* wmessage_buf = wbuf;
-  int wmessage_buflen = countof(wbuf) - 1;
-  if (message_len >= countof(wbuf))
+  int wmessage_buflen = static_cast<int>(std::size(wbuf) - 1);
+  if (buffer.size() >= std::size(wbuf))
   {
-    wmessage_buflen = message_len;
-    wmessage_buf = static_cast<wchar_t*>(std::malloc((wmessage_buflen + 1) * sizeof(wchar_t)));
+    wmessage_buflen = static_cast<int>(buffer.size());
+    wmessage_buf = static_cast<wchar_t*>(std::malloc((buffer.size() + 1) * sizeof(wchar_t)));
   }
 
-  wmessage_buflen = MultiByteToWideChar(CP_UTF8, 0, message_buf, message_len, wmessage_buf, wmessage_buflen);
+  wmessage_buflen =
+    MultiByteToWideChar(CP_UTF8, 0, buffer.data(), static_cast<int>(buffer.size()), wmessage_buf, wmessage_buflen);
   if (wmessage_buflen <= 0)
     return;
 
   wmessage_buf[wmessage_buflen] = '\0';
-  callback(wmessage_buf, wmessage_buflen);
+  callback(std::wstring_view(wmessage_buf, wmessage_buflen));
 
   if (wmessage_buf != wbuf)
     std::free(wmessage_buf);
-
-  if (message_buf != buf)
-    std::free(message_buf);
 }
 
 static bool EnableVirtualTerminalProcessing(HANDLE hConsole)
@@ -237,45 +260,43 @@ static bool EnableVirtualTerminalProcessing(HANDLE hConsole)
 
 #endif
 
-static void ConsoleOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName,
-                                     LOGLEVEL level, const char* message)
+void Log::ConsoleOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
+                                   std::string_view message)
 {
-  if (!s_console_output_enabled || level > s_console_output_level_filter ||
-      s_console_output_channel_filter.Find(channelName) >= 0)
-  {
+  if (!s_console_output_enabled)
     return;
-  }
 
 #if defined(_WIN32)
-  FormatLogMessageAndPrintW(channelName, functionName, level, message, true, true, true,
-                            [level](const wchar_t* message, int message_len) {
+  FormatLogMessageAndPrintW(channelName, functionName, level, message, s_console_output_timestamps, true, true,
+                            [level](const std::wstring_view& message) {
                               HANDLE hOutput = (level <= LOGLEVEL_WARNING) ? s_hConsoleStdErr : s_hConsoleStdOut;
                               DWORD chars_written;
-                              WriteConsoleW(hOutput, message, message_len, &chars_written, nullptr);
+                              WriteConsoleW(hOutput, message.data(), static_cast<DWORD>(message.length()),
+                                            &chars_written, nullptr);
                             });
 #elif !defined(__ANDROID__)
-  FormatLogMessageAndPrint(channelName, functionName, level, message, true, true, true,
-                           [level](const char* message, int message_len) {
+  FormatLogMessageAndPrint(channelName, functionName, level, message, s_console_output_timestamps, true, true,
+                           [level](const std::string_view& message) {
                              const int outputFd = (level <= LOGLEVEL_WARNING) ? STDERR_FILENO : STDOUT_FILENO;
-                             write(outputFd, message, message_len);
+                             write(outputFd, message.data(), message.length());
                            });
 #endif
 }
 
-static void DebugOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
-                                   const char* message)
+void Log::DebugOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
+                                 std::string_view message)
 {
-  if (!s_debug_output_enabled || level > s_debug_output_level_filter ||
-      s_debug_output_channel_filter.Find(functionName) >= 0)
-  {
+  if (!s_debug_output_enabled)
     return;
-  }
 
 #if defined(_WIN32)
-  FormatLogMessageAndPrintW(channelName, functionName, level, message, true, false, true,
-                            [](const wchar_t* message, int message_len) { OutputDebugStringW(message); });
+  FormatLogMessageAndPrintW(channelName, functionName, level, message, false, false, true,
+                            [](const std::wstring_view& message) { OutputDebugStringW(message.data()); });
 #elif defined(__ANDROID__)
-  static const int logPriority[LOGLEVEL_COUNT] = {
+  if (message.empty())
+    return;
+
+  static constexpr int logPriority[LOGLEVEL_COUNT] = {
     ANDROID_LOG_INFO,  // NONE
     ANDROID_LOG_ERROR, // ERROR
     ANDROID_LOG_WARN,  // WARNING
@@ -288,20 +309,20 @@ static void DebugOutputLogCallback(void* pUserParam, const char* channelName, co
     ANDROID_LOG_DEBUG, // TRACE
   };
 
-  __android_log_write(logPriority[level], channelName, message);
+  __android_log_print(logPriority[level], channelName, "%.*s", static_cast<int>(message.length()), message.data());
 #else
 #endif
 }
 
-void SetConsoleOutputParams(bool Enabled, const char* ChannelFilter, LOGLEVEL LevelFilter)
+void Log::SetConsoleOutputParams(bool enabled, bool timestamps)
 {
-  s_console_output_channel_filter = (ChannelFilter != NULL) ? ChannelFilter : "";
-  s_console_output_level_filter = LevelFilter;
+  std::unique_lock lock(s_callback_mutex);
 
-  if (s_console_output_enabled == Enabled)
+  s_console_output_timestamps = timestamps;
+  if (s_console_output_enabled == enabled)
     return;
 
-  s_console_output_enabled = Enabled;
+  s_console_output_enabled = enabled;
 
 #if defined(_WIN32)
   // On windows, no console is allocated by default on a windows based application
@@ -310,7 +331,7 @@ void SetConsoleOutputParams(bool Enabled, const char* ChannelFilter, LOGLEVEL Le
   static HANDLE old_stdout = NULL;
   static HANDLE old_stderr = NULL;
 
-  if (Enabled)
+  if (enabled)
   {
     old_stdin = GetStdHandle(STD_INPUT_HANDLE);
     old_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -367,101 +388,121 @@ void SetConsoleOutputParams(bool Enabled, const char* ChannelFilter, LOGLEVEL Le
   }
 #endif
 
-  if (Enabled)
-    RegisterCallback(ConsoleOutputLogCallback, nullptr);
+  if (enabled)
+    RegisterCallback(ConsoleOutputLogCallback, nullptr, lock);
   else
-    UnregisterCallback(ConsoleOutputLogCallback, nullptr);
+    UnregisterCallback(ConsoleOutputLogCallback, nullptr, lock);
 }
 
-void SetDebugOutputParams(bool enabled, const char* channelFilter /* = nullptr */,
-                          LOGLEVEL levelFilter /* = LOGLEVEL_TRACE */)
+void Log::SetDebugOutputParams(bool enabled)
 {
-  if (s_debug_output_enabled != enabled)
-  {
-    s_debug_output_enabled = enabled;
-    if (enabled)
-      RegisterCallback(DebugOutputLogCallback, nullptr);
-    else
-      UnregisterCallback(DebugOutputLogCallback, nullptr);
-  }
+  std::unique_lock lock(s_callback_mutex);
+  if (s_debug_output_enabled == enabled)
+    return;
 
-  s_debug_output_channel_filter = (channelFilter != nullptr) ? channelFilter : "";
-  s_debug_output_level_filter = levelFilter;
+  s_debug_output_enabled = enabled;
+  if (enabled)
+    RegisterCallback(DebugOutputLogCallback, nullptr, lock);
+  else
+    UnregisterCallback(DebugOutputLogCallback, nullptr, lock);
 }
 
-static void FileOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
-                                  const char* message)
+void Log::FileOutputLogCallback(void* pUserParam, const char* channelName, const char* functionName, LOGLEVEL level,
+                                std::string_view message)
 {
-  if (level > s_file_output_level_filter || s_file_output_channel_filter.Find(channelName) >= 0)
+  if (!s_file_output_enabled)
     return;
 
   FormatLogMessageAndPrint(
     channelName, functionName, level, message, true, false, true,
-    [](const char* message, int message_len) { std::fwrite(message, 1, message_len, s_fileOutputHandle.get()); });
+    [](const std::string_view& message) { std::fwrite(message.data(), 1, message.size(), s_file_handle.get()); });
 }
 
-void SetFileOutputParams(bool enabled, const char* filename, bool timestamps /* = true */,
-                         const char* channelFilter /* = nullptr */, LOGLEVEL levelFilter /* = LOGLEVEL_TRACE */)
+void Log::SetFileOutputParams(bool enabled, const char* filename, bool timestamps /* = true */)
 {
-  if (s_file_output_enabled != enabled)
+  std::unique_lock lock(s_callback_mutex);
+  if (s_file_output_enabled == enabled)
+    return;
+
+  if (enabled)
   {
-    if (enabled)
+    s_file_handle.reset(FileSystem::OpenCFile(filename, "wb"));
+    if (!s_file_handle)
     {
-      s_fileOutputHandle.reset(FileSystem::OpenCFile(filename, "wb"));
-      if (!s_fileOutputHandle)
-      {
-        Log::Writef("Log", __FUNCTION__, LOGLEVEL_ERROR, "Failed to open log file '%s'", filename);
-        return;
-      }
-
-      RegisterCallback(FileOutputLogCallback, nullptr);
-    }
-    else
-    {
-      UnregisterCallback(FileOutputLogCallback, nullptr);
-      s_fileOutputHandle.reset();
+      Log::Writef("Log", __FUNCTION__, LOGLEVEL_ERROR, "Failed to open log file '%s'", filename);
+      return;
     }
 
-    s_file_output_enabled = enabled;
+    RegisterCallback(FileOutputLogCallback, nullptr, lock);
+  }
+  else
+  {
+    UnregisterCallback(FileOutputLogCallback, nullptr, lock);
+    s_file_handle.reset();
   }
 
-  std::lock_guard<std::mutex> guard(s_callback_mutex);
-  s_file_output_channel_filter = (channelFilter != nullptr) ? channelFilter : "";
-  s_file_output_level_filter = levelFilter;
+  s_file_output_enabled = enabled;
   s_file_output_timestamp = timestamps;
 }
 
-void SetFilterLevel(LOGLEVEL level)
+LOGLEVEL Log::GetLogLevel()
 {
+  return s_log_level;
+}
+
+bool Log::IsLogVisible(LOGLEVEL level, const char* channelName)
+{
+  if (level > s_log_level)
+    return false;
+
+  std::unique_lock lock(s_callback_mutex);
+  return FilterTest(level, channelName, lock);
+}
+
+void Log::SetLogLevel(LOGLEVEL level)
+{
+  std::unique_lock lock(s_callback_mutex);
   DebugAssert(level < LOGLEVEL_COUNT);
-  s_filter_level = level;
+  s_log_level = level;
 }
 
-void Write(const char* channelName, const char* functionName, LOGLEVEL level, const char* message)
+void Log::SetLogFilter(std::string_view filter)
 {
-  if (level > s_filter_level)
-    return;
-
-  ExecuteCallbacks(channelName, functionName, level, message);
+  std::unique_lock lock(s_callback_mutex);
+  if (s_log_filter != filter)
+    s_log_filter = filter;
 }
 
-void Writef(const char* channelName, const char* functionName, LOGLEVEL level, const char* format, ...)
+ALWAYS_INLINE_RELEASE bool Log::FilterTest(LOGLEVEL level, const char* channelName,
+                                           const std::unique_lock<std::mutex>& lock)
 {
-  if (level > s_filter_level)
+  return (level <= s_log_level && s_log_filter.find(channelName) == std::string::npos);
+}
+
+void Log::Write(const char* channelName, const char* functionName, LOGLEVEL level, std::string_view message)
+{
+  std::unique_lock lock(s_callback_mutex);
+  if (!FilterTest(level, channelName, lock))
     return;
 
-  va_list ap;
+  ExecuteCallbacks(channelName, functionName, level, message, lock);
+}
+
+void Log::Writef(const char* channelName, const char* functionName, LOGLEVEL level, const char* format, ...)
+{
+  std::va_list ap;
   va_start(ap, format);
   Writev(channelName, functionName, level, format, ap);
   va_end(ap);
 }
 
-void Writev(const char* channelName, const char* functionName, LOGLEVEL level, const char* format, va_list ap)
+void Log::Writev(const char* channelName, const char* functionName, LOGLEVEL level, const char* format, va_list ap)
 {
-  if (level > s_filter_level)
+  std::unique_lock lock(s_callback_mutex);
+  if (!FilterTest(level, channelName, lock))
     return;
 
-  va_list apCopy;
+  std::va_list apCopy;
   va_copy(apCopy, ap);
 
 #ifdef _WIN32
@@ -471,19 +512,32 @@ void Writev(const char* channelName, const char* functionName, LOGLEVEL level, c
 #endif
   va_end(apCopy);
 
-  if (requiredSize < 256)
+  if (requiredSize < 512)
   {
-    char buffer[256];
-    std::vsnprintf(buffer, countof(buffer), format, ap);
-    ExecuteCallbacks(channelName, functionName, level, buffer);
+    char buffer[512];
+    const int len = std::vsnprintf(buffer, countof(buffer), format, ap);
+    if (len > 0)
+      ExecuteCallbacks(channelName, functionName, level, std::string_view(buffer, static_cast<size_t>(len)), lock);
   }
   else
   {
     char* buffer = new char[requiredSize + 1];
-    std::vsnprintf(buffer, requiredSize + 1, format, ap);
-    ExecuteCallbacks(channelName, functionName, level, buffer);
+    const int len = std::vsnprintf(buffer, requiredSize + 1, format, ap);
+    if (len > 0)
+      ExecuteCallbacks(channelName, functionName, level, std::string_view(buffer, static_cast<size_t>(len)), lock);
     delete[] buffer;
   }
 }
 
-} // namespace Log
+void Log::WriteFmtArgs(const char* channelName, const char* functionName, LOGLEVEL level, fmt::string_view fmt,
+                       fmt::format_args args)
+{
+  std::unique_lock lock(s_callback_mutex);
+  if (!FilterTest(level, channelName, lock))
+    return;
+
+  fmt::memory_buffer buffer;
+  fmt::vformat_to(std::back_inserter(buffer), fmt, args);
+
+  ExecuteCallbacks(channelName, functionName, level, std::string_view(buffer.data(), buffer.size()), lock);
+}

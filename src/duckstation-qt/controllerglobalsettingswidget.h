@@ -3,21 +3,26 @@
 
 #pragma once
 #include "common/types.h"
+
 #include <QtCore/QMap>
+#include <QtWidgets/QDialog>
 #include <QtWidgets/QWidget>
 #include <array>
 #include <vector>
 
-#include "ui_controllerglobalsettingswidget.h"
+#include "colorpickerbutton.h"
 
-class ControllerSettingsDialog;
+#include "ui_controllerglobalsettingswidget.h"
+#include "ui_controllerledsettingsdialog.h"
+
+class ControllerSettingsWindow;
 
 class ControllerGlobalSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  ControllerGlobalSettingsWidget(QWidget* parent, ControllerSettingsDialog* dialog);
+  ControllerGlobalSettingsWidget(QWidget* parent, ControllerSettingsWindow* dialog);
   ~ControllerGlobalSettingsWidget();
 
   void addDeviceToList(const QString& identifier, const QString& name);
@@ -28,7 +33,23 @@ Q_SIGNALS:
 
 private:
   void updateSDLOptionsEnabled();
+  void ledSettingsClicked();
 
   Ui::ControllerGlobalSettingsWidget m_ui;
-  ControllerSettingsDialog* m_dialog;
+  ControllerSettingsWindow* m_dialog;
+};
+
+class ControllerLEDSettingsDialog : public QDialog
+{
+  Q_OBJECT
+
+public:
+  ControllerLEDSettingsDialog(QWidget* parent, ControllerSettingsWindow* dialog);
+  ~ControllerLEDSettingsDialog();
+
+private:
+  void linkButton(ColorPickerButton* button, u32 player_id);
+
+  Ui::ControllerLEDSettingsDialog m_ui;
+  ControllerSettingsWindow* m_dialog;
 };

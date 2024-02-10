@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
+#include "core/game_database.h"
+#include "core/game_list.h"
+#include "core/types.h"
+
 #include "common/heterogeneous_containers.h"
 #include "common/lru_cache.h"
-#include "core/game_database.h"
-#include "core/types.h"
-#include "frontend-common/game_list.h"
+
 #include <QtCore/QAbstractTableModel>
 #include <QtGui/QPixmap>
 #include <algorithm>
@@ -31,7 +34,8 @@ public:
     Column_Players,
     Column_TimePlayed,
     Column_LastPlayed,
-    Column_Size,
+    Column_FileSize,
+    Column_UncompressedSize,
     Column_Region,
     Column_Compatibility,
     Column_Cover,
@@ -42,7 +46,7 @@ public:
   static std::optional<Column> getColumnIdForName(std::string_view name);
   static const char* getColumnName(Column col);
 
-  GameListModel(QObject* parent = nullptr);
+  GameListModel(float cover_scale, bool show_cover_titles, QObject* parent = nullptr);
   ~GameListModel();
 
   int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -53,6 +57,7 @@ public:
   ALWAYS_INLINE const QString& getColumnDisplayName(int column) { return m_column_display_names[column]; }
 
   void refresh();
+  void reloadThemeSpecificImages();
 
   bool titlesLessThan(int left_row, int right_row) const;
 
@@ -68,10 +73,13 @@ public:
   int getCoverArtSpacing() const;
   void refreshCovers();
   void updateCacheSize(int width, int height);
-  void reloadCommonImages();
+
+Q_SIGNALS:
+  void coverScaleChanged();
 
 private:
   void loadCommonImages();
+  void loadThemeSpecificImages();
   void setColumnDisplayNames();
   void loadOrGenerateCover(const GameList::Entry* ge);
   void invalidateCoverForPath(const std::string& path);

@@ -1,19 +1,26 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
+#include "cue_parser.h"
+
 #include "common/assert.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
-#include "cue_parser.h"
+
+#include "fmt/format.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cinttypes>
 #include <map>
+
 Log_SetChannel(CDImageCueSheet);
+
+namespace {
 
 class CDImageCueSheet : public CDImage
 {
@@ -21,10 +28,11 @@ public:
   CDImageCueSheet();
   ~CDImageCueSheet() override;
 
-  bool OpenAndParse(const char* filename, Common::Error* error);
+  bool OpenAndParse(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasNonStandardSubchannel() const override;
+  s64 GetSizeOnDisk() const override;
 
 protected:
   bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) override;
@@ -41,6 +49,8 @@ private:
   CDSubChannelReplacement m_sbi;
 };
 
+} // namespace
+
 CDImageCueSheet::CDImageCueSheet() = default;
 
 CDImageCueSheet::~CDImageCueSheet()
@@ -48,7 +58,7 @@ CDImageCueSheet::~CDImageCueSheet()
   std::for_each(m_files.begin(), m_files.end(), [](TrackFile& t) { std::fclose(t.file); });
 }
 
-bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
+bool CDImageCueSheet::OpenAndParse(const char* filename, Error* error)
 {
   std::FILE* fp = FileSystem::OpenCFile(filename, "rb");
   if (!fp)
@@ -94,7 +104,8 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
     {
       const std::string track_full_filename(
         !Path::IsAbsolute(track_filename) ? Path::BuildRelativePath(m_filename, track_filename) : track_filename);
-      std::FILE* track_fp = FileSystem::OpenCFile(track_full_filename.c_str(), "rb");
+      Error track_error;
+      std::FILE* track_fp = FileSystem::OpenCFile(track_full_filename.c_str(), "rb", &track_error);
       if (!track_fp && track_file_index == 0)
       {
         // many users have bad cuesheets, or they're renamed the files without updating the cuesheet.
@@ -110,14 +121,11 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
 
       if (!track_fp)
       {
-        Log_ErrorPrintf("Failed to open track filename '%s' (from '%s' and '%s'): errno %d",
-                        track_full_filename.c_str(), track_filename.c_str(), filename, errno);
-        if (error)
-        {
-          error->SetFormattedMessage("Failed to open track filename '%s' (from '%s' and '%s'): errno %d",
-                                     track_full_filename.c_str(), track_filename.c_str(), filename, errno);
-        }
-
+        Log_ErrorPrintf("Failed to open track filename '%s' (from '%s' and '%s'): %s", track_full_filename.c_str(),
+                        track_filename.c_str(), filename, track_error.GetDescription().c_str());
+        Error::SetString(error,
+                         fmt::format("Failed to open track filename '{}' (from '{}' and '{}'): {}", track_full_filename,
+                                     track_filename, filename, track_error.GetDescription()));
         return false;
       }
 
@@ -148,11 +156,8 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
       {
         Log_ErrorPrintf("Failed to open track %u in '%s': track start is out of range (%u vs %" PRIu64 ")", track_num,
                         filename, track_start, file_size);
-        if (error)
-        {
-          error->SetFormattedMessage("Failed to open track %u in '%s': track start is out of range (%u vs %" PRIu64 ")",
-                                     track_num, filename, track_start, file_size);
-        }
+        Error::SetString(error, fmt::format("Failed to open track {} in '{}': track start is out of range ({} vs {}))",
+                                            track_num, filename, track_start, file_size));
         return false;
       }
 
@@ -178,6 +183,7 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
       pregap_index.track_number = track_num;
       pregap_index.index_number = 0;
       pregap_index.mode = mode;
+      pregap_index.submode = CDImage::SubchannelMode::None;
       pregap_index.control.bits = control.bits;
       pregap_index.is_pregap = true;
       pregap_index.file_index = track_file_index;
@@ -217,6 +223,7 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
         pregap_index.track_number = track_num;
         pregap_index.index_number = 0;
         pregap_index.mode = mode;
+        pregap_index.submode = CDImage::SubchannelMode::None;
         pregap_index.control.bits = control.bits;
         pregap_index.is_pregap = true;
         m_indices.push_back(pregap_index);
@@ -226,8 +233,8 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
     }
 
     // add the track itself
-    m_tracks.push_back(
-      Track{track_num, disc_lba, static_cast<u32>(m_indices.size()), track_length + pregap_frames, mode, control});
+    m_tracks.push_back(Track{track_num, disc_lba, static_cast<u32>(m_indices.size()), track_length + pregap_frames,
+                             mode, SubchannelMode::None, control});
 
     // how many indices in this track?
     Index last_index;
@@ -239,6 +246,7 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
     last_index.file_sector_size = track_sector_size;
     last_index.file_offset = static_cast<u64>(track_start) * track_sector_size;
     last_index.mode = mode;
+    last_index.submode = CDImage::SubchannelMode::None;
     last_index.control.bits = control.bits;
     last_index.is_pregap = false;
 
@@ -283,15 +291,14 @@ bool CDImageCueSheet::OpenAndParse(const char* filename, Common::Error* error)
   if (m_tracks.empty())
   {
     Log_ErrorPrintf("File '%s' contains no tracks", filename);
-    if (error)
-      error->SetFormattedMessage("File '%s' contains no tracks", filename);
+    Error::SetString(error, fmt::format("File '{}' contains no tracks", filename));
     return false;
   }
 
   m_lba_count = disc_lba;
   AddLeadOutIndex();
 
-  m_sbi.LoadSBIFromImagePath(filename);
+  m_sbi.LoadFromImagePath(filename);
 
   return Seek(1, Position{0, 0, 0});
 }
@@ -333,7 +340,16 @@ bool CDImageCueSheet::ReadSectorFromIndex(void* buffer, const Index& index, LBA 
   return true;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenCueSheetImage(const char* filename, Common::Error* error)
+s64 CDImageCueSheet::GetSizeOnDisk() const
+{
+  // Doesn't include the cue.. but they're tiny anyway, whatever.
+  u64 size = 0;
+  for (const TrackFile& tf : m_files)
+    size += FileSystem::FSize64(tf.file);
+  return size;
+}
+
+std::unique_ptr<CDImage> CDImage::OpenCueSheetImage(const char* filename, Error* error)
 {
   std::unique_ptr<CDImageCueSheet> image = std::make_unique<CDImageCueSheet>();
   if (!image->OpenAndParse(filename, error))

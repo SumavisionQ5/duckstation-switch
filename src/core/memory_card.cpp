@@ -1,17 +1,24 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "memory_card.h"
-#include "IconsFontAwesome5.h"
+#include "host.h"
+#include "system.h"
+
+#include "util/imgui_manager.h"
+#include "util/state_wrapper.h"
+
+#include "common/bitutils.h"
 #include "common/byte_stream.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
-#include "host.h"
-#include "system.h"
-#include "util/state_wrapper.h"
+
+#include "IconsFontAwesome5.h"
+
 #include <cstdio>
+
 Log_SetChannel(MemoryCard);
 
 MemoryCard::MemoryCard()
@@ -277,10 +284,10 @@ std::unique_ptr<MemoryCard> MemoryCard::Open(std::string_view filename)
   mc->m_filename = filename;
   if (!mc->LoadFromFile())
   {
-    Log_InfoPrintf("Memory card at '%s' could not be read, formatting.", mc->m_filename.c_str());
-    Host::AddFormattedOSDMessage(
-      5.0f, Host::TranslateString("OSDMessage", "Memory card at '%s' could not be read, formatting."),
-      mc->m_filename.c_str());
+    Log_InfoFmt("Memory card at '{}' could not be read, formatting.", mc->m_filename);
+    Host::AddIconOSDMessage(fmt::format("memory_card_{}", filename), ICON_FA_SD_CARD,
+                            fmt::format(TRANSLATE_FS("OSDMessage", "Memory card '{}' could not be read, formatting."),
+                                        Path::GetFileName(filename), Host::OSD_INFO_DURATION));
     mc->Format();
   }
 
@@ -324,8 +331,7 @@ bool MemoryCard::SaveIfChanged(bool display_osd_message)
     {
       Host::AddIconOSDMessage(
         std::move(osd_key), ICON_FA_SD_CARD,
-        fmt::format(Host::TranslateString("OSDMessage", "Failed to save memory card to '{}'.").GetCharArray(),
-                    Path::GetFileName(display_name)),
+        fmt::format(TRANSLATE_FS("OSDMessage", "Failed to save memory card to '{}'."), Path::GetFileName(display_name)),
         20.0f);
     }
 
@@ -336,9 +342,7 @@ bool MemoryCard::SaveIfChanged(bool display_osd_message)
   {
     Host::AddIconOSDMessage(
       std::move(osd_key), ICON_FA_SD_CARD,
-      fmt::format(Host::TranslateString("OSDMessage", "Saved memory card to '{}'.").GetCharArray(),
-                  Path::GetFileName(display_name)),
-      5.0f);
+      fmt::format(TRANSLATE_FS("OSDMessage", "Saved memory card to '{}'."), Path::GetFileName(display_name)), 5.0f);
   }
 
   return true;

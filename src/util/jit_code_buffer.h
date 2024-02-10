@@ -24,6 +24,15 @@ public:
 
   ALWAYS_INLINE u8* GetCodePointer() const { return m_code_ptr; }
   ALWAYS_INLINE u32 GetTotalSize() const { return m_total_size; }
+  ALWAYS_INLINE float GetUsedPct() const
+  {
+    return (static_cast<float>(m_code_used) / static_cast<float>(m_code_size)) * 100.0f;
+  }
+  ALWAYS_INLINE float GetFarUsedPct() const
+  {
+    return (static_cast<float>(m_far_code_used) / static_cast<float>(m_far_code_size)) * 100.0f;
+  }
+  ALWAYS_INLINE u32 GetTotalUsed() const { return m_code_used + m_far_code_used; }
 
   ALWAYS_INLINE u8* GetFreeCodePointer() const { return m_free_code_ptr; }
   ALWAYS_INLINE u32 GetFreeCodeSpace() const { return static_cast<u32>(m_code_size - m_code_used); }
@@ -50,14 +59,9 @@ public:
   /// Flushes the instruction cache on the host for the specified range.
   static void FlushInstructionCache(void* address, u32 size);
 
-  /// For Apple Silicon - Toggles write protection on the JIT space.
-#if defined(__APPLE__) && defined(__aarch64__)
-  static void WriteProtect(bool enabled);
-#else
-  ALWAYS_INLINE static void WriteProtect(bool enabled) {}
-#endif
-
 private:
+  bool TryAllocateAt(const void* addr);
+
 #ifdef __SWITCH__
   u8* m_base_memory = nullptr;
   u8* m_rw_ptr = nullptr;

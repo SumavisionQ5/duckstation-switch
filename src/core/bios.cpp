@@ -9,7 +9,6 @@
 #include "common/path.h"
 #include "cpu_disasm.h"
 #include "host.h"
-#include "host_settings.h"
 #include "settings.h"
 #include <cerrno>
 Log_SetChannel(BIOS);
@@ -96,7 +95,7 @@ static constexpr const BIOS::ImageInfo s_openbios_info = {"OpenBIOS", ConsoleReg
 static constexpr const char s_openbios_signature[] = {'O', 'p', 'e', 'n', 'B', 'I', 'O', 'S'};
 static constexpr u32 s_openbios_signature_offset = 0x78;
 
-static BIOS::Hash GetHash(const BIOS::Image& image)
+BIOS::Hash BIOS::GetImageHash(const BIOS::Image& image)
 {
   BIOS::Hash hash;
   MD5Digest digest;
@@ -132,17 +131,23 @@ std::optional<BIOS::Image> BIOS::LoadImageFromFile(const char* filename)
     return std::nullopt;
   }
 
-  Log_DevPrint(fmt::format("Hash for BIOS '{}': {}", FileSystem::GetDisplayNameFromPath(filename), GetHash(ret).ToString()).c_str());
+  Log_DevPrint(
+    fmt::format("Hash for BIOS '{}': {}", FileSystem::GetDisplayNameFromPath(filename), GetImageHash(ret).ToString())
+      .c_str());
   return ret;
 }
 
 const BIOS::ImageInfo* BIOS::GetInfoForImage(const Image& image)
 {
-  const Hash hash(GetHash(image));
+  const Hash hash(GetImageHash(image));
+  return GetInfoForImage(image, hash);
+}
 
+const BIOS::ImageInfo* BIOS::GetInfoForImage(const Image& image, const Hash& hash)
+{
   // check for openbios
   if (image.size() >= (s_openbios_signature_offset + std::size(s_openbios_signature)) &&
-    std::memcmp(&image[s_openbios_signature_offset], s_openbios_signature, std::size(s_openbios_signature)) == 0)
+      std::memcmp(&image[s_openbios_signature_offset], s_openbios_signature, std::size(s_openbios_signature)) == 0)
   {
     return &s_openbios_info;
   }
@@ -159,7 +164,7 @@ const BIOS::ImageInfo* BIOS::GetInfoForImage(const Image& image)
 
 bool BIOS::IsValidBIOSForRegion(ConsoleRegion console_region, ConsoleRegion bios_region)
 {
-  return (bios_region == ConsoleRegion::Auto || bios_region == console_region);
+  return (console_region == ConsoleRegion::Auto || bios_region == ConsoleRegion::Auto || bios_region == console_region);
 }
 
 void BIOS::PatchBIOS(u8* image, u32 image_size, u32 address, u32 value, u32 mask /*= UINT32_C(0xFFFFFFFF)*/)
@@ -177,15 +182,7 @@ void BIOS::PatchBIOS(u8* image, u32 image_size, u32 address, u32 value, u32 mask
   CPU::DisassembleInstruction(&old_disasm, address, existing_value);
   CPU::DisassembleInstruction(&new_disasm, address, new_value);
   Log_DevPrintf("BIOS-Patch 0x%08X (+0x%X): 0x%08X %s -> %08X %s", address, offset, existing_value,
-                old_disasm.GetCharArray(), new_value, new_disasm.GetCharArray());
-}
-
-bool BIOS::PatchBIOSEnableTTY(u8* image, u32 image_size)
-{
-  Log_InfoPrintf("Patching BIOS to enable TTY/printf");
-  PatchBIOS(image, image_size, 0x1FC06F0C, 0x24010001);
-  PatchBIOS(image, image_size, 0x1FC06F14, 0xAF81A9C0);
-  return true;
+                old_disasm.c_str(), new_value, new_disasm.c_str());
 }
 
 bool BIOS::PatchBIOSFastBoot(u8* image, u32 image_size)
@@ -298,8 +295,8 @@ std::optional<std::vector<u8>> BIOS::GetBIOSImage(ConsoleRegion region)
   std::optional<Image> image = LoadImageFromFile(Path::Combine(EmuFolders::Bios, bios_name).c_str());
   if (!image.has_value())
   {
-    Host::ReportFormattedErrorAsync(
-      "Error", Host::TranslateString("HostInterface", "Failed to load configured BIOS file '%s'"), bios_name.c_str());
+    Host::ReportFormattedErrorAsync("Error", TRANSLATE("HostInterface", "Failed to load configured BIOS file '%s'"),
+                                    bios_name.c_str());
     return std::nullopt;
   }
 
@@ -353,8 +350,7 @@ std::optional<std::vector<u8>> BIOS::FindBIOSImageInDirectory(ConsoleRegion regi
 
   if (!fallback_image.has_value())
   {
-    Host::ReportFormattedErrorAsync("Error",
-                                    Host::TranslateString("HostInterface", "No BIOS image found for %s region"),
+    Host::ReportFormattedErrorAsync("Error", TRANSLATE("HostInterface", "No BIOS image found for %s region"),
                                     Settings::GetConsoleRegionDisplayName(region));
     return std::nullopt;
   }
@@ -370,6 +366,35 @@ std::optional<std::vector<u8>> BIOS::FindBIOSImageInDirectory(ConsoleRegion regi
   }
 
   return fallback_image;
+}
+
+std::string BIOS::FindBIOSPathWithHash(const char* directory, const Hash& hash)
+{
+  FileSystem::FindResultsArray files;
+  FileSystem::FindFiles(directory, "*",
+                        FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES | FILESYSTEM_FIND_RELATIVE_PATHS, &files);
+
+  std::string ret;
+
+  for (FILESYSTEM_FIND_DATA& fd : files)
+  {
+    if (fd.Size != BIOS_SIZE && fd.Size != BIOS_SIZE_PS2 && fd.Size != BIOS_SIZE_PS3)
+      continue;
+
+    std::string full_path(Path::Combine(directory, fd.FileName));
+    std::optional<Image> found_image = LoadImageFromFile(full_path.c_str());
+    if (!found_image)
+      continue;
+
+    const BIOS::Hash found_hash = GetImageHash(found_image.value());
+    if (found_hash == hash)
+    {
+      ret = std::move(full_path);
+      break;
+    }
+  }
+
+  return ret;
 }
 
 std::vector<std::pair<std::string, const BIOS::ImageInfo*>> BIOS::FindBIOSImagesInDirectory(const char* directory)

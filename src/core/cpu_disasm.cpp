@@ -1,12 +1,17 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cpu_disasm.h"
-#include "common/assert.h"
 #include "cpu_core.h"
+#include "cpu_types.h"
+
+#include "common/assert.h"
+#include "common/small_string.h"
+
 #include <array>
 
 namespace CPU {
+namespace {
 
 enum Operand : u8
 {
@@ -26,6 +31,28 @@ struct TableEntry
 {
   const char* format;
 };
+
+struct GTEInstructionTable
+{
+  const char* name;
+  bool sf;
+  bool lm;
+  bool mvmva;
+};
+} // namespace
+
+static void FormatInstruction(SmallStringBase* dest, const Instruction inst, u32 pc, const char* format);
+static void FormatComment(SmallStringBase* dest, const Instruction inst, u32 pc, const char* format);
+
+template<typename T>
+static void FormatCopInstruction(SmallStringBase* dest, u32 pc, const Instruction inst,
+                                 const std::pair<T, const char*>* table, size_t table_size, T table_key);
+
+template<typename T>
+static void FormatCopComment(SmallStringBase* dest, u32 pc, const Instruction inst,
+                             const std::pair<T, const char*>* table, size_t table_size, T table_key);
+
+static void FormatGTEInstruction(SmallStringBase* dest, u32 pc, const Instruction inst);
 
 static const std::array<const char*, 64> s_base_table = {{
   "",                       // 0
@@ -162,16 +189,92 @@ static const std::array<const char*, 64> s_special_table = {{
 }};
 
 static const std::array<std::pair<CopCommonInstruction, const char*>, 4> s_cop_common_table = {
-  {{CopCommonInstruction::mfcn, "mfc$cop $rt, $coprd"},
-   {CopCommonInstruction::cfcn, "cfc$cop $rt, $coprd"},
+  {{CopCommonInstruction::mfcn, "mfc$cop $rt_, $coprd"},
+   {CopCommonInstruction::cfcn, "cfc$cop $rt_, $coprdc"},
    {CopCommonInstruction::mtcn, "mtc$cop $rt, $coprd"},
-   {CopCommonInstruction::ctcn, "ctc$cop $rt, $coprd"}}};
+   {CopCommonInstruction::ctcn, "ctc$cop $rt, $coprdc"}}};
 
 static const std::array<std::pair<Cop0Instruction, const char*>, 1> s_cop0_table = {{{Cop0Instruction::rfe, "rfe"}}};
 
-static void FormatInstruction(String* dest, const Instruction inst, u32 pc, const char* format)
+static constexpr const std::array<const char*, 64> s_gte_register_names = {
+  {"v0_xy", "v0_z",  "v1_xy", "v1_z",  "v2_xy", "v2_z",  "rgbc", "otz",  "ir0",  "ir1",   "ir2",   "ir3",   "sxy0",
+   "sxy1",  "sxy2",  "sxyp",  "sz0",   "sz1",   "sz2",   "sz3",  "rgb0", "rgb1", "rgb2",  "res1",  "mac0",  "mac1",
+   "mac2",  "mac3",  "irgb",  "orgb",  "lzcs",  "lzcr",  "rt_0", "rt_1", "rt_2", "rt_3",  "rt_4",  "trx",   "try",
+   "trz",   "llm_0", "llm_1", "llm_2", "llm_3", "llm_4", "rbk",  "gbk",  "bbk",  "lcm_0", "lcm_1", "lcm_2", "lcm_3",
+   "lcm_4", "rfc",   "gfc",   "bfc",   "ofx",   "ofy",   "h",    "dqa",  "dqb",  "zsf3",  "zsf4",  "flag"}};
+
+static constexpr const std::array<GTEInstructionTable, 64> s_gte_instructions = {{
+  {"rtps", true, true, false},      // 0x00
+  {"nclip", false, false, false},   // 0x01
+  {"UNKNOWN", false, false, false}, // 0x02
+  {"UNKNOWN", false, false, false}, // 0x03
+  {"UNKNOWN", false, false, false}, // 0x04
+  {"UNKNOWN", false, false, false}, // 0x05
+  {"UNKNOWN", false, false, false}, // 0x06
+  {"UNKNOWN", false, false, false}, // 0x07
+  {"UNKNOWN", false, false, false}, // 0x08
+  {"UNKNOWN", false, false, false}, // 0x09
+  {"UNKNOWN", false, false, false}, // 0x0A
+  {"UNKNOWN", false, false, false}, // 0x0B
+  {"op", true, true, false},        // 0x0C
+  {"UNKNOWN", false, false, false}, // 0x0D
+  {"UNKNOWN", false, false, false}, // 0x0E
+  {"UNKNOWN", false, false, false}, // 0x0F
+  {"dpcs", true, true, false},      // 0x10
+  {"intpl", true, true, false},     // 0x11
+  {"mvmva", true, true, true},      // 0x12
+  {"ncds", true, true, false},      // 0x13
+  {"cdp", true, true, false},       // 0x14
+  {"UNKNOWN", false, false, false}, // 0x15
+  {"ncdt", true, true, false},      // 0x16
+  {"UNKNOWN", false, false, false}, // 0x17
+  {"UNKNOWN", false, false, false}, // 0x18
+  {"UNKNOWN", false, false, false}, // 0x19
+  {"UNKNOWN", false, false, false}, // 0x1A
+  {"nccs", true, true, false},      // 0x1B
+  {"cc", true, true, false},        // 0x1C
+  {"UNKNOWN", false, false, false}, // 0x1D
+  {"ncs", true, true, false},       // 0x1E
+  {"UNKNOWN", false, false, false}, // 0x1F
+  {"nct", true, true, false},       // 0x20
+  {"UNKNOWN", false, false, false}, // 0x21
+  {"UNKNOWN", false, false, false}, // 0x22
+  {"UNKNOWN", false, false, false}, // 0x23
+  {"UNKNOWN", false, false, false}, // 0x24
+  {"UNKNOWN", false, false, false}, // 0x25
+  {"UNKNOWN", false, false, false}, // 0x26
+  {"UNKNOWN", false, false, false}, // 0x27
+  {"sqr", true, true, false},       // 0x28
+  {"dcpl", true, true, false},      // 0x29
+  {"dpct", true, true, false},      // 0x2A
+  {"UNKNOWN", false, false, false}, // 0x2B
+  {"UNKNOWN", false, false, false}, // 0x2C
+  {"avsz3", false, false, false},   // 0x2D
+  {"avsz4", false, false, false},   // 0x2E
+  {"UNKNOWN", false, false, false}, // 0x2F
+  {"rtpt", true, true, false},      // 0x30
+  {"UNKNOWN", false, false, false}, // 0x31
+  {"UNKNOWN", false, false, false}, // 0x32
+  {"UNKNOWN", false, false, false}, // 0x33
+  {"UNKNOWN", false, false, false}, // 0x34
+  {"UNKNOWN", false, false, false}, // 0x35
+  {"UNKNOWN", false, false, false}, // 0x36
+  {"UNKNOWN", false, false, false}, // 0x37
+  {"UNKNOWN", false, false, false}, // 0x38
+  {"UNKNOWN", false, false, false}, // 0x39
+  {"UNKNOWN", false, false, false}, // 0x3A
+  {"UNKNOWN", false, false, false}, // 0x3B
+  {"UNKNOWN", false, false, false}, // 0x3C
+  {"gpf", true, true, false},       // 0x3D
+  {"gpl", true, true, false},       // 0x3E
+  {"ncct", true, true, false},      // 0x3F
+}};
+
+} // namespace CPU
+
+void CPU::FormatInstruction(SmallStringBase* dest, const Instruction inst, u32 pc, const char* format)
 {
-  dest->Clear();
+  dest->clear();
 
   const char* str = format;
   while (*str != '\0')
@@ -179,77 +282,96 @@ static void FormatInstruction(String* dest, const Instruction inst, u32 pc, cons
     const char ch = *(str++);
     if (ch != '$')
     {
-      dest->AppendCharacter(ch);
+      dest->append(ch);
       continue;
     }
 
     if (std::strncmp(str, "rs", 2) == 0)
     {
-      dest->AppendString(GetRegName(inst.r.rs));
+      dest->append(GetRegName(inst.r.rs));
       str += 2;
+    }
+    else if (std::strncmp(str, "rt_", 3) == 0)
+    {
+      dest->append(GetRegName(inst.r.rt));
+      str += 3;
     }
     else if (std::strncmp(str, "rt", 2) == 0)
     {
-      dest->AppendString(GetRegName(inst.r.rt));
+      dest->append(GetRegName(inst.r.rt));
       str += 2;
     }
     else if (std::strncmp(str, "rd", 2) == 0)
     {
-      dest->AppendString(GetRegName(inst.r.rd));
+      dest->append(GetRegName(inst.r.rd));
       str += 2;
     }
     else if (std::strncmp(str, "shamt", 5) == 0)
     {
-      dest->AppendFormattedString("%d", ZeroExtend32(inst.r.shamt.GetValue()));
+      dest->append_format("{}", ZeroExtend32(inst.r.shamt.GetValue()));
       str += 5;
     }
     else if (std::strncmp(str, "immu", 4) == 0)
     {
-      dest->AppendFormattedString("%u", inst.i.imm_zext32());
+      dest->append_format("{}", inst.i.imm_zext32());
       str += 4;
     }
     else if (std::strncmp(str, "imm", 3) == 0)
     {
       // dest->AppendFormattedString("%d", static_cast<int>(inst.i.imm_sext32()));
-      dest->AppendFormattedString("%04x", inst.i.imm_zext32());
+      dest->append_format("{:04x}", inst.i.imm_zext32());
       str += 3;
     }
     else if (std::strncmp(str, "rel", 3) == 0)
     {
       const u32 target = (pc + UINT32_C(4)) + (inst.i.imm_sext32() << 2);
-      dest->AppendFormattedString("%08x", target);
+      dest->append_format("{:08x}", target);
       str += 3;
     }
     else if (std::strncmp(str, "offsetrs", 8) == 0)
     {
       const s32 offset = static_cast<s32>(inst.i.imm_sext32());
-      dest->AppendFormattedString("%d(%s)", offset, GetRegName(inst.i.rs));
+      dest->append_format("{}({})", offset, GetRegName(inst.i.rs));
       str += 8;
     }
     else if (std::strncmp(str, "jt", 2) == 0)
     {
       const u32 target = ((pc + UINT32_C(4)) & UINT32_C(0xF0000000)) | (inst.j.target << 2);
-      dest->AppendFormattedString("%08x", target);
+      dest->append_format("{:08x}", target);
       str += 2;
     }
     else if (std::strncmp(str, "copcc", 5) == 0)
     {
-      dest->AppendCharacter(((inst.bits & (UINT32_C(1) << 24)) != 0) ? 't' : 'f');
+      dest->append(((inst.bits & (UINT32_C(1) << 24)) != 0) ? 't' : 'f');
       str += 5;
+    }
+    else if (std::strncmp(str, "coprdc", 6) == 0)
+    {
+      if (inst.IsCop2Instruction())
+        dest->append(GetGTERegisterName(static_cast<u8>(inst.r.rd.GetValue()) + 32));
+      else
+        dest->append_format("{}", ZeroExtend32(static_cast<u8>(inst.r.rd.GetValue())));
+      str += 6;
     }
     else if (std::strncmp(str, "coprd", 5) == 0)
     {
-      dest->AppendFormattedString("%u", ZeroExtend32(static_cast<u8>(inst.r.rd.GetValue())));
+      if (inst.IsCop2Instruction())
+        dest->append(GetGTERegisterName(static_cast<u8>(inst.r.rd.GetValue())));
+      else
+        dest->append_format("{}", ZeroExtend32(static_cast<u8>(inst.r.rd.GetValue())));
       str += 5;
     }
     else if (std::strncmp(str, "coprt", 5) == 0)
     {
-      dest->AppendFormattedString("%u", ZeroExtend32(static_cast<u8>(inst.r.rt.GetValue())));
+      if (inst.IsCop2Instruction())
+        dest->append(GetGTERegisterName(static_cast<u8>(inst.r.rt.GetValue())));
+      else
+        dest->append_format("{}", ZeroExtend32(static_cast<u8>(inst.r.rt.GetValue())));
       str += 5;
     }
     else if (std::strncmp(str, "cop", 3) == 0)
     {
-      dest->AppendFormattedString("%u", static_cast<u8>(inst.op.GetValue()) & INSTRUCTION_COP_N_MASK);
+      dest->append_format("{}", static_cast<u8>(inst.op.GetValue()) & INSTRUCTION_COP_N_MASK);
       str += 3;
     }
     else
@@ -259,8 +381,10 @@ static void FormatInstruction(String* dest, const Instruction inst, u32 pc, cons
   }
 }
 
-static void FormatComment(String* dest, const Instruction inst, u32 pc, Registers* regs, const char* format)
+void CPU::FormatComment(SmallStringBase* dest, const Instruction inst, u32 pc, const char* format)
 {
+  const CPU::Registers* regs = &CPU::g_state.regs;
+
   const char* str = format;
   while (*str != '\0')
   {
@@ -270,21 +394,25 @@ static void FormatComment(String* dest, const Instruction inst, u32 pc, Register
 
     if (std::strncmp(str, "rs", 2) == 0)
     {
-      dest->AppendFormattedString("%s%s=0x%08X", dest->IsEmpty() ? "" : ", ", GetRegName(inst.r.rs),
-                                  regs->r[static_cast<u8>(inst.r.rs.GetValue())]);
+      dest->append_format("{}{}=0x{:08X}", dest->empty() ? "" : ", ", GetRegName(inst.r.rs),
+                          regs->r[static_cast<u8>(inst.r.rs.GetValue())]);
 
       str += 2;
     }
+    else if (std::strncmp(str, "rt_", 3) == 0)
+    {
+      str += 3;
+    }
     else if (std::strncmp(str, "rt", 2) == 0)
     {
-      dest->AppendFormattedString("%s%s=0x%08X", dest->IsEmpty() ? "" : ", ", GetRegName(inst.r.rt),
-                                  regs->r[static_cast<u8>(inst.r.rt.GetValue())]);
+      dest->append_format("{}{}=0x{:08X}", dest->empty() ? "" : ", ", GetRegName(inst.r.rt),
+                          regs->r[static_cast<u8>(inst.r.rt.GetValue())]);
       str += 2;
     }
     else if (std::strncmp(str, "rd", 2) == 0)
     {
-      dest->AppendFormattedString("%s%s=0x%08X", dest->IsEmpty() ? "" : ", ", GetRegName(inst.r.rd),
-                                  regs->r[static_cast<u8>(inst.r.rd.GetValue())]);
+      dest->append_format("{}{}=0x{:08X}", dest->empty() ? "" : ", ", GetRegName(inst.r.rd),
+                          regs->r[static_cast<u8>(inst.r.rd.GetValue())]);
       str += 2;
     }
     else if (std::strncmp(str, "shamt", 5) == 0)
@@ -306,8 +434,8 @@ static void FormatComment(String* dest, const Instruction inst, u32 pc, Register
     else if (std::strncmp(str, "offsetrs", 8) == 0)
     {
       const s32 offset = static_cast<s32>(inst.i.imm_sext32());
-      dest->AppendFormattedString("%saddr=0x%08X", dest->IsEmpty() ? "" : ", ",
-                                  regs->r[static_cast<u8>(inst.i.rs.GetValue())] + offset);
+      dest->append_format("{}addr={:08X}", dest->empty() ? "" : ", ",
+                          regs->r[static_cast<u8>(inst.i.rs.GetValue())] + offset);
       str += 8;
     }
     else if (std::strncmp(str, "jt", 2) == 0)
@@ -318,12 +446,36 @@ static void FormatComment(String* dest, const Instruction inst, u32 pc, Register
     {
       str += 5;
     }
+    else if (std::strncmp(str, "coprdc", 6) == 0)
+    {
+      if (inst.IsCop2Instruction())
+      {
+        dest->append_format("{}{}=0x{:08X}", dest->empty() ? "" : ", ",
+                            GetGTERegisterName(static_cast<u8>(inst.r.rd.GetValue()) + 32),
+                            g_state.gte_regs.cr32[static_cast<u8>(inst.r.rd.GetValue())]);
+      }
+      str += 6;
+    }
     else if (std::strncmp(str, "coprd", 5) == 0)
     {
+      if (inst.IsCop2Instruction())
+      {
+        dest->append_format("{}{}=0x{:08X}", dest->empty() ? "" : ", ",
+                            GetGTERegisterName(static_cast<u8>(inst.r.rd.GetValue())),
+                            g_state.gte_regs.dr32[static_cast<u8>(inst.r.rd.GetValue())]);
+      }
+
       str += 5;
     }
     else if (std::strncmp(str, "coprt", 5) == 0)
     {
+      if (inst.IsCop2Instruction())
+      {
+        dest->append_format("{}{}=0x{:08X}", dest->empty() ? "" : ", ",
+                            GetGTERegisterName(static_cast<u8>(inst.r.rt.GetValue())),
+                            g_state.gte_regs.dr32[static_cast<u8>(inst.r.rt.GetValue())]);
+      }
+
       str += 5;
     }
     else if (std::strncmp(str, "cop", 3) == 0)
@@ -338,8 +490,8 @@ static void FormatComment(String* dest, const Instruction inst, u32 pc, Register
 }
 
 template<typename T>
-void FormatCopInstruction(String* dest, u32 pc, const Instruction inst, const std::pair<T, const char*>* table,
-                          size_t table_size, T table_key)
+void CPU::FormatCopInstruction(SmallStringBase* dest, u32 pc, const Instruction inst,
+                               const std::pair<T, const char*>* table, size_t table_size, T table_key)
 {
   for (size_t i = 0; i < table_size; i++)
   {
@@ -350,24 +502,43 @@ void FormatCopInstruction(String* dest, u32 pc, const Instruction inst, const st
     }
   }
 
-  dest->Format("<cop%u 0x%08X>", ZeroExtend32(inst.cop.cop_n.GetValue()), inst.cop.imm25.GetValue());
+  dest->format("<cop{} 0x{:08X}>", ZeroExtend32(inst.cop.cop_n.GetValue()), inst.cop.imm25.GetValue());
 }
 
 template<typename T>
-void FormatCopComment(String* dest, u32 pc, Registers* regs, const Instruction inst,
-                      const std::pair<T, const char*>* table, size_t table_size, T table_key)
+void CPU::FormatCopComment(SmallStringBase* dest, u32 pc, const Instruction inst,
+                           const std::pair<T, const char*>* table, size_t table_size, T table_key)
 {
   for (size_t i = 0; i < table_size; i++)
   {
     if (table[i].first == table_key)
     {
-      FormatComment(dest, inst, pc, regs, table[i].second);
+      FormatComment(dest, inst, pc, table[i].second);
       return;
     }
   }
 }
 
-void DisassembleInstruction(String* dest, u32 pc, u32 bits)
+void CPU::FormatGTEInstruction(SmallStringBase* dest, u32 pc, const Instruction inst)
+{
+  const GTE::Instruction gi{inst.bits};
+  const GTEInstructionTable& t = s_gte_instructions[gi.command];
+  dest->append(t.name);
+
+  if (t.sf && gi.sf)
+    dest->append(" sf");
+
+  if (t.lm && gi.lm)
+    dest->append(" lm");
+
+  if (t.mvmva)
+  {
+    dest->append_format(" m={} v={} t={}", static_cast<u8>(gi.mvmva_multiply_matrix),
+                        static_cast<u8>(gi.mvmva_multiply_vector), static_cast<u8>(gi.mvmva_translation_vector));
+  }
+}
+
+void CPU::DisassembleInstruction(SmallStringBase* dest, u32 pc, u32 bits)
 {
   const Instruction inst{bits};
   switch (inst.op)
@@ -395,12 +566,17 @@ void DisassembleInstruction(String* dest, u32 pc, u32 bits)
           }
           break;
 
-          case InstructionOp::cop1:
           case InstructionOp::cop2:
+          {
+            FormatGTEInstruction(dest, pc, inst);
+          }
+          break;
+
+          case InstructionOp::cop1:
           case InstructionOp::cop3:
           default:
           {
-            dest->Format("<cop%u 0x%08X>", ZeroExtend32(inst.cop.cop_n.GetValue()), inst.cop.imm25.GetValue());
+            dest->format("<cop{} 0x{:08X}>", ZeroExtend32(inst.cop.cop_n.GetValue()), inst.cop.imm25.GetValue());
           }
           break;
         }
@@ -427,13 +603,13 @@ void DisassembleInstruction(String* dest, u32 pc, u32 bits)
   }
 }
 
-void DisassembleInstructionComment(String* dest, u32 pc, u32 bits, Registers* regs)
+void CPU::DisassembleInstructionComment(SmallStringBase* dest, u32 pc, u32 bits)
 {
   const Instruction inst{bits};
   switch (inst.op)
   {
     case InstructionOp::funct:
-      FormatComment(dest, inst, pc, regs, s_special_table[static_cast<u8>(inst.r.funct.GetValue())]);
+      FormatComment(dest, inst, pc, s_special_table[static_cast<u8>(inst.r.funct.GetValue())]);
       return;
 
     case InstructionOp::cop0:
@@ -443,8 +619,7 @@ void DisassembleInstructionComment(String* dest, u32 pc, u32 bits, Registers* re
     {
       if (inst.cop.IsCommonInstruction())
       {
-        FormatCopComment(dest, pc, regs, inst, s_cop_common_table.data(), s_cop_common_table.size(),
-                         inst.cop.CommonOp());
+        FormatCopComment(dest, pc, inst, s_cop_common_table.data(), s_cop_common_table.size(), inst.cop.CommonOp());
       }
       else
       {
@@ -452,16 +627,19 @@ void DisassembleInstructionComment(String* dest, u32 pc, u32 bits, Registers* re
         {
           case InstructionOp::cop0:
           {
-            FormatCopComment(dest, pc, regs, inst, s_cop0_table.data(), s_cop0_table.size(), inst.cop.Cop0Op());
+            FormatCopComment(dest, pc, inst, s_cop0_table.data(), s_cop0_table.size(), inst.cop.Cop0Op());
           }
           break;
 
-          case InstructionOp::cop1:
           case InstructionOp::cop2:
+            // TODO: Show GTE regs?
+            break;
+
+          case InstructionOp::cop1:
           case InstructionOp::cop3:
           default:
           {
-            dest->Format("<cop%u 0x%08X>", ZeroExtend32(inst.cop.cop_n.GetValue()), inst.cop.imm25.GetValue());
+            dest->format("<cop{} 0x{:08X}>", ZeroExtend32(inst.cop.cop_n.GetValue()), inst.cop.imm25.GetValue());
           }
           break;
         }
@@ -476,16 +654,19 @@ void DisassembleInstructionComment(String* dest, u32 pc, u32 bits, Registers* re
       const bool bgez = ConvertToBoolUnchecked(rt & u8(1));
       const bool link = ConvertToBoolUnchecked((rt >> 4) & u8(1));
       if (link)
-        FormatComment(dest, inst, pc, regs, bgez ? "bgezal $rs, $rel" : "bltzal $rs, $rel");
+        FormatComment(dest, inst, pc, bgez ? "bgezal $rs, $rel" : "bltzal $rs, $rel");
       else
-        FormatComment(dest, inst, pc, regs, bgez ? "bgez $rs, $rel" : "bltz $rs, $rel");
+        FormatComment(dest, inst, pc, bgez ? "bgez $rs, $rel" : "bltz $rs, $rel");
     }
     break;
 
     default:
-      FormatComment(dest, inst, pc, regs, s_base_table[static_cast<u8>(inst.op.GetValue())]);
+      FormatComment(dest, inst, pc, s_base_table[static_cast<u8>(inst.op.GetValue())]);
       break;
   }
 }
 
-} // namespace CPU
+const char* CPU::GetGTERegisterName(u32 index)
+{
+  return (index < s_gte_register_names.size()) ? s_gte_register_names[index] : "";
+}

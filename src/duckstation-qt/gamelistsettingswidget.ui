@@ -10,9 +10,6 @@
     <height>376</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>Form</string>
-  </property>
   <layout class="QVBoxLayout" name="verticalLayout" stretch="0,2,0,1,0">
    <property name="leftMargin">
     <number>0</number>
@@ -60,7 +57,7 @@
         <string>Add</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingAdd"/>
+        <iconset theme="folder-add-line"/>
        </property>
       </widget>
      </item>
@@ -76,7 +73,7 @@
         <string>Remove</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingRemove"/>
+        <iconset theme="folder-reduce-line"/>
        </property>
       </widget>
      </item>
@@ -119,7 +116,7 @@
         <string>Add</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingAdd"/>
+        <iconset theme="folder-add-line"/>
        </property>
       </widget>
      </item>
@@ -135,7 +132,7 @@
         <string>Remove</string>
        </property>
        <property name="icon">
-        <iconset theme="PostProcessingRemove"/>
+        <iconset theme="folder-reduce-line"/>
        </property>
       </widget>
      </item>
@@ -171,7 +168,7 @@
         <string>Scan For New Games</string>
        </property>
        <property name="icon">
-        <iconset theme="ScanForGames"/>
+        <iconset theme="mag-line"/>
        </property>
       </widget>
      </item>
@@ -187,7 +184,7 @@
         <string>Rescan All Games</string>
        </property>
        <property name="icon">
-        <iconset theme="RescanAllGames"/>
+        <iconset theme="refresh-line"/>
        </property>
       </widget>
      </item>

@@ -1,19 +1,31 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "assert.h"
 #include "cd_image.h"
+
 #include "common/error.h"
 #include "common/log.h"
 #include "common/string_util.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cinttypes>
 #include <cmath>
+
 Log_SetChannel(CDImageDevice);
 
+#if defined(_WIN32)
+
+// The include order here is critical.
+// clang-format off
+#include "common/windows_headers.h"
+#include <winioctl.h>
+#include <ntddcdrm.h>
+#include <ntddscsi.h>
+// clang-format on
+
 static constexpr u32 MAX_TRACK_NUMBER = 99;
-static constexpr int ALL_SUBCODE_SIZE = 96;
 
 static u32 BEToU32(const u8* val)
 {
@@ -27,44 +39,7 @@ static void U16ToBE(u8* beval, u16 leval)
   beval[1] = static_cast<u8>(leval);
 }
 
-// Adapted from
-// https://github.com/saramibreak/DiscImageCreator/blob/5a8fe21730872d67991211f1319c87f0780f2d0f/DiscImageCreator/convert.cpp
-static void DeinterleaveSubcode(const u8* subcode_in, u8* subcode_out)
-{
-  std::memset(subcode_out, 0, ALL_SUBCODE_SIZE);
-
-  int row = 0;
-  for (int bitNum = 0; bitNum < 8; bitNum++)
-  {
-    for (int nColumn = 0; nColumn < ALL_SUBCODE_SIZE; row++)
-    {
-      u32 mask = 0x80;
-      for (int nShift = 0; nShift < 8; nShift++, nColumn++)
-      {
-        const int n = nShift - bitNum;
-        if (n > 0)
-        {
-          subcode_out[row] |= static_cast<u8>((subcode_in[nColumn] >> n) & mask);
-        }
-        else
-        {
-          subcode_out[row] |= static_cast<u8>((subcode_in[nColumn] << std::abs(n)) & mask);
-        }
-        mask >>= 1;
-      }
-    }
-  }
-}
-
-#if defined(_WIN32)
-
-// The include order here is critical.
-// clang-format off
-#include "common/windows_headers.h"
-#include <winioctl.h>
-#include <ntddcdrm.h>
-#include <ntddscsi.h>
-// clang-format on
+namespace {
 
 class CDImageDeviceWin32 : public CDImage
 {
@@ -72,7 +47,7 @@ public:
   CDImageDeviceWin32();
   ~CDImageDeviceWin32() override;
 
-  bool Open(const char* filename, Common::Error* error);
+  bool Open(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasNonStandardSubchannel() const override;
@@ -104,6 +79,8 @@ private:
   std::array<u8, SUBCHANNEL_BYTES_PER_FRAME> m_subq;
 };
 
+} // namespace
+
 CDImageDeviceWin32::CDImageDeviceWin32() = default;
 
 CDImageDeviceWin32::~CDImageDeviceWin32()
@@ -112,7 +89,7 @@ CDImageDeviceWin32::~CDImageDeviceWin32()
     CloseHandle(m_hDevice);
 }
 
-bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
+bool CDImageDeviceWin32::Open(const char* filename, Error* error)
 {
   m_filename = filename;
   m_hDevice = CreateFile(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -135,8 +112,8 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
   }
 
   // Set it to 4x speed. A good balance between readahead and spinning up way too high.
-  static constexpr u32 READ_SPEED_MULTIPLIER = 4;
-  static constexpr u32 READ_SPEED_KBS = (DATA_SECTOR_SIZE * FRAMES_PER_SECOND * 8) / 1024;
+  static constexpr u32 READ_SPEED_MULTIPLIER = 8;
+  static constexpr u32 READ_SPEED_KBS = (DATA_SECTOR_SIZE * FRAMES_PER_SECOND * READ_SPEED_MULTIPLIER) / 1024;
   CDROM_SET_SPEED set_speed = {CdromSetSpeed, READ_SPEED_KBS, 0, CdromDefaultRotation};
   if (!DeviceIoControl(m_hDevice, IOCTL_CDROM_SET_SPEED, &set_speed, sizeof(set_speed), nullptr, 0, nullptr, nullptr))
     Log_WarningPrintf("DeviceIoControl(IOCTL_CDROM_SET_SPEED) failed: %08X", GetLastError());
@@ -213,6 +190,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
       pregap_index.track_number = track_num;
       pregap_index.index_number = 0;
       pregap_index.mode = track_mode;
+      pregap_index.submode = CDImage::SubchannelMode::None;
       pregap_index.control.bits = control.bits;
       pregap_index.is_pregap = true;
       m_indices.push_back(pregap_index);
@@ -223,7 +201,8 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
     if (track_num <= MAX_TRACK_NUMBER)
     {
       // add the track itself
-      m_tracks.push_back(Track{track_num, disc_lba, static_cast<u32>(m_indices.size()), 0, track_mode, control});
+      m_tracks.push_back(
+        Track{track_num, disc_lba, static_cast<u32>(m_indices.size()), 0, track_mode, SubchannelMode::None, control});
 
       Index index1;
       index1.start_lba_on_disc = disc_lba;
@@ -235,6 +214,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
       index1.file_sector_size = 2048;
       index1.file_offset = static_cast<u64>(track_lba) * index1.file_sector_size;
       index1.mode = track_mode;
+      index1.submode = CDImage::SubchannelMode::None;
       index1.control.bits = control.bits;
       index1.is_pregap = false;
       m_indices.push_back(index1);
@@ -244,8 +224,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
   if (m_tracks.empty())
   {
     Log_ErrorPrintf("File '%s' contains no tracks", filename);
-    if (error)
-      error->SetFormattedMessage("File '%s' contains no tracks", filename);
+    Error::SetString(error, fmt::format("File '{}' contains no tracks", filename));
     return false;
   }
 
@@ -270,9 +249,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
   if (!DetermineReadMode())
   {
     Log_ErrorPrintf("Could not determine read mode");
-    if (error)
-      error->SetMessage("Could not determine read mode");
-
+    Error::SetString(error, "Could not determine read mode");
     return false;
   }
 
@@ -476,7 +453,7 @@ bool CDImageDeviceWin32::DetermineReadMode()
   return false;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Common::Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
 {
   std::unique_ptr<CDImageDeviceWin32> image = std::make_unique<CDImageDeviceWin32>();
   if (!image->Open(filename, error))
@@ -523,12 +500,12 @@ std::vector<std::pair<std::string, std::string>> CDImage::GetDeviceList()
 
 bool CDImage::IsDeviceName(const char* filename)
 {
-  return StringUtil::StartsWith(filename, "\\\\.\\");
+  return std::string_view(filename).starts_with("\\\\.\\");
 }
 
 #else
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Common::Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
 {
   return {};
 }

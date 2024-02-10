@@ -1,12 +1,17 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/image.h"
+
+#include "input_types.h"
 #include "settings.h"
 #include "types.h"
+
+#include "common/image.h"
+
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -16,21 +21,9 @@ class SettingsInterface;
 class StateWrapper;
 class HostInterface;
 
-enum class GenericInputBinding : u8;
-
 class Controller
 {
 public:
-  enum class ControllerBindingType : u8
-  {
-    Unknown,
-    Button,
-    Axis,
-    HalfAxis,
-    Motor,
-    Macro
-  };
-
   enum class VibrationCapabilities : u8
   {
     NoVibration,
@@ -43,8 +36,9 @@ public:
   {
     const char* name;
     const char* display_name;
+    const char* icon_name;
     u32 bind_index;
-    ControllerBindingType type;
+    InputBindingInfo::Type type;
     GenericInputBinding generic_mapping;
   };
 
@@ -53,10 +47,9 @@ public:
     ControllerType type;
     const char* name;
     const char* display_name;
-    const ControllerBindingInfo* bindings;
-    u32 num_bindings;
-    const SettingInfo* settings;
-    u32 num_settings;
+    const char* icon_name;
+    std::span<const ControllerBindingInfo> bindings;
+    std::span<const SettingInfo> settings;
     VibrationCapabilities vibration_caps;
   };
 
@@ -98,9 +91,6 @@ public:
   /// Loads/refreshes any per-controller settings.
   virtual void LoadSettings(SettingsInterface& si, const char* section);
 
-  /// Returns the software cursor to use for this controller, if any.
-  virtual bool GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode);
-
   /// Creates a new controller of the specified type.
   static std::unique_ptr<Controller> Create(ControllerType type, u32 index);
 
@@ -109,10 +99,6 @@ public:
 
   /// Returns a list of controller type names. Pair of [name, display name].
   static std::vector<std::pair<std::string, std::string>> GetControllerTypeNames();
-
-  /// Returns the list of binds for the specified controller type.
-  static std::vector<std::string> GetControllerBinds(const std::string_view& type);
-  static std::vector<std::string> GetControllerBinds(ControllerType type);
 
   /// Gets the integer code for an axis in the specified controller type.
   static std::optional<u32> GetBindIndex(ControllerType type, const std::string_view& bind_name);

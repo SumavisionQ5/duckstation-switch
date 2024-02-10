@@ -1,34 +1,50 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "gpu.h"
-#include "common/file_system.h"
-#include "common/heap_array.h"
-#include "common/log.h"
-#include "common/string_util.h"
 #include "dma.h"
+#include "gpu_shadergen.h"
 #include "host.h"
-#include "host_display.h"
 #include "imgui.h"
 #include "interrupt_controller.h"
 #include "settings.h"
-#include "stb_image_write.h"
 #include "system.h"
 #include "timers.h"
+
+#include "util/gpu_device.h"
+#include "util/imgui_manager.h"
+#include "util/postprocessing.h"
+#include "util/shadergen.h"
 #include "util/state_wrapper.h"
+
+#include "common/align.h"
+#include "common/file_system.h"
+#include "common/heap_array.h"
+#include "common/log.h"
+#include "common/small_string.h"
+#include "common/string_util.h"
+
+#include "stb_image_resize.h"
+#include "stb_image_write.h"
+
 #include <cmath>
+#include <thread>
+
 Log_SetChannel(GPU);
 
 std::unique_ptr<GPU> g_gpu;
 
 const GPU::GP0CommandHandlerTable GPU::s_GP0_command_handler_table = GPU::GenerateGP0CommandHandlerTable();
 
-GPU::GPU() = default;
+GPU::GPU()
+{
+  ResetStatistics();
+}
 
 GPU::~GPU()
 {
-  if (g_host_display)
-    g_host_display->SetGPUTimingEnabled(false);
+  if (g_gpu_device)
+    g_gpu_device->SetGPUTimingEnabled(false);
 }
 
 bool GPU::Initialize()
@@ -48,18 +64,18 @@ bool GPU::Initialize()
   m_console_is_pal = System::IsPALRegion();
   UpdateCRTCConfig();
 
-  if (g_settings.display_post_processing && !g_settings.display_post_process_chain.empty() &&
-      !g_host_display->SetPostProcessingChain(g_settings.display_post_process_chain))
+  if (!CompileDisplayPipeline())
   {
-    Host::AddOSDMessage(Host::TranslateStdString("OSDMessage", "Failed to load post processing shader chain."), 20.0f);
+    Host::ReportErrorAsync("Error", "Failed to compile base GPU pipelines.");
+    return false;
   }
 
-  g_host_display->SetGPUTimingEnabled(g_settings.display_show_gpu);
+  g_gpu_device->SetGPUTimingEnabled(g_settings.display_show_gpu_usage);
 
   return true;
 }
 
-void GPU::UpdateSettings()
+void GPU::UpdateSettings(const Settings& old_settings)
 {
   m_force_progressive_scan = g_settings.gpu_disable_interlacing;
   m_fifo_size = g_settings.gpu_fifo_size;
@@ -75,13 +91,13 @@ void GPU::UpdateSettings()
   // Crop mode calls this, so recalculate the display area
   UpdateCRTCDisplayParameters();
 
-  g_host_display->SetGPUTimingEnabled(g_settings.display_show_gpu);
-}
+  if (g_settings.display_scaling != old_settings.display_scaling)
+  {
+    if (!CompileDisplayPipeline())
+      Panic("Failed to compile display pipeline on settings change.");
+  }
 
-bool GPU::IsHardwareRenderer()
-{
-  const GPURenderer renderer = GetRendererType();
-  return (renderer != GPURenderer::Software);
+  g_gpu_device->SetGPUTimingEnabled(g_settings.display_show_gpu_usage);
 }
 
 void GPU::CPUClockChanged()
@@ -89,7 +105,9 @@ void GPU::CPUClockChanged()
   UpdateCRTCConfig();
 }
 
-void GPU::UpdateResolutionScale() {}
+void GPU::UpdateResolutionScale()
+{
+}
 
 std::tuple<u32, u32> GPU::GetEffectiveDisplayResolution(bool scaled /* = true */)
 {
@@ -168,6 +186,8 @@ void GPU::SoftReset()
 
 bool GPU::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_display)
 {
+  FlushRender();
+
   if (sw.IsReading())
   {
     // perform a reset to discard all pending draws/fb state
@@ -177,12 +197,16 @@ bool GPU::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_displ
   sw.Do(&m_GPUSTAT.bits);
 
   sw.Do(&m_draw_mode.mode_reg.bits);
-  sw.Do(&m_draw_mode.palette_reg);
+  sw.Do(&m_draw_mode.palette_reg.bits);
   sw.Do(&m_draw_mode.texture_window_value);
-  sw.Do(&m_draw_mode.texture_page_x);
-  sw.Do(&m_draw_mode.texture_page_y);
-  sw.Do(&m_draw_mode.texture_palette_x);
-  sw.Do(&m_draw_mode.texture_palette_y);
+
+  if (sw.GetVersion() < 62)
+  {
+    // texture_page_x, texture_page_y, texture_palette_x, texture_palette_y
+    DebugAssert(sw.IsReading());
+    sw.SkipBytes(sizeof(u32) * 4);
+  }
+
   sw.Do(&m_draw_mode.texture_window.and_x);
   sw.Do(&m_draw_mode.texture_window.and_y);
   sw.Do(&m_draw_mode.texture_window.or_x);
@@ -269,7 +293,7 @@ bool GPU::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_displ
     if (sw.IsReading())
     {
       // Still need a temporary here.
-      HeapArray<u16, VRAM_WIDTH * VRAM_HEIGHT> temp;
+      FixedHeapArray<u16, VRAM_WIDTH * VRAM_HEIGHT> temp;
       sw.DoBytes(temp.data(), VRAM_WIDTH * VRAM_HEIGHT * sizeof(u16));
       UpdateVRAM(0, 0, VRAM_WIDTH, VRAM_HEIGHT, temp.data(), false, false);
     }
@@ -293,9 +317,9 @@ bool GPU::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_displ
   return !sw.HasError();
 }
 
-void GPU::ResetGraphicsAPIState() {}
-
-void GPU::RestoreGraphicsAPIState() {}
+void GPU::RestoreDeviceContext()
+{
+}
 
 void GPU::UpdateDMARequest()
 {
@@ -313,7 +337,16 @@ void GPU::UpdateDMARequest()
 
     case BlitterState::ReadingVRAM:
       m_GPUSTAT.ready_to_send_vram = true;
-      m_GPUSTAT.ready_to_recieve_dma = false;
+      m_GPUSTAT.ready_to_recieve_dma = m_fifo.IsEmpty();
+      break;
+
+    case BlitterState::DrawingPolyLine:
+      m_GPUSTAT.ready_to_send_vram = false;
+      m_GPUSTAT.ready_to_recieve_dma = (m_fifo.GetSize() < m_fifo_size);
+      break;
+
+    default:
+      UnreachableCode();
       break;
   }
 
@@ -341,7 +374,7 @@ void GPU::UpdateDMARequest()
       break;
   }
   m_GPUSTAT.dma_data_request = dma_request;
-  g_dma.SetRequest(DMA::Channel::GPU, dma_request);
+  DMA::SetRequest(DMA::Channel::GPU, dma_request);
 }
 
 void GPU::UpdateGPUIdle()
@@ -358,6 +391,14 @@ void GPU::UpdateGPUIdle()
 
     case BlitterState::ReadingVRAM:
       m_GPUSTAT.gpu_idle = false;
+      break;
+
+    case BlitterState::DrawingPolyLine:
+      m_GPUSTAT.gpu_idle = false;
+      break;
+
+    default:
+      UnreachableCode();
       break;
   }
 }
@@ -497,7 +538,7 @@ float GPU::ComputeVerticalFrequency() const
     static_cast<double>(ticks_per_frame));
 }
 
-float GPU::GetDisplayAspectRatio() const
+float GPU::ComputeDisplayAspectRatio() const
 {
   if (g_settings.display_force_4_3_for_24bit && m_GPUSTAT.display_area_color_depth_24)
   {
@@ -779,7 +820,7 @@ void GPU::UpdateCRTCTickEvent()
 {
   // figure out how many GPU ticks until the next vblank or event
   TickCount lines_until_event;
-  if (g_timers.IsSyncEnabled(HBLANK_TIMER_INDEX))
+  if (Timers::IsSyncEnabled(HBLANK_TIMER_INDEX))
   {
     // when the timer sync is enabled we need to sync at vblank start and end
     lines_until_event =
@@ -794,14 +835,14 @@ void GPU::UpdateCRTCTickEvent()
          (m_crtc_state.vertical_total - m_crtc_state.current_scanline + m_crtc_state.vertical_display_end) :
          (m_crtc_state.vertical_display_end - m_crtc_state.current_scanline));
   }
-  if (g_timers.IsExternalIRQEnabled(HBLANK_TIMER_INDEX))
-    lines_until_event = std::min(lines_until_event, g_timers.GetTicksUntilIRQ(HBLANK_TIMER_INDEX));
+  if (Timers::IsExternalIRQEnabled(HBLANK_TIMER_INDEX))
+    lines_until_event = std::min(lines_until_event, Timers::GetTicksUntilIRQ(HBLANK_TIMER_INDEX));
 
   TickCount ticks_until_event =
     lines_until_event * m_crtc_state.horizontal_total - m_crtc_state.current_tick_in_scanline;
-  if (g_timers.IsExternalIRQEnabled(DOT_TIMER_INDEX))
+  if (Timers::IsExternalIRQEnabled(DOT_TIMER_INDEX))
   {
-    const TickCount dots_until_irq = g_timers.GetTicksUntilIRQ(DOT_TIMER_INDEX);
+    const TickCount dots_until_irq = Timers::GetTicksUntilIRQ(DOT_TIMER_INDEX);
     const TickCount ticks_until_irq =
       (dots_until_irq * m_crtc_state.dot_clock_divider) - m_crtc_state.fractional_dot_ticks;
     ticks_until_event = std::min(ticks_until_event, std::max<TickCount>(ticks_until_irq, 0));
@@ -835,13 +876,13 @@ void GPU::CRTCTickEvent(TickCount ticks)
     const TickCount gpu_ticks = SystemTicksToCRTCTicks(ticks, &m_crtc_state.fractional_ticks);
     m_crtc_state.current_tick_in_scanline += gpu_ticks;
 
-    if (g_timers.IsUsingExternalClock(DOT_TIMER_INDEX))
+    if (Timers::IsUsingExternalClock(DOT_TIMER_INDEX))
     {
       m_crtc_state.fractional_dot_ticks += gpu_ticks;
       const TickCount dots = m_crtc_state.fractional_dot_ticks / m_crtc_state.dot_clock_divider;
       m_crtc_state.fractional_dot_ticks = m_crtc_state.fractional_dot_ticks % m_crtc_state.dot_clock_divider;
       if (dots > 0)
-        g_timers.AddTicks(DOT_TIMER_INDEX, dots);
+        Timers::AddTicks(DOT_TIMER_INDEX, dots);
     }
   }
 
@@ -851,8 +892,8 @@ void GPU::CRTCTickEvent(TickCount ticks)
     const bool old_hblank = m_crtc_state.in_hblank;
     const bool new_hblank = (m_crtc_state.current_tick_in_scanline >= m_crtc_state.horizontal_sync_start);
     m_crtc_state.in_hblank = new_hblank;
-    if (!old_hblank && new_hblank && g_timers.IsUsingExternalClock(HBLANK_TIMER_INDEX))
-      g_timers.AddTicks(HBLANK_TIMER_INDEX, 1);
+    if (!old_hblank && new_hblank && Timers::IsUsingExternalClock(HBLANK_TIMER_INDEX))
+      Timers::AddTicks(HBLANK_TIMER_INDEX, 1);
 
     UpdateCRTCTickEvent();
     return;
@@ -868,10 +909,10 @@ void GPU::CRTCTickEvent(TickCount ticks)
   const bool old_hblank = m_crtc_state.in_hblank;
   const bool new_hblank = (m_crtc_state.current_tick_in_scanline >= m_crtc_state.horizontal_sync_start);
   m_crtc_state.in_hblank = new_hblank;
-  if (g_timers.IsUsingExternalClock(HBLANK_TIMER_INDEX))
+  if (Timers::IsUsingExternalClock(HBLANK_TIMER_INDEX))
   {
     const u32 hblank_timer_ticks = BoolToUInt32(!old_hblank) + BoolToUInt32(new_hblank) + (lines_to_draw - 1);
-    g_timers.AddTicks(HBLANK_TIMER_INDEX, static_cast<TickCount>(hblank_timer_ticks));
+    Timers::AddTicks(HBLANK_TIMER_INDEX, static_cast<TickCount>(hblank_timer_ticks));
   }
 
   while (lines_to_draw > 0)
@@ -887,7 +928,7 @@ void GPU::CRTCTickEvent(TickCount ticks)
     if (prev_scanline < m_crtc_state.vertical_display_start &&
         m_crtc_state.current_scanline >= m_crtc_state.vertical_display_end)
     {
-      g_timers.SetGate(HBLANK_TIMER_INDEX, false);
+      Timers::SetGate(HBLANK_TIMER_INDEX, false);
       m_crtc_state.in_vblank = false;
     }
 
@@ -898,12 +939,13 @@ void GPU::CRTCTickEvent(TickCount ticks)
       if (new_vblank)
       {
         Log_DebugPrintf("Now in v-blank");
-        g_interrupt_controller.InterruptRequest(InterruptController::IRQ::VBLANK);
+        InterruptController::InterruptRequest(InterruptController::IRQ::VBLANK);
 
         // flush any pending draws and "scan out" the image
+        // TODO: move present in here I guess
         FlushRender();
         UpdateDisplay();
-        System::FrameDone();
+        TimingEvents::SetFrameDone();
 
         // switch fields early. this is needed so we draw to the correct one.
         if (m_GPUSTAT.InInterleaved480iMode())
@@ -912,7 +954,7 @@ void GPU::CRTCTickEvent(TickCount ticks)
           m_crtc_state.interlaced_display_field = 0;
       }
 
-      g_timers.SetGate(HBLANK_TIMER_INDEX, new_vblank);
+      Timers::SetGate(HBLANK_TIMER_INDEX, new_vblank);
       m_crtc_state.in_vblank = new_vblank;
     }
 
@@ -976,12 +1018,29 @@ void GPU::UpdateCommandTickEvent()
     m_command_tick_event->SetIntervalAndSchedule(GPUTicksToSystemTicks(m_pending_command_ticks));
 }
 
-bool GPU::ConvertScreenCoordinatesToBeamTicksAndLines(s32 window_x, s32 window_y, float x_scale, u32* out_tick,
-                                                      u32* out_line) const
+void GPU::ConvertScreenCoordinatesToDisplayCoordinates(float window_x, float window_y, float* display_x,
+                                                       float* display_y) const
 {
-  auto [display_x, display_y] = g_host_display->ConvertWindowCoordinatesToDisplayCoordinates(
-    window_x, window_y, g_host_display->GetWindowWidth(), g_host_display->GetWindowHeight());
+  const Common::Rectangle<s32> draw_rc =
+    CalculateDrawRect(g_gpu_device->GetWindowWidth(), g_gpu_device->GetWindowHeight());
 
+  // convert coordinates to active display region, then to full display region
+  const float scaled_display_x = (window_x - static_cast<float>(draw_rc.left)) / static_cast<float>(draw_rc.GetWidth());
+  const float scaled_display_y = (window_y - static_cast<float>(draw_rc.top)) / static_cast<float>(draw_rc.GetHeight());
+
+  // scale back to internal resolution
+  *display_x = scaled_display_x * static_cast<float>(m_crtc_state.display_width);
+  *display_y = scaled_display_y * static_cast<float>(m_crtc_state.display_height);
+
+  Log_DevPrintf("win %.0f,%.0f -> local %.0f,%.0f, disp %.2f,%.2f (size %u,%u frac %f,%f)", window_x, window_y,
+                window_x - draw_rc.left, window_y - draw_rc.top, *display_x, *display_y, m_crtc_state.display_width,
+                m_crtc_state.display_height, *display_x / static_cast<float>(m_crtc_state.display_width),
+                *display_y / static_cast<float>(m_crtc_state.display_height));
+}
+
+bool GPU::ConvertDisplayCoordinatesToBeamTicksAndLines(float display_x, float display_y, float x_scale, u32* out_tick,
+                                                       u32* out_line) const
+{
   if (x_scale != 1.0f)
   {
     const float dw = static_cast<float>(m_crtc_state.display_width);
@@ -989,11 +1048,6 @@ bool GPU::ConvertScreenCoordinatesToBeamTicksAndLines(s32 window_x, s32 window_y
     scaled_x *= x_scale;
     display_x = (((scaled_x + 1.0f) * 0.5f) * dw); // -1..1 -> 0..1
   }
-
-  Log_DebugPrintf("win %d,%d -> disp %.2f,%.2f (size %u,%u frac %f,%f)", window_x, window_y, display_x, display_y,
-                  m_crtc_state.display_width, m_crtc_state.display_height,
-                  display_x / static_cast<float>(m_crtc_state.display_width),
-                  display_y / static_cast<float>(m_crtc_state.display_height));
 
   if (display_x < 0 || static_cast<u32>(display_x) >= m_crtc_state.display_width || display_y < 0 ||
       static_cast<u32>(display_y) >= m_crtc_state.display_height)
@@ -1283,11 +1337,17 @@ void GPU::HandleGetGPUInfoCommand(u32 value)
   }
 }
 
-void GPU::ClearDisplay() {}
+void GPU::ClearDisplay()
+{
+}
 
-void GPU::UpdateDisplay() {}
+void GPU::UpdateDisplay()
+{
+}
 
-void GPU::ReadVRAM(u32 x, u32 y, u32 width, u32 height) {}
+void GPU::ReadVRAM(u32 x, u32 y, u32 width, u32 height)
+{
+}
 
 void GPU::FillVRAM(u32 x, u32 y, u32 width, u32 height, u32 color)
 {
@@ -1445,9 +1505,13 @@ void GPU::CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 width, u32 he
   }
 }
 
-void GPU::DispatchRenderCommand() {}
+void GPU::DispatchRenderCommand()
+{
+}
 
-void GPU::FlushRender() {}
+void GPU::FlushRender()
+{
+}
 
 void GPU::SetDrawMode(u16 value)
 {
@@ -1458,14 +1522,8 @@ void GPU::SetDrawMode(u16 value)
   if (new_mode_reg.bits == m_draw_mode.mode_reg.bits)
     return;
 
-  if ((new_mode_reg.bits & GPUDrawModeReg::TEXTURE_PAGE_MASK) !=
-      (m_draw_mode.mode_reg.bits & GPUDrawModeReg::TEXTURE_PAGE_MASK))
-  {
-    m_draw_mode.texture_page_x = new_mode_reg.GetTexturePageBaseX();
-    m_draw_mode.texture_page_y = new_mode_reg.GetTexturePageBaseY();
-    m_draw_mode.texture_page_changed = true;
-  }
-
+  m_draw_mode.texture_page_changed |= ((new_mode_reg.bits & GPUDrawModeReg::TEXTURE_PAGE_MASK) !=
+                                       (m_draw_mode.mode_reg.bits & GPUDrawModeReg::TEXTURE_PAGE_MASK));
   m_draw_mode.mode_reg.bits = new_mode_reg.bits;
 
   if (m_GPUSTAT.draw_to_displayed_field != new_mode_reg.draw_to_displayed_field)
@@ -1480,12 +1538,10 @@ void GPU::SetDrawMode(u16 value)
 void GPU::SetTexturePalette(u16 value)
 {
   value &= DrawMode::PALETTE_MASK;
-  if (m_draw_mode.palette_reg == value)
+  if (m_draw_mode.palette_reg.bits == value)
     return;
 
-  m_draw_mode.texture_palette_x = ZeroExtend32(value & 0x3F) * 16;
-  m_draw_mode.texture_palette_y = ZeroExtend32(value >> 6);
-  m_draw_mode.palette_reg = value;
+  m_draw_mode.palette_reg.bits = value;
   m_draw_mode.texture_page_changed = true;
 }
 
@@ -1509,6 +1565,607 @@ void GPU::SetTextureWindow(u32 value)
   m_draw_mode.texture_window.or_y = (offset_y & mask_y) * 8u;
   m_draw_mode.texture_window_value = value;
   m_draw_mode.texture_window_changed = true;
+}
+
+bool GPU::CompileDisplayPipeline()
+{
+  GPUShaderGen shadergen(g_gpu_device->GetRenderAPI(), g_gpu_device->GetFeatures().dual_source_blend,
+                         g_gpu_device->GetFeatures().framebuffer_fetch);
+
+  GPUPipeline::GraphicsConfig plconfig;
+  plconfig.layout = GPUPipeline::Layout::SingleTextureAndPushConstants;
+  plconfig.input_layout.vertex_stride = 0;
+  plconfig.primitive = GPUPipeline::Primitive::Triangles;
+  plconfig.rasterization = GPUPipeline::RasterizationState::GetNoCullState();
+  plconfig.depth = GPUPipeline::DepthState::GetNoTestsState();
+  plconfig.blend = GPUPipeline::BlendState::GetNoBlendingState();
+  plconfig.SetTargetFormats(g_gpu_device->HasSurface() ? g_gpu_device->GetWindowFormat() : GPUTexture::Format::RGBA8);
+  plconfig.depth_format = GPUTexture::Format::Unknown;
+  plconfig.samples = 1;
+  plconfig.per_sample_shading = false;
+
+  std::string vs = shadergen.GenerateDisplayVertexShader();
+  std::string fs;
+  switch (g_settings.display_scaling)
+  {
+    case DisplayScalingMode::BilinearSharp:
+      fs = shadergen.GenerateDisplaySharpBilinearFragmentShader();
+      break;
+
+    case DisplayScalingMode::BilinearSmooth:
+      fs = shadergen.GenerateDisplayFragmentShader(true);
+      break;
+
+    case DisplayScalingMode::Nearest:
+    case DisplayScalingMode::NearestInteger:
+    default:
+      fs = shadergen.GenerateDisplayFragmentShader(false);
+      break;
+  }
+
+  std::unique_ptr<GPUShader> vso = g_gpu_device->CreateShader(GPUShaderStage::Vertex, vs);
+  std::unique_ptr<GPUShader> fso = g_gpu_device->CreateShader(GPUShaderStage::Fragment, fs);
+  if (!vso || !fso)
+    return false;
+  GL_OBJECT_NAME(vso, "Display Vertex Shader");
+  GL_OBJECT_NAME_FMT(fso, "Display Fragment Shader [{}]", Settings::GetDisplayScalingName(g_settings.display_scaling));
+
+  plconfig.vertex_shader = vso.get();
+  plconfig.fragment_shader = fso.get();
+  plconfig.geometry_shader = nullptr;
+  if (!(m_display_pipeline = g_gpu_device->CreatePipeline(plconfig)))
+    return false;
+  GL_OBJECT_NAME_FMT(m_display_pipeline, "Display Pipeline [{}]",
+                     Settings::GetDisplayScalingName(g_settings.display_scaling));
+
+  return true;
+}
+
+void GPU::ClearDisplayTexture()
+{
+  m_display_texture = nullptr;
+  m_display_texture_view_x = 0;
+  m_display_texture_view_y = 0;
+  m_display_texture_view_width = 0;
+  m_display_texture_view_height = 0;
+}
+
+void GPU::SetDisplayTexture(GPUTexture* texture, s32 view_x, s32 view_y, s32 view_width, s32 view_height)
+{
+  DebugAssert(texture);
+  m_display_texture = texture;
+  m_display_texture_view_x = view_x;
+  m_display_texture_view_y = view_y;
+  m_display_texture_view_width = view_width;
+  m_display_texture_view_height = view_height;
+}
+
+void GPU::SetDisplayTextureRect(s32 view_x, s32 view_y, s32 view_width, s32 view_height)
+{
+  m_display_texture_view_x = view_x;
+  m_display_texture_view_y = view_y;
+  m_display_texture_view_width = view_width;
+  m_display_texture_view_height = view_height;
+}
+
+void GPU::SetDisplayParameters(s32 display_width, s32 display_height, s32 active_left, s32 active_top, s32 active_width,
+                               s32 active_height, float display_aspect_ratio)
+{
+  m_display_width = display_width;
+  m_display_height = display_height;
+  m_display_active_left = active_left;
+  m_display_active_top = active_top;
+  m_display_active_width = active_width;
+  m_display_active_height = active_height;
+  m_display_aspect_ratio = display_aspect_ratio;
+}
+
+bool GPU::PresentDisplay()
+{
+  if (!HasDisplayTexture())
+    return g_gpu_device->BeginPresent(false);
+
+  const Common::Rectangle<s32> draw_rect =
+    CalculateDrawRect(g_gpu_device->GetWindowWidth(), g_gpu_device->GetWindowHeight());
+  return RenderDisplay(nullptr, draw_rect, true);
+}
+
+bool GPU::RenderDisplay(GPUTexture* target, const Common::Rectangle<s32>& draw_rect, bool postfx)
+{
+  GL_SCOPE_FMT("RenderDisplay: {}x{} at {},{}", draw_rect.left, draw_rect.top, draw_rect.GetWidth(),
+               draw_rect.GetHeight());
+
+  if (m_display_texture)
+    m_display_texture->MakeReadyForSampling();
+
+  bool texture_filter_linear = false;
+
+  struct Uniforms
+  {
+    float src_rect[4];
+    float src_size[4];
+    float clamp_rect[4];
+    float params[4];
+  } uniforms;
+  std::memset(uniforms.params, 0, sizeof(uniforms.params));
+
+  switch (g_settings.display_scaling)
+  {
+    case DisplayScalingMode::Nearest:
+    case DisplayScalingMode::NearestInteger:
+      break;
+
+    case DisplayScalingMode::BilinearSmooth:
+      texture_filter_linear = true;
+      break;
+
+    case DisplayScalingMode::BilinearSharp:
+    {
+      texture_filter_linear = true;
+      uniforms.params[0] = std::max(
+        std::floor(static_cast<float>(draw_rect.GetWidth()) / static_cast<float>(m_display_texture_view_width)), 1.0f);
+      uniforms.params[1] = std::max(
+        std::floor(static_cast<float>(draw_rect.GetHeight()) / static_cast<float>(m_display_texture_view_height)),
+        1.0f);
+      uniforms.params[2] = 0.5f - 0.5f / uniforms.params[0];
+      uniforms.params[3] = 0.5f - 0.5f / uniforms.params[1];
+    }
+    break;
+
+    default:
+      UnreachableCode();
+      break;
+  }
+
+  const GPUTexture::Format hdformat = target ? target->GetFormat() : g_gpu_device->GetWindowFormat();
+  const u32 target_width = target ? target->GetWidth() : g_gpu_device->GetWindowWidth();
+  const u32 target_height = target ? target->GetHeight() : g_gpu_device->GetWindowHeight();
+  const bool really_postfx =
+    (postfx && HasDisplayTexture() && PostProcessing::IsActive() && !g_gpu_device->GetWindowInfo().IsSurfaceless() &&
+     hdformat != GPUTexture::Format::Unknown && target_width > 0 && target_height > 0 &&
+     PostProcessing::CheckTargets(hdformat, target_width, target_height));
+  const Common::Rectangle<s32> real_draw_rect =
+    g_gpu_device->UsesLowerLeftOrigin() ? GPUDevice::FlipToLowerLeft(draw_rect, target_height) : draw_rect;
+  if (really_postfx)
+  {
+    g_gpu_device->ClearRenderTarget(PostProcessing::GetInputTexture(), 0);
+    g_gpu_device->SetRenderTarget(PostProcessing::GetInputTexture());
+  }
+  else
+  {
+    if (target)
+      g_gpu_device->SetRenderTarget(target);
+    else if (!g_gpu_device->BeginPresent(false))
+      return false;
+  }
+
+  if (!HasDisplayTexture())
+    return true;
+
+  g_gpu_device->SetPipeline(m_display_pipeline.get());
+  g_gpu_device->SetTextureSampler(
+    0, m_display_texture, texture_filter_linear ? g_gpu_device->GetLinearSampler() : g_gpu_device->GetNearestSampler());
+
+  // For bilinear, clamp to 0.5/SIZE-0.5 to avoid bleeding from the adjacent texels in VRAM. This is because
+  // 1.0 in UV space is not the bottom-right texel, but a mix of the bottom-right and wrapped/next texel.
+  const float rcp_width = 1.0f / static_cast<float>(m_display_texture->GetWidth());
+  const float rcp_height = 1.0f / static_cast<float>(m_display_texture->GetHeight());
+  uniforms.src_rect[0] = static_cast<float>(m_display_texture_view_x) * rcp_width;
+  uniforms.src_rect[1] = static_cast<float>(m_display_texture_view_y) * rcp_height;
+  uniforms.src_rect[2] = static_cast<float>(m_display_texture_view_width) * rcp_width;
+  uniforms.src_rect[3] = static_cast<float>(m_display_texture_view_height) * rcp_height;
+  uniforms.clamp_rect[0] = (static_cast<float>(m_display_texture_view_x) + 0.5f) * rcp_width;
+  uniforms.clamp_rect[1] = (static_cast<float>(m_display_texture_view_y) + 0.5f) * rcp_height;
+  uniforms.clamp_rect[2] =
+    (static_cast<float>(m_display_texture_view_x + m_display_texture_view_width) - 0.5f) * rcp_width;
+  uniforms.clamp_rect[3] =
+    (static_cast<float>(m_display_texture_view_y + m_display_texture_view_height) - 0.5f) * rcp_height;
+  uniforms.src_size[0] = static_cast<float>(m_display_texture->GetWidth());
+  uniforms.src_size[1] = static_cast<float>(m_display_texture->GetHeight());
+  uniforms.src_size[2] = rcp_width;
+  uniforms.src_size[3] = rcp_height;
+  g_gpu_device->PushUniformBuffer(&uniforms, sizeof(uniforms));
+
+  g_gpu_device->SetViewportAndScissor(real_draw_rect.left, real_draw_rect.top, real_draw_rect.GetWidth(),
+                                      real_draw_rect.GetHeight());
+  g_gpu_device->Draw(3, 0);
+
+  if (really_postfx)
+  {
+    return PostProcessing::Apply(target, real_draw_rect.left, real_draw_rect.top, real_draw_rect.GetWidth(),
+                                 real_draw_rect.GetHeight(), m_display_texture_view_width,
+                                 m_display_texture_view_height);
+  }
+  else
+  {
+    return true;
+  }
+}
+
+Common::Rectangle<float> GPU::CalculateDrawRect(s32 window_width, s32 window_height, float* out_left_padding,
+                                                float* out_top_padding, float* out_scale, float* out_x_scale,
+                                                bool apply_aspect_ratio /* = true */) const
+{
+  const float window_ratio = static_cast<float>(window_width) / static_cast<float>(window_height);
+  const float x_scale =
+    apply_aspect_ratio ?
+      (m_display_aspect_ratio / (static_cast<float>(m_display_width) / static_cast<float>(m_display_height))) :
+      1.0f;
+  const float display_width = g_settings.display_stretch_vertically ? static_cast<float>(m_display_width) :
+                                                                      static_cast<float>(m_display_width) * x_scale;
+  const float display_height = g_settings.display_stretch_vertically ? static_cast<float>(m_display_height) / x_scale :
+                                                                       static_cast<float>(m_display_height);
+  const float active_left = g_settings.display_stretch_vertically ? static_cast<float>(m_display_active_left) :
+                                                                    static_cast<float>(m_display_active_left) * x_scale;
+  const float active_top = g_settings.display_stretch_vertically ? static_cast<float>(m_display_active_top) / x_scale :
+                                                                   static_cast<float>(m_display_active_top);
+  const float active_width = g_settings.display_stretch_vertically ?
+                               static_cast<float>(m_display_active_width) :
+                               static_cast<float>(m_display_active_width) * x_scale;
+  const float active_height = g_settings.display_stretch_vertically ?
+                                static_cast<float>(m_display_active_height) / x_scale :
+                                static_cast<float>(m_display_active_height);
+  if (out_x_scale)
+    *out_x_scale = x_scale;
+
+  // now fit it within the window
+  float scale;
+  if ((display_width / display_height) >= window_ratio)
+  {
+    // align in middle vertically
+    scale = static_cast<float>(window_width) / display_width;
+    if (g_settings.display_scaling == DisplayScalingMode::NearestInteger)
+      scale = std::max(std::floor(scale), 1.0f);
+
+    if (out_left_padding)
+    {
+      if (g_settings.display_scaling == DisplayScalingMode::NearestInteger)
+        *out_left_padding = std::max<float>((static_cast<float>(window_width) - display_width * scale) / 2.0f, 0.0f);
+      else
+        *out_left_padding = 0.0f;
+    }
+    if (out_top_padding)
+    {
+      switch (g_settings.display_alignment)
+      {
+        case DisplayAlignment::RightOrBottom:
+          *out_top_padding = std::max<float>(static_cast<float>(window_height) - (display_height * scale), 0.0f);
+          break;
+
+        case DisplayAlignment::Center:
+          *out_top_padding =
+            std::max<float>((static_cast<float>(window_height) - (display_height * scale)) / 2.0f, 0.0f);
+          break;
+
+        case DisplayAlignment::LeftOrTop:
+        default:
+          *out_top_padding = 0.0f;
+          break;
+      }
+    }
+  }
+  else
+  {
+    // align in middle horizontally
+    scale = static_cast<float>(window_height) / display_height;
+    if (g_settings.display_scaling == DisplayScalingMode::NearestInteger)
+      scale = std::max(std::floor(scale), 1.0f);
+
+    if (out_left_padding)
+    {
+      switch (g_settings.display_alignment)
+      {
+        case DisplayAlignment::RightOrBottom:
+          *out_left_padding = std::max<float>(static_cast<float>(window_width) - (display_width * scale), 0.0f);
+          break;
+
+        case DisplayAlignment::Center:
+          *out_left_padding =
+            std::max<float>((static_cast<float>(window_width) - (display_width * scale)) / 2.0f, 0.0f);
+          break;
+
+        case DisplayAlignment::LeftOrTop:
+        default:
+          *out_left_padding = 0.0f;
+          break;
+      }
+    }
+
+    if (out_top_padding)
+    {
+      if (g_settings.display_scaling == DisplayScalingMode::NearestInteger)
+        *out_top_padding = std::max<float>((static_cast<float>(window_height) - (display_height * scale)) / 2.0f, 0.0f);
+      else
+        *out_top_padding = 0.0f;
+    }
+  }
+
+  if (out_scale)
+    *out_scale = scale;
+
+  return Common::Rectangle<float>::FromExtents(active_left * scale, active_top * scale, active_width * scale,
+                                               active_height * scale);
+}
+
+Common::Rectangle<s32> GPU::CalculateDrawRect(s32 window_width, s32 window_height,
+                                              bool apply_aspect_ratio /* = true */) const
+{
+  float left_padding, top_padding;
+  const Common::Rectangle<float> draw_rc =
+    CalculateDrawRect(window_width, window_height, &left_padding, &top_padding, nullptr, nullptr, apply_aspect_ratio);
+
+  // TODO: This should be a float rectangle. But because GL is lame, it only has integer viewports...
+  return Common::Rectangle<s32>::FromExtents(
+    static_cast<s32>(draw_rc.left + left_padding), static_cast<s32>(draw_rc.top + top_padding),
+    static_cast<s32>(draw_rc.GetWidth()), static_cast<s32>(draw_rc.GetHeight()));
+}
+
+static bool CompressAndWriteTextureToFile(u32 width, u32 height, std::string filename, FileSystem::ManagedCFilePtr fp,
+                                          bool clear_alpha, bool flip_y, u32 resize_width, u32 resize_height,
+                                          std::vector<u32> texture_data, u32 texture_data_stride,
+                                          GPUTexture::Format texture_format)
+{
+
+  const char* extension = std::strrchr(filename.c_str(), '.');
+  if (!extension)
+  {
+    Log_ErrorPrintf("Unable to determine file extension for '%s'", filename.c_str());
+    return false;
+  }
+
+  if (!GPUTexture::ConvertTextureDataToRGBA8(width, height, texture_data, texture_data_stride, texture_format))
+    return false;
+
+  if (clear_alpha)
+  {
+    for (u32& pixel : texture_data)
+      pixel |= 0xFF000000;
+  }
+
+  if (flip_y)
+    GPUTexture::FlipTextureDataRGBA8(width, height, texture_data, texture_data_stride);
+
+  if (resize_width > 0 && resize_height > 0 && (resize_width != width || resize_height != height))
+  {
+    std::vector<u32> resized_texture_data(resize_width * resize_height);
+    u32 resized_texture_stride = sizeof(u32) * resize_width;
+    if (!stbir_resize_uint8(reinterpret_cast<u8*>(texture_data.data()), width, height, texture_data_stride,
+                            reinterpret_cast<u8*>(resized_texture_data.data()), resize_width, resize_height,
+                            resized_texture_stride, 4))
+    {
+      Log_ErrorPrintf("Failed to resize texture data from %ux%u to %ux%u", width, height, resize_width, resize_height);
+      return false;
+    }
+
+    width = resize_width;
+    height = resize_height;
+    texture_data = std::move(resized_texture_data);
+    texture_data_stride = resized_texture_stride;
+  }
+
+  const auto write_func = [](void* context, void* data, int size) {
+    std::fwrite(data, 1, size, static_cast<std::FILE*>(context));
+  };
+
+  bool result = false;
+  if (StringUtil::Strcasecmp(extension, ".png") == 0)
+  {
+    result =
+      (stbi_write_png_to_func(write_func, fp.get(), width, height, 4, texture_data.data(), texture_data_stride) != 0);
+  }
+  else if (StringUtil::Strcasecmp(extension, ".jpg") == 0)
+  {
+    result = (stbi_write_jpg_to_func(write_func, fp.get(), width, height, 4, texture_data.data(), 95) != 0);
+  }
+  else if (StringUtil::Strcasecmp(extension, ".tga") == 0)
+  {
+    result = (stbi_write_tga_to_func(write_func, fp.get(), width, height, 4, texture_data.data()) != 0);
+  }
+  else if (StringUtil::Strcasecmp(extension, ".bmp") == 0)
+  {
+    result = (stbi_write_bmp_to_func(write_func, fp.get(), width, height, 4, texture_data.data()) != 0);
+  }
+
+  if (!result)
+  {
+    Log_ErrorPrintf("Unknown extension in filename '%s' or save error: '%s'", filename.c_str(), extension);
+    return false;
+  }
+
+  return true;
+}
+
+bool GPU::WriteDisplayTextureToFile(std::string filename, bool full_resolution /* = true */,
+                                    bool apply_aspect_ratio /* = true */, bool compress_on_thread /* = false */)
+{
+  if (!m_display_texture)
+    return false;
+
+  s32 resize_width = 0;
+  s32 resize_height = std::abs(m_display_texture_view_height);
+  if (apply_aspect_ratio)
+  {
+    const float ss_width_scale = static_cast<float>(m_display_active_width) / static_cast<float>(m_display_width);
+    const float ss_height_scale = static_cast<float>(m_display_active_height) / static_cast<float>(m_display_height);
+    const float ss_aspect_ratio = m_display_aspect_ratio * ss_width_scale / ss_height_scale;
+    resize_width = g_settings.display_stretch_vertically ?
+                     m_display_texture_view_width :
+                     static_cast<s32>(static_cast<float>(resize_height) * ss_aspect_ratio);
+    resize_height = g_settings.display_stretch_vertically ?
+                      static_cast<s32>(static_cast<float>(resize_height) /
+                                       (m_display_aspect_ratio /
+                                        (static_cast<float>(m_display_width) / static_cast<float>(m_display_height)))) :
+                      resize_height;
+  }
+  else
+  {
+    resize_width = m_display_texture_view_width;
+  }
+
+  if (!full_resolution)
+  {
+    const s32 resolution_scale = std::abs(m_display_texture_view_height) / m_display_active_height;
+    resize_height /= resolution_scale;
+    resize_width /= resolution_scale;
+  }
+
+  if (resize_width <= 0 || resize_height <= 0)
+    return false;
+
+  const u32 read_x = static_cast<u32>(m_display_texture_view_x);
+  const u32 read_y = static_cast<u32>(m_display_texture_view_y);
+  const u32 read_width = static_cast<u32>(m_display_texture_view_width);
+  const u32 read_height = static_cast<u32>(m_display_texture_view_height);
+
+  std::vector<u32> texture_data(read_width * read_height);
+  const u32 texture_data_stride =
+    Common::AlignUpPow2(GPUTexture::GetPixelSize(m_display_texture->GetFormat()) * read_width, 4);
+  if (!g_gpu_device->DownloadTexture(m_display_texture, read_x, read_y, read_width, read_height, texture_data.data(),
+                                     texture_data_stride))
+  {
+    Log_ErrorPrintf("Texture download failed");
+    RestoreDeviceContext();
+    return false;
+  }
+
+  RestoreDeviceContext();
+
+  auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "wb");
+  if (!fp)
+  {
+    Log_ErrorPrintf("Can't open file '%s': errno %d", filename.c_str(), errno);
+    return false;
+  }
+
+  constexpr bool clear_alpha = true;
+  const bool flip_y = g_gpu_device->UsesLowerLeftOrigin();
+
+  if (!compress_on_thread)
+  {
+    return CompressAndWriteTextureToFile(read_width, read_height, std::move(filename), std::move(fp), clear_alpha,
+                                         flip_y, resize_width, resize_height, std::move(texture_data),
+                                         texture_data_stride, m_display_texture->GetFormat());
+  }
+
+  std::thread compress_thread(CompressAndWriteTextureToFile, read_width, read_height, std::move(filename),
+                              std::move(fp), clear_alpha, flip_y, resize_width, resize_height, std::move(texture_data),
+                              texture_data_stride, m_display_texture->GetFormat());
+  compress_thread.detach();
+  return true;
+}
+
+bool GPU::RenderScreenshotToBuffer(u32 width, u32 height, const Common::Rectangle<s32>& draw_rect, bool postfx,
+                                   std::vector<u32>* out_pixels, u32* out_stride, GPUTexture::Format* out_format)
+{
+  const GPUTexture::Format hdformat =
+    g_gpu_device->HasSurface() ? g_gpu_device->GetWindowFormat() : GPUTexture::Format::RGBA8;
+
+  auto render_texture =
+    g_gpu_device->FetchAutoRecycleTexture(width, height, 1, 1, 1, GPUTexture::Type::RenderTarget, hdformat);
+  if (!render_texture)
+    return false;
+
+  g_gpu_device->ClearRenderTarget(render_texture.get(), 0);
+
+  // TODO: this should use copy shader instead.
+  RenderDisplay(render_texture.get(), draw_rect, postfx);
+
+  const u32 stride = GPUTexture::GetPixelSize(hdformat) * width;
+  out_pixels->resize(width * height);
+  if (!g_gpu_device->DownloadTexture(render_texture.get(), 0, 0, width, height, out_pixels->data(), stride))
+  {
+    RestoreDeviceContext();
+    return false;
+  }
+
+  *out_stride = stride;
+  *out_format = hdformat;
+  RestoreDeviceContext();
+  return true;
+}
+
+bool GPU::RenderScreenshotToFile(std::string filename, bool internal_resolution /* = false */,
+                                 bool compress_on_thread /* = false */)
+{
+  u32 width = g_gpu_device->GetWindowWidth();
+  u32 height = g_gpu_device->GetWindowHeight();
+  Common::Rectangle<s32> draw_rect = CalculateDrawRect(width, height);
+
+  if (internal_resolution && m_display_texture_view_width != 0 && m_display_texture_view_height != 0)
+  {
+    const u32 draw_width = static_cast<u32>(draw_rect.GetWidth());
+    const u32 draw_height = static_cast<u32>(draw_rect.GetHeight());
+
+    // If internal res, scale the computed draw rectangle to the internal res.
+    // We re-use the draw rect because it's already been AR corrected.
+    const float sar =
+      static_cast<float>(m_display_texture_view_width) / static_cast<float>(m_display_texture_view_height);
+    const float dar = static_cast<float>(draw_width) / static_cast<float>(draw_height);
+    if (sar >= dar)
+    {
+      // stretch height, preserve width
+      const float scale = static_cast<float>(m_display_texture_view_width) / static_cast<float>(draw_width);
+      width = m_display_texture_view_width;
+      height = static_cast<u32>(std::round(static_cast<float>(draw_height) * scale));
+    }
+    else
+    {
+      // stretch width, preserve height
+      const float scale = static_cast<float>(m_display_texture_view_height) / static_cast<float>(draw_height);
+      width = static_cast<u32>(std::round(static_cast<float>(draw_width) * scale));
+      height = m_display_texture_view_height;
+    }
+
+    // DX11 won't go past 16K texture size.
+    constexpr u32 MAX_TEXTURE_SIZE = 16384;
+    if (width > MAX_TEXTURE_SIZE)
+    {
+      height = static_cast<u32>(static_cast<float>(height) /
+                                (static_cast<float>(width) / static_cast<float>(MAX_TEXTURE_SIZE)));
+      width = MAX_TEXTURE_SIZE;
+    }
+    if (height > MAX_TEXTURE_SIZE)
+    {
+      height = MAX_TEXTURE_SIZE;
+      width = static_cast<u32>(static_cast<float>(width) /
+                               (static_cast<float>(height) / static_cast<float>(MAX_TEXTURE_SIZE)));
+    }
+
+    // Remove padding, it's not part of the framebuffer.
+    draw_rect.Set(0, 0, static_cast<s32>(width), static_cast<s32>(height));
+  }
+  if (width == 0 || height == 0)
+    return false;
+
+  std::vector<u32> pixels;
+  u32 pixels_stride;
+  GPUTexture::Format pixels_format;
+  if (!RenderScreenshotToBuffer(width, height, draw_rect, !internal_resolution, &pixels, &pixels_stride,
+                                &pixels_format))
+  {
+    Log_ErrorPrintf("Failed to render %ux%u screenshot", width, height);
+    return false;
+  }
+
+  auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "wb");
+  if (!fp)
+  {
+    Log_ErrorPrintf("Can't open file '%s': errno %d", filename.c_str(), errno);
+    return false;
+  }
+
+  if (!compress_on_thread)
+  {
+    return CompressAndWriteTextureToFile(width, height, std::move(filename), std::move(fp), true,
+                                         g_gpu_device->UsesLowerLeftOrigin(), width, height, std::move(pixels),
+                                         pixels_stride, pixels_format);
+  }
+
+  std::thread compress_thread(CompressAndWriteTextureToFile, width, height, std::move(filename), std::move(fp), true,
+                              g_gpu_device->UsesLowerLeftOrigin(), width, height, std::move(pixels), pixels_stride,
+                              pixels_format);
+  compress_thread.detach();
+  return true;
 }
 
 bool GPU::DumpVRAMToFile(const char* filename)
@@ -1576,59 +2233,7 @@ void GPU::DrawDebugStateWindow()
     return;
   }
 
-  const bool is_idle_frame = m_stats.num_polygons == 0;
-  if (!is_idle_frame)
-  {
-    m_last_stats = m_stats;
-    m_stats = {};
-  }
-
-  if (ImGui::CollapsingHeader("Statistics", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    const Stats& stats = m_last_stats;
-
-    ImGui::Columns(2);
-    ImGui::SetColumnWidth(0, 200.0f * framebuffer_scale);
-
-    ImGui::TextUnformatted("Idle Frame: ");
-    ImGui::NextColumn();
-    ImGui::Text("%s", is_idle_frame ? "Yes" : "No");
-    ImGui::NextColumn();
-
-    ImGui::TextUnformatted("VRAM Reads: ");
-    ImGui::NextColumn();
-    ImGui::Text("%u", stats.num_vram_reads);
-    ImGui::NextColumn();
-
-    ImGui::TextUnformatted("VRAM Fills: ");
-    ImGui::NextColumn();
-    ImGui::Text("%u", stats.num_vram_fills);
-    ImGui::NextColumn();
-
-    ImGui::TextUnformatted("VRAM Writes: ");
-    ImGui::NextColumn();
-    ImGui::Text("%u", stats.num_vram_writes);
-    ImGui::NextColumn();
-
-    ImGui::TextUnformatted("VRAM Copies: ");
-    ImGui::NextColumn();
-    ImGui::Text("%u", stats.num_vram_copies);
-    ImGui::NextColumn();
-
-    ImGui::TextUnformatted("Vertices Processed: ");
-    ImGui::NextColumn();
-    ImGui::Text("%u", stats.num_vertices);
-    ImGui::NextColumn();
-
-    ImGui::TextUnformatted("Polygons Drawn: ");
-    ImGui::NextColumn();
-    ImGui::Text("%u", stats.num_polygons);
-    ImGui::NextColumn();
-
-    ImGui::Columns(1);
-  }
-
-  DrawRendererStats(is_idle_frame);
+  DrawRendererStats();
 
   if (ImGui::CollapsingHeader("GPU", ImGuiTreeNodeFlags_DefaultOpen))
   {
@@ -1686,4 +2291,67 @@ void GPU::DrawDebugStateWindow()
   ImGui::End();
 }
 
-void GPU::DrawRendererStats(bool is_idle_frame) {}
+void GPU::DrawRendererStats()
+{
+}
+
+void GPU::GetStatsString(SmallStringBase& str)
+{
+  if (IsHardwareRenderer())
+  {
+    str.format("{} HW | {} P | {} DC | {} RP | {} RB | {} C | {} W",
+               GPUDevice::RenderAPIToString(g_gpu_device->GetRenderAPI()), m_stats.num_primitives,
+               m_stats.host_num_draws, m_stats.host_num_render_passes, m_stats.num_reads, m_stats.num_copies,
+               m_stats.num_writes);
+  }
+  else
+  {
+    str.format("{} SW | {} P | {} R | {} C | {} W", GPUDevice::RenderAPIToString(g_gpu_device->GetRenderAPI()),
+               m_stats.num_primitives, m_stats.num_reads, m_stats.num_copies, m_stats.num_writes);
+  }
+}
+
+void GPU::GetMemoryStatsString(SmallStringBase& str)
+{
+  const u32 vram_usage_mb = static_cast<u32>((g_gpu_device->GetVRAMUsage() + (1048576 - 1)) / 1048576);
+  const u32 stream_kb = static_cast<u32>((m_stats.host_buffer_streamed + (1024 - 1)) / 1024);
+
+  str.format("{} MB VRAM | {} KB STR | {} TC | {} TU", vram_usage_mb, stream_kb, m_stats.host_num_copies,
+             m_stats.host_num_uploads);
+}
+
+void GPU::ResetStatistics()
+{
+  m_counters = {};
+  g_gpu_device->ResetStatistics();
+}
+
+void GPU::UpdateStatistics(u32 frame_count)
+{
+  const GPUDevice::Statistics& stats = g_gpu_device->GetStatistics();
+  const u32 round = (frame_count - 1);
+
+#define UPDATE_COUNTER(x) m_stats.x = (m_counters.x + round) / frame_count
+#define UPDATE_GPU_STAT(x) m_stats.host_##x = (stats.x + round) / frame_count
+
+  UPDATE_COUNTER(num_reads);
+  UPDATE_COUNTER(num_writes);
+  UPDATE_COUNTER(num_copies);
+  UPDATE_COUNTER(num_vertices);
+  UPDATE_COUNTER(num_primitives);
+
+  // UPDATE_COUNTER(num_read_texture_updates);
+  // UPDATE_COUNTER(num_ubo_updates);
+
+  UPDATE_GPU_STAT(buffer_streamed);
+  UPDATE_GPU_STAT(num_draws);
+  UPDATE_GPU_STAT(num_render_passes);
+  UPDATE_GPU_STAT(num_copies);
+  UPDATE_GPU_STAT(num_downloads);
+  UPDATE_GPU_STAT(num_uploads);
+
+#undef UPDATE_GPU_STAT
+#undef UPDATE_COUNTER
+
+  ResetStatistics();
+}

@@ -2,15 +2,19 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "memorycardsettingswidget.h"
-#include "common/string_util.h"
+
 #include "core/controller.h"
 #include "core/settings.h"
 #include "inputbindingwidgets.h"
 #include "mainwindow.h"
 #include "qthost.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
+
+#include "common/small_string.h"
+#include "common/string_util.h"
+
 #include <QtCore/QUrl>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QLabel>
@@ -18,7 +22,7 @@
 static constexpr char MEMORY_CARD_IMAGE_FILTER[] =
   QT_TRANSLATE_NOOP("MemoryCardSettingsWidget", "All Memory Card Types (*.mcd *.mcr *.mc)");
 
-MemoryCardSettingsWidget::MemoryCardSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+MemoryCardSettingsWidget::MemoryCardSettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   createUi(dialog);
@@ -26,7 +30,7 @@ MemoryCardSettingsWidget::MemoryCardSettingsWidget(SettingsDialog* dialog, QWidg
 
 MemoryCardSettingsWidget::~MemoryCardSettingsWidget() = default;
 
-void MemoryCardSettingsWidget::createUi(SettingsDialog* dialog)
+void MemoryCardSettingsWidget::createUi(SettingsWindow* dialog)
 {
   QVBoxLayout* layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -58,13 +62,13 @@ void MemoryCardSettingsWidget::createUi(SettingsDialog* dialog)
       box_layout->addLayout(hbox);
     }
 
-    QCheckBox* playlist_title_as_game_title = new QCheckBox(tr("Use Single Card For Sub-Images"), box);
+    QCheckBox* playlist_title_as_game_title = new QCheckBox(tr("Use Single Card For Multi-Disc Games"), box);
     SettingWidgetBinder::BindWidgetToBoolSetting(m_dialog->getSettingsInterface(), playlist_title_as_game_title,
                                                  "MemoryCards", "UsePlaylistTitle", true);
     box_layout->addWidget(playlist_title_as_game_title);
     dialog->registerWidgetHelp(
-      playlist_title_as_game_title, tr("Use Single Card For Sub-Images"), tr("Checked"),
-      tr("When using a multi-disc format (m3u/pbp) and per-game (title) memory cards, a single memory card "
+      playlist_title_as_game_title, tr("Use Single Card For Multi-Disc Games"), tr("Checked"),
+      tr("When playing a multi-disc game and using per-game (title) memory cards, a single memory card "
          "will be used for all discs. If unchecked, a separate card will be used for each disc."));
 
     box_layout->addWidget(QtUtils::CreateHorizontalLine(box));
@@ -109,7 +113,7 @@ void MemoryCardSettingsWidget::createUi(SettingsDialog* dialog)
   setLayout(layout);
 }
 
-void MemoryCardSettingsWidget::createPortSettingsUi(SettingsDialog* dialog, int index, PortSettingsUI* ui)
+void MemoryCardSettingsWidget::createPortSettingsUi(SettingsWindow* dialog, int index, PortSettingsUI* ui)
 {
   ui->container = new QGroupBox(tr("Memory Card %1").arg(index + 1), this);
   ui->layout = new QVBoxLayout(ui->container);
@@ -118,12 +122,12 @@ void MemoryCardSettingsWidget::createPortSettingsUi(SettingsDialog* dialog, int 
   for (int i = 0; i < static_cast<int>(MemoryCardType::Count); i++)
   {
     ui->memory_card_type->addItem(
-      qApp->translate("MemoryCardType", Settings::GetMemoryCardTypeDisplayName(static_cast<MemoryCardType>(i))));
+      QString::fromUtf8(Settings::GetMemoryCardTypeDisplayName(static_cast<MemoryCardType>(i))));
   }
 
   const MemoryCardType default_value = (index == 0) ? MemoryCardType::PerGameTitle : MemoryCardType::None;
   SettingWidgetBinder::BindWidgetToEnumSetting(m_dialog->getSettingsInterface(), ui->memory_card_type, "MemoryCards",
-                                               StringUtil::StdStringFromFormat("Card%dType", index + 1),
+                                               fmt::format("Card{}Type", index + 1),
                                                &Settings::ParseMemoryCardTypeName, &Settings::GetMemoryCardTypeName,
                                                default_value);
   ui->layout->addWidget(new QLabel(tr("Memory Card Type:"), ui->container));
@@ -168,7 +172,7 @@ void MemoryCardSettingsWidget::onBrowseMemoryCardPathClicked(int index)
 
 void MemoryCardSettingsWidget::onMemoryCardPathChanged(int index)
 {
-  const auto key = TinyString::FromFormat("Card%dPath", index + 1);
+  const auto key = TinyString::from_format("Card{}Path", index + 1);
   std::string relative_path(
     Path::MakeRelative(m_port_ui[index].memory_card_path->text().toStdString(), EmuFolders::MemoryCards));
   m_dialog->setStringSettingValue("MemoryCards", key, relative_path.c_str());
@@ -176,7 +180,7 @@ void MemoryCardSettingsWidget::onMemoryCardPathChanged(int index)
 
 void MemoryCardSettingsWidget::onResetMemoryCardPathClicked(int index)
 {
-  const auto key = TinyString::FromFormat("Card%dPath", index + 1);
+  const auto key = TinyString::from_format("Card{}Path", index + 1);
   if (m_dialog->isPerGameSettings())
     m_dialog->removeSettingValue("MemoryCards", key);
   else
@@ -187,11 +191,11 @@ void MemoryCardSettingsWidget::onResetMemoryCardPathClicked(int index)
 
 void MemoryCardSettingsWidget::updateMemoryCardPath(int index)
 {
-  const auto key = TinyString::FromFormat("Card%dPath", index + 1);
+  const auto key = TinyString::from_format("Card{}Path", index + 1);
   std::string path(
     m_dialog->getEffectiveStringValue("MemoryCards", key, Settings::GetDefaultSharedMemoryCardName(index).c_str()));
   if (!Path::IsAbsolute(path))
-    path = Path::Combine(EmuFolders::MemoryCards, path);
+    path = Path::Canonicalize(Path::Combine(EmuFolders::MemoryCards, path));
 
   QSignalBlocker db(m_port_ui[index].memory_card_path);
   m_port_ui[index].memory_card_path->setText(QString::fromStdString(path));

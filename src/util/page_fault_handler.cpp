@@ -1,13 +1,16 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "page_fault_handler.h"
+
+#include "common/assert.h"
 #include "common/log.h"
-#include "common/platform.h"
+
 #include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <vector>
+
 Log_SetChannel(Common::PageFaultHandler);
 
 #if defined(_WIN32)
@@ -21,34 +24,23 @@ Log_SetChannel(Common::PageFaultHandler);
 #include <signal.h>
 #include <unistd.h>
 #define USE_SIGSEGV 1
+#endif
+
+#ifdef __APPLE__
+#include <mach/mach_init.h>
+#include <mach/mach_port.h>
+#include <mach/task.h>
 #elif defined(__SWITCH__)
 #include <switch.h>
 #endif
 
 namespace Common::PageFaultHandler {
 
-struct RegisteredHandler
-{
-  Callback callback;
-  const void* owner;
-  void* start_pc;
-  u32 code_size;
-};
-static std::vector<RegisteredHandler> m_handlers;
-static std::mutex m_handler_lock;
-static thread_local bool s_in_handler;
+static std::recursive_mutex s_exception_handler_mutex;
+static Handler s_exception_handler_callback;
+static bool s_in_exception_handler;
 
-#if defined(CPU_AARCH32)
-static bool IsStoreInstruction(const void* ptr)
-{
-  u32 bits;
-  std::memcpy(&bits, ptr, sizeof(bits));
-
-  // TODO
-  return false;
-}
-
-#elif defined(CPU_AARCH64)
+#if defined(CPU_ARCH_ARM64)
 static bool IsStoreInstruction(const void* ptr)
 {
   u32 bits;
@@ -83,17 +75,31 @@ static bool IsStoreInstruction(const void* ptr)
       return false;
   }
 }
+#elif defined(CPU_ARCH_RISCV64)
+static bool IsStoreInstruction(const void* ptr)
+{
+  u32 bits;
+  std::memcpy(&bits, ptr, sizeof(bits));
+
+  return ((bits & 0x7Fu) == 0b0100011u);
+}
 #endif
 
-#if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
+#if defined(_WIN32) && (defined(CPU_ARCH_X64) || defined(CPU_ARCH_ARM64))
 static PVOID s_veh_handle;
 
 static LONG ExceptionHandler(PEXCEPTION_POINTERS exi)
 {
-  if (exi->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || s_in_handler)
+  // Executing the handler concurrently from multiple threads wouldn't go down well.
+  std::unique_lock lock(s_exception_handler_mutex);
+
+  // Prevent recursive exception filtering.
+  if (s_in_exception_handler)
     return EXCEPTION_CONTINUE_SEARCH;
 
-  s_in_handler = true;
+  // Only interested in page faults.
+  if (exi->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    return EXCEPTION_CONTINUE_SEARCH;
 
 #if defined(_M_AMD64)
   void* const exception_pc = reinterpret_cast<void*>(exi->ContextRecord->Rip);
@@ -104,21 +110,15 @@ static LONG ExceptionHandler(PEXCEPTION_POINTERS exi)
 #endif
 
   void* const exception_address = reinterpret_cast<void*>(exi->ExceptionRecord->ExceptionInformation[1]);
-  bool const is_write = exi->ExceptionRecord->ExceptionInformation[0] == 1;
+  const bool is_write = exi->ExceptionRecord->ExceptionInformation[0] == 1;
 
-  std::lock_guard<std::mutex> guard(m_handler_lock);
-  for (const RegisteredHandler& rh : m_handlers)
-  {
-    if (rh.callback(exception_pc, exception_address, is_write) == HandlerResult::ContinueExecution)
-    {
-      s_in_handler = false;
-      return EXCEPTION_CONTINUE_EXECUTION;
-    }
-  }
+  s_in_exception_handler = true;
 
-  s_in_handler = false;
+  const HandlerResult handled = s_exception_handler_callback(exception_pc, exception_address, is_write);
 
-  return EXCEPTION_CONTINUE_SEARCH;
+  s_in_exception_handler = false;
+
+  return (handled == HandlerResult::ContinueExecution) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
 }
 
 #elif defined(USE_SIGSEGV)
@@ -128,22 +128,59 @@ static struct sigaction s_old_sigsegv_action;
 static struct sigaction s_old_sigbus_action;
 #endif
 
-static void SIGSEGVHandler(int sig, siginfo_t* info, void* ctx)
+static void CallExistingSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
 {
-  if ((info->si_code != SEGV_MAPERR && info->si_code != SEGV_ACCERR) || s_in_handler)
+#if defined(__aarch64__)
+  const struct sigaction& sa = (signal == SIGBUS) ? s_old_sigbus_action : s_old_sigsegv_action;
+#elif defined(__APPLE__)
+  const struct sigaction& sa = s_old_sigbus_action;
+#else
+  const struct sigaction& sa = s_old_sigsegv_action;
+#endif
+
+  if (sa.sa_flags & SA_SIGINFO)
+  {
+    sa.sa_sigaction(signal, siginfo, ctx);
+  }
+  else if (sa.sa_handler == SIG_DFL)
+  {
+    // Re-raising the signal would just queue it, and since we'd restore the handler back to us,
+    // we'd end up right back here again. So just abort, because that's probably what it'd do anyway.
+    abort();
+  }
+  else if (sa.sa_handler != SIG_IGN)
+  {
+    sa.sa_handler(signal);
+  }
+}
+
+static void SignalHandler(int sig, siginfo_t* info, void* ctx)
+{
+  // Executing the handler concurrently from multiple threads wouldn't go down well.
+  std::unique_lock lock(s_exception_handler_mutex);
+
+  // Prevent recursive exception filtering.
+  if (s_in_exception_handler)
+  {
+    lock.unlock();
+    CallExistingSignalHandler(sig, info, ctx);
     return;
+  }
 
 #if defined(__linux__) || defined(__ANDROID__)
   void* const exception_address = reinterpret_cast<void*>(info->si_addr);
 
-#if defined(CPU_X64)
+#if defined(CPU_ARCH_X64)
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_RIP]);
   const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
-#elif defined(CPU_AARCH32)
+#elif defined(CPU_ARCH_ARM32)
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.arm_pc);
-  const bool is_write = IsStoreInstruction(exception_pc);
-#elif defined(CPU_AARCH64)
+  const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext.error_code & (1 << 11)) != 0; // DFSR.WnR
+#elif defined(CPU_ARCH_ARM64)
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.pc);
+  const bool is_write = IsStoreInstruction(exception_pc);
+#elif defined(CPU_ARCH_RISCV64)
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.__gregs[REG_PC]);
   const bool is_write = IsStoreInstruction(exception_pc);
 #else
   void* const exception_pc = nullptr;
@@ -152,12 +189,12 @@ static void SIGSEGVHandler(int sig, siginfo_t* info, void* ctx)
 
 #elif defined(__APPLE__)
 
-#if defined(CPU_X64)
+#if defined(CPU_ARCH_X64)
   void* const exception_address =
     reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__faultvaddr);
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__rip);
   const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__err & 2) != 0;
-#elif defined(CPU_AARCH64)
+#elif defined(CPU_ARCH_ARM64)
   void* const exception_address = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__far);
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__pc);
   const bool is_write = IsStoreInstruction(exception_pc);
@@ -169,11 +206,11 @@ static void SIGSEGVHandler(int sig, siginfo_t* info, void* ctx)
 
 #elif defined(__FreeBSD__)
 
-#if defined(CPU_X64)
+#if defined(CPU_ARCH_X64)
   void* const exception_address = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_addr);
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_rip);
   const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_err & 2) != 0;
-#elif defined(CPU_AARCH64)
+#elif defined(CPU_ARCH_ARM64)
   void* const exception_address = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__far);
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__pc);
   const bool is_write = IsStoreInstruction(exception_pc);
@@ -185,82 +222,30 @@ static void SIGSEGVHandler(int sig, siginfo_t* info, void* ctx)
 
 #endif
 
-  std::lock_guard<std::mutex> guard(m_handler_lock);
-  for (const RegisteredHandler& rh : m_handlers)
-  {
-    if (rh.callback(exception_pc, exception_address, is_write) == HandlerResult::ContinueExecution)
-    {
-      s_in_handler = false;
-      return;
-    }
-  }
+  s_in_exception_handler = true;
 
-  // call old signal handler
-#if !defined(__APPLE__) && !defined(__aarch64__)
-  const struct sigaction& sa = s_old_sigsegv_action;
-#else
-  const struct sigaction& sa = (sig == SIGBUS) ? s_old_sigbus_action : s_old_sigsegv_action;
-#endif
-  if (sa.sa_flags & SA_SIGINFO)
-    sa.sa_sigaction(sig, info, ctx);
-  else if (sa.sa_handler == SIG_DFL)
-    signal(sig, SIG_DFL);
-  else if (sa.sa_handler == SIG_IGN)
+  const HandlerResult result = s_exception_handler_callback(exception_pc, exception_address, is_write);
+
+  s_in_exception_handler = false;
+
+  // Resumes execution right where we left off (re-executes instruction that caused the SIGSEGV).
+  if (result == HandlerResult::ContinueExecution)
     return;
-  else
-    sa.sa_handler(sig);
-}
 
-u32 GetHandlerCodeSize()
-{
-  return 0;
-}
-
-#elif defined(__SWITCH__)
-
-bool PageFaultHandler(ThreadExceptionDump* ctx)
-{
-  if (s_in_handler)
-    return false;
-
-  std::lock_guard<std::mutex> guard(m_handler_lock);
-
-  s_in_handler = true;
-
-  for (const RegisteredHandler& rh : m_handlers)
-  {
-    void* const pc = reinterpret_cast<void*>(ctx->pc.x);
-    void* const fault_addr = reinterpret_cast<void*>(ctx->far.x);
-    const bool is_write = IsStoreInstruction(pc);
-    if (rh.callback(pc, fault_addr, is_write) == HandlerResult::ContinueExecution)
-    {
-      s_in_handler = false;
-      return true;
-    }
-  }
-
-  return false;
+  // Call old signal handler, which will likely dump core.
+  lock.unlock();
+  CallExistingSignalHandler(sig, info, ctx);
 }
 
 #endif
 
-bool InstallHandler(const void* owner, void* start_pc, u32 code_size, Callback callback)
+bool InstallHandler(Handler handler)
 {
-  bool was_empty;
+  std::unique_lock lock(s_exception_handler_mutex);
+  AssertMsg(!s_exception_handler_callback, "A page fault handler is already registered.");
+  if (!s_exception_handler_callback)
   {
-    std::lock_guard<std::mutex> guard(m_handler_lock);
-    if (std::find_if(m_handlers.begin(), m_handlers.end(),
-                     [owner](const RegisteredHandler& rh) { return rh.owner == owner; }) != m_handlers.end())
-    {
-      return false;
-    }
-
-    was_empty = m_handlers.empty();
-  }
-
-  if (was_empty)
-  {
-#if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
+#if defined(_WIN32) && (defined(CPU_ARCH_X64) || defined(CPU_ARCH_ARM64))
     s_veh_handle = AddVectoredExceptionHandler(1, ExceptionHandler);
     if (!s_veh_handle)
     {
@@ -268,68 +253,60 @@ bool InstallHandler(const void* owner, void* start_pc, u32 code_size, Callback c
       return false;
     }
 #elif defined(USE_SIGSEGV)
-    struct sigaction sa = {};
-    sa.sa_sigaction = SIGSEGVHandler;
-    sa.sa_flags = SA_SIGINFO;
+    struct sigaction sa;
+
     sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGSEGV, &sa, &s_old_sigsegv_action) < 0)
-    {
-      Log_ErrorPrintf("sigaction(SIGSEGV) failed: %d", errno);
-      return false;
-    }
-#if defined(__APPLE__) || defined(__aarch64__)
-    if (sigaction(SIGBUS, &sa, &s_old_sigbus_action) < 0)
-    {
-      Log_ErrorPrintf("sigaction(SIGBUS) failed: %d", errno);
-      return false;
-    }
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = SignalHandler;
+#ifdef __linux__
+    // Don't block the signal from executing recursively, we want to fire the original handler.
+    sa.sa_flags |= SA_NODEFER;
 #endif
-#elif !defined(__SWITCH__)
+    if (sigaction(SIGSEGV, &sa, &s_old_sigsegv_action) != 0)
+      return false;
+#if defined(__APPLE__) || defined(__aarch64__)
+    // MacOS uses SIGBUS for memory permission violations
+    if (sigaction(SIGBUS, &sa, &s_old_sigbus_action) != 0)
+      return false;
+#endif
+#ifdef __APPLE__
+    task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, MACH_PORT_NULL, EXCEPTION_DEFAULT, 0);
+#endif
+#elif defined(__SWITCH__)
     return false;
 #endif
   }
 
-  m_handlers.push_back(RegisteredHandler{callback, owner, start_pc, code_size});
+  s_exception_handler_callback = handler;
   return true;
 }
 
-bool RemoveHandler(const void* owner)
+bool RemoveHandler(Handler handler)
 {
-  std::lock_guard<std::mutex> guard(m_handler_lock);
-  auto it = std::find_if(m_handlers.begin(), m_handlers.end(),
-                         [owner](const RegisteredHandler& rh) { return rh.owner == owner; });
-  if (it == m_handlers.end())
+  std::unique_lock lock(s_exception_handler_mutex);
+  AssertMsg(!s_exception_handler_callback || s_exception_handler_callback == handler,
+            "Not removing the same handler previously registered.");
+  if (!s_exception_handler_callback)
     return false;
 
-  m_handlers.erase(it);
+  s_exception_handler_callback = nullptr;
 
-  if (m_handlers.empty())
-  {
-#if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
-    RemoveVectoredExceptionHandler(s_veh_handle);
-    s_veh_handle = nullptr;
+#if defined(_WIN32) && (defined(CPU_ARCH_X64) || defined(CPU_ARCH_ARM64))
+  RemoveVectoredExceptionHandler(s_veh_handle);
+  s_veh_handle = nullptr;
 #elif defined(USE_SIGSEGV)
-    // restore old signal handler
+  struct sigaction sa;
 #if defined(__APPLE__) || defined(__aarch64__)
-    if (sigaction(SIGBUS, &s_old_sigbus_action, nullptr) < 0)
-    {
-      Log_ErrorPrintf("sigaction(SIGBUS) failed: %d", errno);
-      return false;
-    }
-    s_old_sigbus_action = {};
+  sigaction(SIGBUS, &s_old_sigbus_action, &sa);
+  s_old_sigbus_action = {};
 #endif
-
-    if (sigaction(SIGSEGV, &s_old_sigsegv_action, nullptr) < 0)
-    {
-      Log_ErrorPrintf("sigaction(SIGSEGV) failed: %d", errno);
-      return false;
-    }
-
-    s_old_sigsegv_action = {};
+#if !defined(__APPLE__) || defined(__aarch64__)
+  sigaction(SIGSEGV, &s_old_sigsegv_action, &sa);
+  s_old_sigsegv_action = {};
+#endif
 #elif !defined(__SWITCH__)
-    return false;
+  return false;
 #endif
-  }
 
   return true;
 }

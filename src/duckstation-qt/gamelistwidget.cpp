@@ -1,22 +1,26 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "gamelistwidget.h"
-#include "common/assert.h"
-#include "common/string_util.h"
-#include "core/host_settings.h"
-#include "core/settings.h"
-#include "frontend-common/game_list.h"
 #include "gamelistmodel.h"
 #include "gamelistrefreshthread.h"
 #include "qthost.h"
 #include "qtutils.h"
+
+#include "core/game_list.h"
+#include "core/host.h"
+#include "core/settings.h"
+
+#include "common/assert.h"
+#include "common/string_util.h"
+
 #include <QtCore/QSortFilterProxyModel>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QPixmap>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QScrollBar>
 
 static constexpr float MIN_SCALE = 0.1f;
 static constexpr float MAX_SCALE = 2.0f;
@@ -80,15 +84,17 @@ private:
   QString m_filter_name;
 };
 
-GameListWidget::GameListWidget(QWidget* parent /* = nullptr */) : QWidget(parent) {}
+GameListWidget::GameListWidget(QWidget* parent /* = nullptr */) : QWidget(parent)
+{
+}
 
 GameListWidget::~GameListWidget() = default;
 
 void GameListWidget::initialize()
 {
-  m_model = new GameListModel(this);
-  m_model->setCoverScale(Host::GetBaseFloatSettingValue("UI", "GameListCoverArtScale", 0.45f));
-  m_model->setShowCoverTitles(Host::GetBaseBoolSettingValue("UI", "GameListShowCoverTitles", true));
+  const float cover_scale = Host::GetBaseFloatSettingValue("UI", "GameListCoverArtScale", 0.45f);
+  const bool show_cover_titles = Host::GetBaseBoolSettingValue("UI", "GameListShowCoverTitles", true);
+  m_model = new GameListModel(cover_scale, show_cover_titles, this);
   m_model->updateCacheSize(width(), height());
 
   m_sort_model = new GameListSortModel(m_model);
@@ -157,17 +163,16 @@ void GameListWidget::initialize()
   m_list_view = new GameListGridListView(m_ui.stack);
   m_list_view->setModel(m_sort_model);
   m_list_view->setModelColumn(GameListModel::Column_Cover);
-  m_list_view->setSelectionMode(QAbstractItemView::ExtendedSelection);
+  m_list_view->setSelectionMode(QAbstractItemView::SingleSelection);
   m_list_view->setViewMode(QListView::IconMode);
   m_list_view->setResizeMode(QListView::Adjust);
   m_list_view->setUniformItemSizes(true);
   m_list_view->setItemAlignment(Qt::AlignHCenter);
   m_list_view->setContextMenuPolicy(Qt::CustomContextMenu);
   m_list_view->setFrameStyle(QFrame::NoFrame);
-  m_list_view->setSpacing(m_model->getCoverArtSpacing());
   m_list_view->setVerticalScrollMode(QAbstractItemView::ScrollMode::ScrollPerPixel);
-
-  updateListFont();
+  m_list_view->verticalScrollBar()->setSingleStep(15);
+  onCoverScaleChanged();
 
   connect(m_list_view->selectionModel(), &QItemSelectionModel::currentChanged, this,
           &GameListWidget::onSelectionModelCurrentChanged);
@@ -175,6 +180,7 @@ void GameListWidget::initialize()
   connect(m_list_view, &GameListGridListView::zoomOut, this, &GameListWidget::gridZoomOut);
   connect(m_list_view, &QListView::activated, this, &GameListWidget::onListViewItemActivated);
   connect(m_list_view, &QListView::customContextMenuRequested, this, &GameListWidget::onListViewContextMenuRequested);
+  connect(m_model, &GameListModel::coverScaleChanged, this, &GameListWidget::onCoverScaleChanged);
 
   m_ui.stack->insertWidget(1, m_list_view);
 
@@ -230,6 +236,11 @@ void GameListWidget::cancelRefresh()
   m_refresh_thread->wait();
   QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
   AssertMsg(!m_refresh_thread, "Game list thread should be unreferenced by now");
+}
+
+void GameListWidget::reloadThemeSpecificImages()
+{
+  m_model->reloadThemeSpecificImages();
 }
 
 void GameListWidget::onRefreshProgress(const QString& status, int current, int total)
@@ -321,14 +332,23 @@ void GameListWidget::onTableViewHeaderSortIndicatorChanged(int, Qt::SortOrder)
   saveTableViewColumnSortSettings();
 }
 
+void GameListWidget::onCoverScaleChanged()
+{
+  m_model->updateCacheSize(width(), height());
+
+  m_list_view->setSpacing(m_model->getCoverArtSpacing());
+
+  QFont font;
+  font.setPointSizeF(16.0f * m_model->getCoverScale());
+  m_list_view->setFont(font);
+}
+
 void GameListWidget::listZoom(float delta)
 {
   const float new_scale = std::clamp(m_model->getCoverScale() + delta, MIN_SCALE, MAX_SCALE);
   Host::SetBaseFloatSettingValue("UI", "GameListCoverArtScale", new_scale);
   Host::CommitBaseSettingChanges();
   m_model->setCoverScale(new_scale);
-  m_model->updateCacheSize(width(), height());
-  updateListFont();
   updateToolbar();
 
   m_model->refresh();
@@ -351,8 +371,6 @@ void GameListWidget::gridIntScale(int int_scale)
   Host::SetBaseFloatSettingValue("UI", "GameListCoverArtScale", new_scale);
   Host::CommitBaseSettingChanges();
   m_model->setCoverScale(new_scale);
-  m_model->updateCacheSize(width(), height());
-  updateListFont();
   updateToolbar();
 
   m_model->refresh();
@@ -411,13 +429,6 @@ void GameListWidget::setShowCoverTitles(bool enabled)
   emit layoutChange();
 }
 
-void GameListWidget::updateListFont()
-{
-  QFont font;
-  font.setPointSizeF(16.0f * m_model->getCoverScale());
-  m_list_view->setFont(font);
-}
-
 void GameListWidget::updateToolbar()
 {
   const bool grid_view = isShowingGameGrid();
@@ -462,20 +473,16 @@ void GameListWidget::resizeTableViewColumnsToFit()
                                                      100, // players
                                                      80,  // time played
                                                      80,  // last played
+                                                     80,  // file size
                                                      80,  // size
                                                      50,  // region
                                                      100  // compatibility
                                                    });
 }
 
-void GameListWidget::reloadCommonImages()
-{
-  m_model->reloadCommonImages();
-}
-
 static TinyString getColumnVisibilitySettingsKeyName(int column)
 {
-  return TinyString::FromFormat("Show%s", GameListModel::getColumnName(static_cast<GameListModel::Column>(column)));
+  return TinyString::from_format("Show{}", GameListModel::getColumnName(static_cast<GameListModel::Column>(column)));
 }
 
 void GameListWidget::loadTableViewColumnVisibilitySettings()
@@ -492,7 +499,8 @@ void GameListWidget::loadTableViewColumnVisibilitySettings()
     false, // players
     true,  // time played
     true,  // last played
-    true,  // size
+    true,  // file size
+    false, // size
     true,  // region
     true   // compatibility
   }};
@@ -582,7 +590,9 @@ const GameList::Entry* GameListWidget::getSelectedEntry() const
   }
 }
 
-GameListGridListView::GameListGridListView(QWidget* parent /*= nullptr*/) : QListView(parent) {}
+GameListGridListView::GameListGridListView(QWidget* parent /*= nullptr*/) : QListView(parent)
+{
+}
 
 void GameListGridListView::wheelEvent(QWheelEvent* e)
 {

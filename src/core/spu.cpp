@@ -1,18 +1,27 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "spu.h"
 #include "cdrom.h"
-#include "common/file_system.h"
-#include "common/log.h"
 #include "dma.h"
 #include "host.h"
 #include "imgui.h"
 #include "interrupt_controller.h"
 #include "system.h"
+
 #include "util/audio_stream.h"
+#include "util/imgui_manager.h"
 #include "util/state_wrapper.h"
 #include "util/wav_writer.h"
+
+#include "common/bitfield.h"
+#include "common/bitutils.h"
+#include "common/fifo_queue.h"
+#include "common/log.h"
+#include "common/path.h"
+
+#include <memory>
+
 Log_SetChannel(SPU);
 
 // Enable to dump all voices of the SPU audio individually.
@@ -29,6 +38,8 @@ ALWAYS_INLINE static constexpr s32 ApplyVolume(s32 sample, s16 volume)
 }
 
 namespace SPU {
+namespace {
+
 enum : u32
 {
   SPU_BASE = 0x1F801C00,
@@ -38,7 +49,7 @@ enum : u32
   VOICE_ADDRESS_SHIFT = 3,
   NUM_SAMPLES_PER_ADPCM_BLOCK = 28,
   NUM_SAMPLES_FROM_LAST_ADPCM_BLOCK = 3,
-  SYSCLK_TICKS_PER_SPU_TICK = System::MASTER_CLOCK / SAMPLE_RATE, // 0x300
+  SYSCLK_TICKS_PER_SPU_TICK = static_cast<u32>(System::MASTER_CLOCK) / static_cast<u32>(SAMPLE_RATE), // 0x300
   CAPTURE_BUFFER_SIZE_PER_CHANNEL = 0x400,
   MINIMUM_TICKS_BETWEEN_KEY_ON_OFF = 2,
   NUM_REVERB_REGS = 32,
@@ -298,6 +309,7 @@ struct ReverbRegisters
     u16 rev[NUM_REVERB_REGS];
   };
 };
+} // namespace
 
 static ADSRPhase GetNextADSRPhase(ADSRPhase phase);
 
@@ -341,7 +353,7 @@ static void CreateOutputStream();
 
 static std::unique_ptr<TimingEvent> s_tick_event;
 static std::unique_ptr<TimingEvent> s_transfer_event;
-static std::unique_ptr<Common::WAVWriter> s_dump_writer;
+static std::unique_ptr<WAVWriter> s_dump_writer;
 static std::unique_ptr<AudioStream> s_audio_stream;
 static std::unique_ptr<AudioStream> s_null_audio_stream;
 static bool s_audio_output_muted = false;
@@ -396,7 +408,7 @@ static std::array<u8, RAM_SIZE> s_ram{};
 
 #ifdef SPU_DUMP_ALL_VOICES
 // +1 for reverb output
-static std::array<std::unique_ptr<Common::WAVWriter>, NUM_VOICES + 1> s_voice_dump_writers;
+static std::array<std::unique_ptr<WAVWriter>, NUM_VOICES + 1> s_voice_dump_writers;
 #endif
 } // namespace SPU
 
@@ -1143,7 +1155,7 @@ void SPU::TriggerRAMIRQ()
 {
   DebugAssert(IsRAMIRQTriggerable());
   s_SPUSTAT.irq9_flag = true;
-  g_interrupt_controller.InterruptRequest(InterruptController::IRQ::SPU);
+  InterruptController::InterruptRequest(InterruptController::IRQ::SPU);
 }
 
 void SPU::CheckForLateRAMIRQs()
@@ -1192,7 +1204,7 @@ void SPU::IncrementCaptureBufferPosition()
   s_SPUSTAT.second_half_capture_buffer = s_capture_buffer_position >= (CAPTURE_BUFFER_SIZE_PER_CHANNEL / 2);
 }
 
-void ALWAYS_INLINE SPU::ExecuteFIFOReadFromRAM(TickCount& ticks)
+ALWAYS_INLINE_RELEASE void SPU::ExecuteFIFOReadFromRAM(TickCount& ticks)
 {
   while (ticks > 0 && !s_transfer_fifo.IsFull())
   {
@@ -1210,7 +1222,7 @@ void ALWAYS_INLINE SPU::ExecuteFIFOReadFromRAM(TickCount& ticks)
   }
 }
 
-void ALWAYS_INLINE SPU::ExecuteFIFOWriteToRAM(TickCount& ticks)
+ALWAYS_INLINE_RELEASE void SPU::ExecuteFIFOWriteToRAM(TickCount& ticks)
 {
   while (ticks > 0 && !s_transfer_fifo.IsEmpty())
   {
@@ -1230,7 +1242,7 @@ void ALWAYS_INLINE SPU::ExecuteFIFOWriteToRAM(TickCount& ticks)
 void SPU::ExecuteTransfer(void* param, TickCount ticks, TickCount ticks_late)
 {
   const RAMTransferMode mode = s_SPUCNT.ram_transfer_mode;
-  Assert(mode != RAMTransferMode::Stopped);
+  DebugAssert(mode != RAMTransferMode::Stopped);
 
   if (mode == RAMTransferMode::DMARead)
   {
@@ -1283,14 +1295,21 @@ void SPU::ExecuteTransfer(void* param, TickCount ticks, TickCount ticks_late)
 
 void SPU::ManualTransferWrite(u16 value)
 {
-  if (s_transfer_fifo.IsFull())
+  if (!s_transfer_fifo.IsEmpty() && s_SPUCNT.ram_transfer_mode != RAMTransferMode::DMARead)
   {
-    Log_WarningPrintf("FIFO full, dropping write of 0x%04X", value);
-    return;
+    Log_WarningPrintf("FIFO not empty on manual SPU write, draining to hopefully avoid corruption. Game is silly.");
+    if (s_SPUCNT.ram_transfer_mode != RAMTransferMode::Stopped)
+      ExecuteTransfer(nullptr, std::numeric_limits<s32>::max(), 0);
   }
 
-  s_transfer_fifo.Push(value);
-  UpdateTransferEvent();
+  std::memcpy(&s_ram[s_transfer_address], &value, sizeof(u16));
+  s_transfer_address = (s_transfer_address + sizeof(u16)) & RAM_MASK;
+
+  if (IsRAMIRQTriggerable() && CheckRAMIRQ(s_transfer_address))
+  {
+    Log_DebugPrintf("Trigger IRQ @ %08X %04X from manual write", s_transfer_address, s_transfer_address / 8);
+    TriggerRAMIRQ();
+  }
 }
 
 void SPU::UpdateTransferEvent()
@@ -1346,7 +1365,7 @@ void SPU::UpdateDMARequest()
   }
 
   // This might call us back directly.
-  g_dma.SetRequest(DMA::Channel::SPU, s_SPUSTAT.dma_request);
+  DMA::SetRequest(DMA::Channel::SPU, s_SPUSTAT.dma_request);
 }
 
 void SPU::DMARead(u32* words, u32 word_count)
@@ -1426,7 +1445,7 @@ void SPU::DMAWrite(const u32* words, u32 word_count)
   const u32 words_to_transfer = std::min(s_transfer_fifo.GetSpace(), halfword_count);
   s_transfer_fifo.PushRange(halfwords, words_to_transfer);
 
-  if (words_to_transfer != halfword_count)
+  if (words_to_transfer != halfword_count) [[unlikely]]
     Log_WarningPrintf("Transfer FIFO overflow, dropping %u halfwords", halfword_count - words_to_transfer);
 
   UpdateDMARequest();
@@ -1463,7 +1482,7 @@ bool SPU::IsDumpingAudio()
 bool SPU::StartDumpingAudio(const char* filename)
 {
   s_dump_writer.reset();
-  s_dump_writer = std::make_unique<Common::WAVWriter>();
+  s_dump_writer = std::make_unique<WAVWriter>();
   if (!s_dump_writer->Open(filename, SAMPLE_RATE, 2))
   {
     Log_ErrorPrintf("Failed to open '%s'", filename);
@@ -1475,15 +1494,15 @@ bool SPU::StartDumpingAudio(const char* filename)
   for (size_t i = 0; i < s_voice_dump_writers.size(); i++)
   {
     s_voice_dump_writers[i].reset();
-    s_voice_dump_writers[i] = std::make_unique<Common::WAVWriter>();
+    s_voice_dump_writers[i] = std::make_unique<WAVWriter>();
 
     TinyString new_suffix;
     if (i == NUM_VOICES)
-      new_suffix.Assign("reverb.wav");
+      new_suffix.assign("reverb.wav");
     else
-      new_suffix.Format("voice%u.wav", i);
+      new_suffix.format("voice{}.wav", i);
 
-    std::string voice_filename(FileSystem::ReplaceExtension(filename, new_suffix));
+    const std::string voice_filename = Path::ReplaceExtension(filename, new_suffix);
     if (!s_voice_dump_writers[i]->Open(voice_filename.c_str(), SAMPLE_RATE, 2))
     {
       Log_ErrorPrintf("Failed to open voice dump filename '%s'", voice_filename.c_str());
@@ -2291,7 +2310,7 @@ void SPU::Execute(void* param, TickCount ticks, TickCount ticks_late)
       UpdateNoise();
 
       // Mix in CD audio.
-      const auto [cd_audio_left, cd_audio_right] = g_cdrom.GetAudioFrame();
+      const auto [cd_audio_left, cd_audio_right] = CDROM::GetAudioFrame();
       if (s_SPUCNT.cd_audio_enable)
       {
         const s32 cd_audio_volume_left = ApplyVolume(s32(cd_audio_left), s_cd_audio_volume_left);

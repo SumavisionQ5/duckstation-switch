@@ -1,8 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cd_image.h"
 #include "common/assert.h"
+#include "common/bitutils.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
@@ -21,7 +22,32 @@ u32 CDImage::GetBytesPerSector(TrackMode mode)
   return sizes[static_cast<u32>(mode)];
 }
 
-std::unique_ptr<CDImage> CDImage::Open(const char* filename, bool allow_patches, Common::Error* error)
+// Adapted from
+// https://github.com/saramibreak/DiscImageCreator/blob/5a8fe21730872d67991211f1319c87f0780f2d0f/DiscImageCreator/convert.cpp
+void CDImage::DeinterleaveSubcode(const u8* subcode_in, u8* subcode_out)
+{
+  std::memset(subcode_out, 0, ALL_SUBCODE_SIZE);
+
+  u32 row = 0;
+  for (u32 bitNum = 0; bitNum < 8; bitNum++)
+  {
+    for (u32 nColumn = 0; nColumn < ALL_SUBCODE_SIZE; row++)
+    {
+      u32 mask = 0x80;
+      for (int nShift = 0; nShift < 8; nShift++, nColumn++)
+      {
+        const s32 n = static_cast<s32>(nShift) - static_cast<s32>(bitNum);
+        if (n > 0)
+          subcode_out[row] |= static_cast<u8>((subcode_in[nColumn] >> n) & mask);
+        else
+          subcode_out[row] |= static_cast<u8>((subcode_in[nColumn] << std::abs(n)) & mask);
+        mask >>= 1;
+      }
+    }
+  }
+}
+
+std::unique_ptr<CDImage> CDImage::Open(const char* filename, bool allow_patches, Error* error)
 {
   const char* extension;
 
@@ -94,10 +120,7 @@ std::unique_ptr<CDImage> CDImage::Open(const char* filename, bool allow_patches,
     {
       image = CDImage::OverlayPPFPatch(ppf_filename.c_str(), std::move(image));
       if (!image)
-      {
-        if (error)
-          error->SetFormattedMessage("Failed to apply ppf patch from '%s'.", ppf_filename.c_str());
-      }
+        Error::SetString(error, fmt::format("Failed to apply ppf patch from '{}'.", ppf_filename));
     }
   }
 
@@ -343,7 +366,7 @@ u32 CDImage::GetCurrentSubImage() const
   return 0;
 }
 
-bool CDImage::SwitchSubImage(u32 index, Common::Error* error)
+bool CDImage::SwitchSubImage(u32 index, Error* error)
 {
   return false;
 }
@@ -361,6 +384,11 @@ CDImage::PrecacheResult CDImage::Precache(ProgressCallback* progress /*= Progres
 bool CDImage::IsPrecached() const
 {
   return false;
+}
+
+s64 CDImage::GetSizeOnDisk() const
+{
+  return -1;
 }
 
 void CDImage::ClearTOC()
@@ -510,7 +538,8 @@ u16 CDImage::SubChannelQ::ComputeCRC(const Data& data)
   for (u32 i = 0; i < 10; i++)
     value = crc16_table[(value >> 8) ^ data[i]] ^ (value << 8);
 
-  return ~(value >> 8) | (~(value) << 8);
+  // Invert and swap
+  return ByteSwap(static_cast<u16>(~value));
 }
 
 bool CDImage::SubChannelQ::IsCRCValid() const

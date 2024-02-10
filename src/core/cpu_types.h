@@ -1,8 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
 #include "common/bitfield.h"
+#include "common/bitutils.h"
 #include "types.h"
 #include <optional>
 
@@ -60,12 +61,8 @@ enum class Reg : u8
   sp,
   fp,
   ra,
-
-  // not accessible to instructions
   hi,
   lo,
-  pc,
-  npc,
 
   count
 };
@@ -213,6 +210,7 @@ union Instruction
     }
 
     ALWAYS_INLINE Cop0Instruction Cop0Op() const { return static_cast<Cop0Instruction>(bits & UINT32_C(0x3F)); }
+    ALWAYS_INLINE u32 Cop2Index() const { return ((bits >> 11) & 0x1F) | ((bits >> 17) & 0x20); }
   } cop;
 
   bool IsCop2Instruction() const
@@ -240,7 +238,7 @@ struct Registers
 {
   union
   {
-    u32 r[static_cast<u8>(Reg::count)];
+    u32 r[static_cast<u8>(Reg::count) + 1]; // +1 for the dummy load delay write slot
 
     struct
     {
@@ -276,12 +274,8 @@ struct Registers
       u32 sp;   // r29
       u32 fp;   // r30
       u32 ra;   // r31
-
-      // not accessible to instructions
       u32 hi;
       u32 lo;
-      u32 pc;  // at execution time: the address of the next instruction to execute (already fetched)
-      u32 npc; // at execution time: the address of the next instruction to fetch
     };
   };
 };

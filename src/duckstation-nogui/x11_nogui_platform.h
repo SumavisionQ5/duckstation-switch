@@ -12,7 +12,6 @@
 #include "common/string_util.h"
 #include "common/threading.h"
 #include "core/host.h"
-#include "core/host_settings.h"
 #include "nogui_host.h"
 #include "nogui_platform.h"
 
@@ -48,6 +47,7 @@ public:
   void SetDefaultConfig(SettingsInterface& si) override;
 
   bool CreatePlatformWindow(std::string title) override;
+  bool HasPlatformWindow() const override;
   void DestroyPlatformWindow() override;
   std::optional<WindowInfo> GetPlatformWindowInfo() override;
   void SetPlatformWindowTitle(std::string title) override;

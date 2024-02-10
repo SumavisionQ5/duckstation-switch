@@ -1,139 +1,63 @@
 cmake_minimum_required(VERSION 3.16)
 project(duckstation C CXX)
 
+# Policy settings.
+cmake_policy(SET CMP0069 NEW)
+set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+
 message("CMake Version: ${CMAKE_VERSION}")
 message("CMake System Name: ${CMAKE_SYSTEM_NAME}")
 message("Build Type: ${CMAKE_BUILD_TYPE}")
 
 # Pull in modules.
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMakeModules/")
+include(DuckStationUtils)
 
 # Platform detection.
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   set(LINUX TRUE)
-  set(SUPPORTS_X11 TRUE)
-  set(SUPPORTS_WAYLAND TRUE)
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
   set(FREEBSD TRUE)
-  set(SUPPORTS_X11 TRUE)
 endif()
 
-# Set minimum OS version for macOS. 10.14 should work.
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14.0" CACHE STRING "")
+# Renderer options.
+option(ENABLE_OPENGL "Build with OpenGL renderer" ON)
+option(ENABLE_VULKAN "Build with Vulkan renderer" ON)
 
 # Global options.
 if(NOT ANDROID)
   option(BUILD_NOGUI_FRONTEND "Build the NoGUI frontend" OFF)
   option(BUILD_QT_FRONTEND "Build the Qt frontend" ON)
   option(BUILD_REGTEST "Build regression test runner" OFF)
-  option(ENABLE_CUBEB "Build with Cubeb audio output" ON)
-  option(ENABLE_OPENGL "Build with OpenGL renderer" ON)
-  option(ENABLE_VULKAN "Build with Vulkan renderer" ON)
-  option(ENABLE_DISCORD_PRESENCE "Build with Discord Rich Presence support" ON)
-  option(ENABLE_CHEEVOS "Build with RetroAchievements support" ON)
-  option(USE_SDL2 "Link with SDL2 for controller support" ON)
-endif()
+  option(BUILD_TESTS "Build unit tests" OFF)
 
+  set(ENABLE_CUBEB ON)
+  set(ENABLE_DISCORD_PRESENCE ON)
+  set(ENABLE_SDL2 ON)
 
-# OpenGL context creation methods.
-if(SUPPORTS_X11)
-  option(USE_X11 "Support X11 window system" ON)
-endif()
-if(SUPPORTS_WAYLAND)
-  option(USE_WAYLAND "Support Wayland window system" OFF)
-endif()
-if((LINUX OR FREEBSD) OR ANDROID OR SWITCH)
-  option(USE_EGL "Support EGL OpenGL context creation" ON)
-endif()
-if((LINUX OR FREEBSD) AND NOT ANDROID)
-  option(USE_DRMKMS "Support DRM/KMS OpenGL contexts" OFF)
-  option(USE_FBDEV "Support FBDev OpenGL contexts" OFF)
-  option(USE_EVDEV "Support EVDev controller interface" OFF)
-endif()
-
-# Force EGL when using Wayland
-if(USE_WAYLAND)
-  set(USE_EGL ON)
-endif()
-
-if(ANDROID)
-  if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+  if(LINUX OR FREEBSD)
+    option(ENABLE_X11 "Support X11 window system" ON)
+    option(ENABLE_WAYLAND "Support Wayland window system" ON)
   endif()
-  set(BUILD_NOGUI_FRONTEND OFF)
-  set(BUILD_QT_FRONTEND OFF)
-  set(BUILD_REGTEST OFF)
-  set(ENABLE_CUBEB OFF)
-  set(ENABLE_OPENGL ON)
-  set(ENABLE_VULKAN ON)
-  set(ENABLE_DISCORD_PRESENCE OFF)
-  set(ENABLE_CHEEVOS ON)
-  set(USE_SDL2 OFF)
-  set(USE_X11 OFF)
-  set(USE_WAYLAND OFF)
-endif()
-
-
-# Common include/library directories on Windows.
-if(WIN32 AND USE_SDL2)
-  set(SDL2_FOUND TRUE)
-  set(SDL2_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/include")
-  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(SDL2_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib64/SDL2.lib")
-    set(SDL2MAIN_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib64/SDL2main.lib")
-    set(SDL2_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/bin64/SDL2.dll")
-    set(Qt6_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/qt/6.1.0/msvc2019_64/lib/cmake/Qt6")
-  else()
-    set(SDL2_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib32/SDL2.lib")
-    set(SDL2MAIN_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/lib32/SDL2main.lib")
-    set(SDL2_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/sdl2/bin32/SDL2.dll")
-    set(Qt6_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep/msvc/qt/6.1.0/msvc2019_32/lib/cmake/Qt6")
+  if(APPLE)
+    option(SKIP_POSTPROCESS_BUNDLE "Disable bundle post-processing, including Qt additions" OFF)
   endif()
 endif()
 
-
-# Required libraries.
-if(NOT ANDROID)
-  if(NOT WIN32 AND USE_SDL2)
-    find_package(SDL2 REQUIRED)
-  endif()
-  if(NOT WIN32)
-    find_package(CURL REQUIRED)
-  endif()
-  if(BUILD_QT_FRONTEND)
-    find_package(Qt6 COMPONENTS Core Gui Widgets Network LinguistTools REQUIRED)
-  endif()
-endif()
-
-if(USE_EGL)
+# Everything except Windows/Mac use EGL.
+if(ENABLE_OPENGL AND (LINUX OR FREEBSD OR ANDROID))
   find_package(EGL REQUIRED)
+  set(ENABLE_EGL TRUE)
 endif()
-if(USE_X11)
+
+if(ENABLE_X11)
   find_package(X11 REQUIRED)
   if (NOT X11_Xrandr_FOUND)
     message(FATAL_ERROR "XRandR extension is required")
   endif()
 endif()
-if(USE_WAYLAND)
+if(ENABLE_WAYLAND)
   message(STATUS "Wayland support enabled")
-endif()
-if(USE_DRMKMS AND USE_FBDEV)
-  message(FATAL_ERROR "Only one of DRM/KMS and FBDev can be enabled")
-endif()
-if(USE_DRMKMS)
-  find_package(GBM REQUIRED)
-  find_package(Libdrm REQUIRED)
-  message(STATUS "DRM/KMS support enabled")
-endif()
-if(USE_FBDEV)
-  message(STATUS "FBDev Support enabled")
-endif()
-if(USE_EVDEV)
-  message(STATUS "EVDev Support enabled")
-  find_package(LIBEVDEV REQUIRED)
-endif()
-if(ENABLE_CHEEVOS)
-  message(STATUS "RetroAchievements support enabled")
 endif()
 
 
@@ -163,38 +87,21 @@ if(MSVC)
   # COMDAT folding/remove unused functions.
   set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /OPT:REF /OPT:ICF")
   set(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO} /OPT:REF /OPT:ICF")
-
-  # Enable LTO/LTCG on Release builds.
-  if(${CMAKE_BUILD_TYPE} STREQUAL "Release")
-    cmake_policy(SET CMP0069 NEW)
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT IPO_IS_SUPPORTED)
-    if(IPO_IS_SUPPORTED)
-      message(STATUS "Enabling LTCG/IPO.")
-      set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
-    else()
-      message(WARNING "LTCG/IPO is not supported, this will make the build slightly slower.")
-    endif()
-  endif()
 endif()
 
 
 # Default symbol visibility to hidden, that way we don't go through the PLT for intra-library calls.
 if(ANDROID)
+  cmake_policy(SET CMP0063 NEW)
+  set(CMAKE_POLICY_DEFAULT_CMP0063 NEW)
   set(CMAKE_C_VISIBILITY_PRESET hidden)
   set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-
-  # -fno-semantic-interposition appears to be broken on Macs... of course.
-  if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang") AND NOT APPLE AND NOT ANDROID)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-semantic-interposition")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-semantic-interposition")
-  endif()
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-semantic-interposition")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-semantic-interposition")
 endif()
 
 
-# Detect C++ version support.
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Warning disables.
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     include(CheckCXXFlag)
     check_cxx_flag(-Wall COMPILER_SUPPORTS_WALL)
@@ -208,25 +115,44 @@ endif()
 
 
 # Detect processor type.
-if("${CMAKE_OSX_ARCHITECTURES}" STREQUAL "arm64")
-  # Cross-compile on macos.
-  set(CPU_ARCH "aarch64")
+if(APPLE AND NOT "${CMAKE_OSX_ARCHITECTURES}" STREQUAL "")
+  # Universal binaries.
+  if("x86_64" IN_LIST CMAKE_OSX_ARCHITECTURES)
+    set(CPU_ARCH_X64 TRUE)
+    message("Building x86_64 MacOS binaries.")
+  endif()
+  if("arm64" IN_LIST CMAKE_OSX_ARCHITECTURES)
+    set(CPU_ARCH_ARM64 TRUE)
+    message("Building ARM64 MacOS binaries.")
+  endif()
 elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86_64" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "amd64" OR
-   "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "AMD64")
+       "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "AMD64" OR "${CMAKE_OSX_ARCHITECTURES}" STREQUAL "x86_64")
   if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(CPU_ARCH "x64")
+    set(CPU_ARCH_X64 TRUE)
+    message("Building x86_64 binaries.")
   else()
     # Cross-compiling 32-bit build. 32-bit hosts are not supported.
-    set(CPU_ARCH "x86")
+    set(CPU_ARCH_X86 TRUE)
+    message(FATAL_ERROR "Building x86_32 binaries is not supported.")
   endif()
 elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "i386" OR
        "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "i686")
-  set(CPU_ARCH "x86")
+  set(CPU_ARCH_X86 TRUE)
+  message(FATAL_ERROR "Building x86_32 binaries is not supported.")
 elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64")
-  set(CPU_ARCH "aarch64")
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8) # Might have an A64 kernel, e.g. Raspbian.
+    set(CPU_ARCH_ARM64 TRUE)
+    message("Building ARM64 binaries.")
+  else()
+    set(CPU_ARCH_ARM32 TRUE)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -marm -march=armv7-a")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -marm -march=armv7-a")
+    message("Building ARM32 binaries on ARM64.")
+  endif()
 elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "armv7-a" OR
        "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "armv7l")
-  set(CPU_ARCH "aarch32")
+  set(CPU_ARCH_ARM32 TRUE)
+  message("Building ARM32 binaries.")
   if(ANDROID)
     # Force ARM mode, since apparently ANDROID_ARM_MODE isn't working..
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -marm")
@@ -236,8 +162,33 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm" OR "${CMAKE_SYSTEM_PROCESSOR}"
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -marm -march=armv7-a")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -marm -march=armv7-a")
   endif()
+elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "riscv64")
+  set(CPU_ARCH_RISCV64 TRUE)
+  message("Building RISC-V 64 binaries.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -finline-atomics")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -finline-atomics")
+
+  # Still need this, apparently.
+  link_libraries("-latomic")
+
+  if(NOT "${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+    # Frame pointers generate an annoying amount of code on leaf functions.
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fomit-frame-pointer")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fomit-frame-pointer")
+  endif()
 else()
   message(FATAL_ERROR "Unknown system processor: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+
+# We don't need exceptions, disable them to save a bit of code size.
+if(MSVC)
+  string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  string(REPLACE "/GR" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_HAS_EXCEPTIONS=0 /permissive-")
+else()
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
 endif()
 
 
@@ -259,14 +210,28 @@ find_package(Threads REQUIRED)
 
 # Enable large file support on Linux 32-bit platforms.
 # Android is deliberately ommitted here as it didn't support 64-bit ops on files until Android 7/N.
-if((LINUX OR FREEBSD) AND (${CPU_ARCH} STREQUAL "x86" OR ${CPU_ARCH} STREQUAL "aarch32"))
+if((LINUX OR FREEBSD) AND (CPU_ARCH_X86 OR CPU_ARCH_ARM32))
   add_definitions("-D_FILE_OFFSET_BITS=64")
 endif()
 
+if(BUILD_TESTS)
+  enable_testing()
+endif()
+
+# Prevent fmt from being built with exceptions, or being thrown at call sites.
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFMT_EXCEPTIONS=0")
+
+# Use C++17 for building dependencies (some aren't C++20-aware, e.g. reshadefx).
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Recursively include the source tree.
-enable_testing()
+include(DuckStationDependencies)
 add_subdirectory(dep)
+
+# Use C++20 for building the main libraries.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_subdirectory(src)
 
 if(ANDROID)

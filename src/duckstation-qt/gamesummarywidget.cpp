@@ -1,20 +1,24 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "gamesummarywidget.h"
-#include "common/string_util.h"
-#include "core/game_database.h"
-#include "fmt/format.h"
-#include "frontend-common/game_list.h"
 #include "qthost.h"
 #include "qtprogresscallback.h"
-#include "settingsdialog.h"
-#include <QtConcurrent/QtConcurrent>
+#include "settingswindow.h"
+
+#include "core/game_database.h"
+#include "core/game_list.h"
+
+#include "common/string_util.h"
+
+#include "fmt/format.h"
+
+#include <QtCore/QDateTime>
 #include <QtCore/QFuture>
 #include <QtWidgets/QMessageBox>
 
 GameSummaryWidget::GameSummaryWidget(const std::string& path, const std::string& serial, DiscRegion region,
-                                     const GameDatabase::Entry* entry, SettingsDialog* dialog, QWidget* parent)
+                                     const GameDatabase::Entry* entry, SettingsWindow* dialog, QWidget* parent)
   : m_dialog(dialog)
 {
   m_ui.setupUi(this);
@@ -30,14 +34,14 @@ GameSummaryWidget::GameSummaryWidget(const std::string& path, const std::string&
   for (u32 i = 0; i < static_cast<u32>(DiscRegion::Count); i++)
   {
     m_ui.region->addItem(QtUtils::GetIconForRegion(static_cast<DiscRegion>(i)),
-                         qApp->translate("DiscRegion", Settings::GetDiscRegionDisplayName(static_cast<DiscRegion>(i))));
+                         QString::fromUtf8(Settings::GetDiscRegionDisplayName(static_cast<DiscRegion>(i))));
   }
 
   for (u32 i = 0; i < static_cast<u32>(GameDatabase::CompatibilityRating::Count); i++)
   {
     m_ui.compatibility->addItem(QtUtils::GetIconForCompatibility(static_cast<GameDatabase::CompatibilityRating>(i)),
-                                qApp->translate("GameDatabase", GameDatabase::GetCompatibilityRatingDisplayName(
-                                                                  static_cast<GameDatabase::CompatibilityRating>(i))));
+                                QString::fromUtf8(GameDatabase::GetCompatibilityRatingDisplayName(
+                                  static_cast<GameDatabase::CompatibilityRating>(i))));
   }
 
   populateUi(path, serial, region, entry);
@@ -101,16 +105,15 @@ void GameSummaryWidget::populateUi(const std::string& path, const std::string& s
       m_ui.releaseInfo->setText(tr("Unknown"));
 
     QString controllers;
-    if (entry->supported_controllers != 0 && entry->supported_controllers != static_cast<u32>(-1))
+    if (entry->supported_controllers != 0 && entry->supported_controllers != static_cast<u16>(-1))
     {
       for (u32 i = 0; i < static_cast<u32>(ControllerType::Count); i++)
       {
-        if ((entry->supported_controllers & (1u << i)) != 0)
+        if ((entry->supported_controllers & static_cast<u16>(1u << i)) != 0)
         {
           if (!controllers.isEmpty())
             controllers.append(", ");
-          controllers.append(
-            qApp->translate("ControllerType", Settings::GetControllerTypeDisplayName(static_cast<ControllerType>(i))));
+          controllers.append(Settings::GetControllerTypeDisplayName(static_cast<ControllerType>(i)));
         }
       }
     }
@@ -134,7 +137,7 @@ void GameSummaryWidget::populateUi(const std::string& path, const std::string& s
       m_ui.entryType->setCurrentIndex(static_cast<int>(gentry->type));
   }
 
-  m_ui.inputProfile->addItem(QIcon::fromTheme(QStringLiteral("gamepad-line")), tr("Use Global Settings"));
+  m_ui.inputProfile->addItem(QIcon::fromTheme(QStringLiteral("controller-digital-line")), tr("Use Global Settings"));
   for (const std::string& name : InputManager::GetInputProfileNames())
     m_ui.inputProfile->addItem(QString::fromStdString(name));
 
@@ -178,7 +181,7 @@ void GameSummaryWidget::populateTracksInfo()
 
     QTableWidgetItem* num = new QTableWidgetItem(tr("Track %1").arg(track));
     num->setIcon(QIcon::fromTheme((mode == CDImage::TrackMode::Audio) ? QStringLiteral("file-music-line") :
-                                                                        QStringLiteral("dvd-line")));
+                                                                        QStringLiteral("disc-line")));
     m_ui.tracks->insertRow(row);
     m_ui.tracks->setItem(row, 0, num);
     m_ui.tracks->setItem(row, 1, new QTableWidgetItem(track_mode_strings[static_cast<u32>(mode)]));
@@ -216,13 +219,6 @@ void GameSummaryWidget::onComputeHashClicked()
     return;
   }
 
-#ifndef _DEBUGFAST
-  // Kick off hash preparation asynchronously, as building the map of results may take a while
-  // This breaks for DebugFast because of the iterator debug level mismatch.
-  QFuture<const GameDatabase::TrackHashesMap*> result =
-    QtConcurrent::run([]() { return &GameDatabase::GetTrackHashesMap(); });
-#endif
-
   QtModalProgressCallback progress_callback(this);
   progress_callback.SetProgressRange(image->GetTrackCount());
 
@@ -256,6 +252,7 @@ void GameSummaryWidget::onComputeHashClicked()
   if (calculate_hash_success)
   {
     std::string found_revision;
+    std::string found_serial;
     m_redump_search_keyword = CDImageHasher::HashToString(track_hashes.front());
 
     progress_callback.SetStatusText("Verifying hashes...");
@@ -267,11 +264,7 @@ void GameSummaryWidget::onComputeHashClicked()
     // 2. For each data track match, try to match all audio tracks
     //    If all match, assume this revision. Else, try other revisions,
     //    and accept the one with the most matches.
-#ifndef _DEBUGFAST
-    const GameDatabase::TrackHashesMap& hashes_map = *result.result();
-#else
     const GameDatabase::TrackHashesMap& hashes_map = GameDatabase::GetTrackHashesMap();
-#endif
 
     auto data_track_matches = hashes_map.equal_range(track_hashes[0]);
     if (data_track_matches.first != data_track_matches.second)
@@ -314,13 +307,30 @@ void GameSummaryWidget::onComputeHashClicked()
         }
       }
 
-      found_revision = best_data_match->second.revisionString;
+      found_revision = best_data_match->second.revision_str;
+      found_serial = best_data_match->second.serial;
     }
 
+    QString text;
+
     if (!found_revision.empty())
+      text = tr("Revision: %1").arg(found_revision.empty() ? tr("N/A") : QString::fromStdString(found_revision));
+
+    if (found_serial != m_ui.serial->text().toStdString())
     {
-      m_ui.revision->setText(
-        tr("Revision: %1").arg(found_revision.empty() ? tr("N/A") : QString::fromStdString(found_revision)));
+      text =
+        tr("Serial Mismatch: %1 vs %2%3").arg(QString::fromStdString(found_serial)).arg(m_ui.serial->text()).arg(text);
+    }
+
+    if (!text.isEmpty())
+    {
+      if (m_ui.verifySpacer)
+      {
+        m_ui.verifyLayout->removeItem(m_ui.verifySpacer);
+        delete m_ui.verifySpacer;
+        m_ui.verifySpacer = nullptr;
+      }
+      m_ui.revision->setText(text);
       m_ui.revision->setVisible(true);
     }
   }

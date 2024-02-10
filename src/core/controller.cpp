@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "controller.h"
@@ -7,17 +7,17 @@
 #include "digital_controller.h"
 #include "fmt/format.h"
 #include "guncon.h"
+#include "host.h"
 #include "negcon.h"
 #include "playstation_mouse.h"
 #include "util/state_wrapper.h"
 
 static const Controller::ControllerInfo s_none_info = {ControllerType::None,
                                                        "None",
-                                                       "Not Connected",
+                                                       TRANSLATE_NOOP("ControllerType", "Not Connected"),
                                                        nullptr,
-                                                       0,
-                                                       nullptr,
-                                                       0,
+                                                       {},
+                                                       {},
                                                        Controller::VibrationCapabilities::NoVibration};
 
 static const Controller::ControllerInfo* s_controller_info[] = {
@@ -25,18 +25,24 @@ static const Controller::ControllerInfo* s_controller_info[] = {
   &GunCon::INFO, &PlayStationMouse::INFO,
 };
 
-Controller::Controller(u32 index) : m_index(index) {}
+Controller::Controller(u32 index) : m_index(index)
+{
+}
 
 Controller::~Controller() = default;
 
-void Controller::Reset() {}
+void Controller::Reset()
+{
+}
 
 bool Controller::DoState(StateWrapper& sw, bool apply_input_state)
 {
   return !sw.HasError();
 }
 
-void Controller::ResetTransferState() {}
+void Controller::ResetTransferState()
+{
+}
 
 bool Controller::Transfer(const u8 data_in, u8* data_out)
 {
@@ -49,7 +55,9 @@ float Controller::GetBindState(u32 index) const
   return 0.0f;
 }
 
-void Controller::SetBindState(u32 index, float value) {}
+void Controller::SetBindState(u32 index, float value)
+{
+}
 
 u32 Controller::GetButtonStateBits() const
 {
@@ -66,11 +74,8 @@ std::optional<u32> Controller::GetAnalogInputBytes() const
   return std::nullopt;
 }
 
-void Controller::LoadSettings(SettingsInterface& si, const char* section) {}
-
-bool Controller::GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode)
+void Controller::LoadSettings(SettingsInterface& si, const char* section)
 {
-  return false;
 }
 
 std::unique_ptr<Controller> Controller::Create(ControllerType type, u32 index)
@@ -133,47 +138,7 @@ std::vector<std::pair<std::string, std::string>> Controller::GetControllerTypeNa
 {
   std::vector<std::pair<std::string, std::string>> ret;
   for (const ControllerInfo* info : s_controller_info)
-    ret.emplace_back(info->name, info->display_name);
-
-  return ret;
-}
-
-std::vector<std::string> Controller::GetControllerBinds(const std::string_view& type)
-{
-  std::vector<std::string> ret;
-
-  const ControllerInfo* info = GetControllerInfo(type);
-  if (info)
-  {
-    for (u32 i = 0; i < info->num_bindings; i++)
-    {
-      const ControllerBindingInfo& bi = info->bindings[i];
-      if (bi.type == ControllerBindingType::Unknown || bi.type == ControllerBindingType::Motor)
-        continue;
-
-      ret.emplace_back(info->bindings[i].name);
-    }
-  }
-
-  return ret;
-}
-
-std::vector<std::string> Controller::GetControllerBinds(ControllerType type)
-{
-  std::vector<std::string> ret;
-
-  const ControllerInfo* info = GetControllerInfo(type);
-  if (info)
-  {
-    for (u32 i = 0; i < info->num_bindings; i++)
-    {
-      const ControllerBindingInfo& bi = info->bindings[i];
-      if (bi.type == ControllerBindingType::Unknown || bi.type == ControllerBindingType::Motor)
-        continue;
-
-      ret.emplace_back(info->bindings[i].name);
-    }
-  }
+    ret.emplace_back(info->name, Host::TranslateToString("ControllerType", info->display_name));
 
   return ret;
 }
@@ -184,7 +149,7 @@ std::optional<u32> Controller::GetBindIndex(ControllerType type, const std::stri
   if (!info)
     return std::nullopt;
 
-  for (u32 i = 0; i < info->num_bindings; i++)
+  for (u32 i = 0; i < static_cast<u32>(info->bindings.size()); i++)
   {
     if (bind_name == info->bindings[i].name)
       return i;

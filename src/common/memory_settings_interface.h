@@ -29,6 +29,10 @@ public:
   void SetDoubleValue(const char* section, const char* key, double value) override;
   void SetBoolValue(const char* section, const char* key, bool value) override;
   void SetStringValue(const char* section, const char* key, const char* value) override;
+
+  std::vector<std::pair<std::string, std::string>> GetKeyValueList(const char* section) const override;
+  void SetKeyValueList(const char* section, const std::vector<std::pair<std::string, std::string>>& items) override;
+
   bool ContainsValue(const char* section, const char* key) const override;
   void DeleteValue(const char* section, const char* key) override;
   void ClearSection(const char* section) override;
@@ -47,8 +51,8 @@ public:
   using SettingsInterface::GetUIntValue;
 
 private:
-  using KeyMap = UnorderedStringMultimap<std::string>;
-  using SectionMap = UnorderedStringMap<KeyMap>;
+  using KeyMap = PreferUnorderedStringMultimap<std::string>;
+  using SectionMap = PreferUnorderedStringMap<KeyMap>;
 
   void SetValue(const char* section, const char* key, std::string value);
 

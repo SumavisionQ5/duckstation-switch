@@ -1,12 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "jit_code_buffer.h"
+
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/log.h"
-#include "common/platform.h"
+#include "common/memmap.h"
+
 #include <algorithm>
+
 Log_SetChannel(JitCodeBuffer);
 
 #if defined(_WIN32)
@@ -19,11 +22,6 @@ extern "C" char __start__;
 #else
 #include <errno.h>
 #include <sys/mman.h>
-#endif
-
-#if defined(__APPLE__) && defined(__aarch64__)
-// pthread_jit_write_protect_np()
-#include <pthread.h>
 #endif
 
 JitCodeBuffer::JitCodeBuffer() = default;
@@ -51,25 +49,38 @@ bool JitCodeBuffer::Allocate(u32 size /* = 64 * 1024 * 1024 */, u32 far_code_siz
 
   m_total_size = size + far_code_size;
 
-#if defined(_WIN32)
-  m_code_ptr = static_cast<u8*>(VirtualAlloc(nullptr, m_total_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE));
-  if (!m_code_ptr)
+#ifdef CPU_ARCH_X64
+  // Try to find a region in 32-bit range of ourselves.
+  // Assume that the DuckStation binary will at max be 256MB. Therefore the max offset is
+  // +/- 256MB + round_up_pow2(size). This'll be 512MB for the JITs.
+  static const u8 base_ptr = 0;
+  const u8* base =
+    reinterpret_cast<const u8*>(Common::AlignDownPow2(reinterpret_cast<uintptr_t>(&base_ptr), HOST_PAGE_SIZE));
+  const u32 max_displacement = 0x80000000u - Common::NextPow2(256 * 1024 * 1024 + m_total_size);
+  const u8* max_address = ((base + max_displacement) < base) ?
+                            reinterpret_cast<const u8*>(std::numeric_limits<uintptr_t>::max()) :
+                            (base + max_displacement);
+  const u8* min_address = ((base - max_displacement) > base) ? nullptr : (base - max_displacement);
+  const u32 step = 256 * 1024 * 1024;
+  const u32 steps = static_cast<u32>(max_address - min_address) / step;
+  for (u32 offset = 0; offset < steps; offset++)
   {
-    Log_ErrorPrintf("VirtualAlloc(RWX, %u) for internal buffer failed: %u", m_total_size, GetLastError());
-    return false;
+    const u8* addr = max_address - (offset * step);
+    Log_VerboseFmt("Trying {} (base {}, offset {}, displacement 0x{:X})", static_cast<const void*>(addr),
+                   static_cast<const void*>(base), offset, static_cast<ptrdiff_t>(addr - base));
+    if (TryAllocateAt(addr))
+      break;
   }
-#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
-  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#if defined(__APPLE__) && defined(__aarch64__)
-  // MAP_JIT and toggleable write protection is required on Apple Silicon.
-  flags |= MAP_JIT;
-#endif
-
-  m_code_ptr = static_cast<u8*>(mmap(nullptr, m_total_size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0));
-  if (!m_code_ptr)
+  if (m_code_ptr)
   {
-    Log_ErrorPrintf("mmap(RWX, %u) for internal buffer failed: %d", m_total_size, errno);
-    return false;
+    Log_InfoFmt("Allocated JIT buffer of size {} at {} (0x{:X} bytes away)", m_total_size,
+                static_cast<void*>(m_code_ptr), static_cast<ptrdiff_t>(m_code_ptr - base));
+  }
+  else
+  {
+    Log_ErrorPrint("Failed to allocate JIT buffer in range, expect crashes.");
+    if (!TryAllocateAt(nullptr))
+      return false;
   }
 #elif defined(__SWITCH__)
   m_base_memory = static_cast<u8*>(aligned_alloc(0x1000, m_total_size));
@@ -134,7 +145,8 @@ bool JitCodeBuffer::Allocate(u32 size /* = 64 * 1024 * 1024 */, u32 far_code_siz
 
   virtmemUnlock();
 #else
-  return false;
+  if (!TryAllocateAt(nullptr))
+    return false;
 #endif
 
   m_free_code_ptr = m_code_ptr;
@@ -149,6 +161,62 @@ bool JitCodeBuffer::Allocate(u32 size /* = 64 * 1024 * 1024 */, u32 far_code_siz
   m_old_protection = 0;
   m_owns_buffer = true;
   return true;
+}
+
+bool JitCodeBuffer::TryAllocateAt(const void* addr)
+{
+#if defined(_WIN32)
+  m_code_ptr = static_cast<u8*>(VirtualAlloc(const_cast<void*>(addr), m_total_size,
+                                             addr ? (MEM_RESERVE | MEM_COMMIT) : MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+  if (!m_code_ptr)
+  {
+    if (!addr)
+      Log_ErrorPrintf("VirtualAlloc(RWX, %u) for internal buffer failed: %u", m_total_size, GetLastError());
+    return false;
+  }
+
+  return true;
+#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
+  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(__linux__)
+  // Linux does the right thing, allows us to not disturb an existing mapping.
+  if (addr)
+    flags |= MAP_FIXED_NOREPLACE;
+#elif defined(__FreeBSD__)
+  // FreeBSD achieves the same with MAP_FIXED and MAP_EXCL.
+  if (addr)
+    flags |= MAP_FIXED | MAP_EXCL;
+#elif defined(__APPLE__) && defined(__aarch64__)
+  // MAP_JIT and toggleable write protection is required on Apple Silicon.
+  flags |= MAP_JIT;
+#elif defined(__APPLE__)
+  // MAP_FIXED is needed on x86 apparently.. hopefully there's nothing mapped at this address, otherwise we'll end up
+  // clobbering it..
+  if (addr)
+    flags |= MAP_FIXED;
+#endif
+
+  m_code_ptr =
+    static_cast<u8*>(mmap(const_cast<void*>(addr), m_total_size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0));
+  if (!m_code_ptr)
+  {
+    if (!addr)
+      Log_ErrorPrintf("mmap(RWX, %u) for internal buffer failed: %d", m_total_size, errno);
+
+    return false;
+  }
+  else if (addr && m_code_ptr != addr)
+  {
+    if (munmap(m_code_ptr, m_total_size) != 0)
+      Log_ErrorPrintf("Failed to munmap() incorrectly hinted allocation: %d", errno);
+    m_code_ptr = nullptr;
+    return false;
+  }
+
+  return true;
+#else
+  return false;
+#endif
 }
 
 bool JitCodeBuffer::Initialize(void* buffer, u32 size, u32 far_code_size /* = 0 */, u32 guard_size /* = 0 */)
@@ -291,7 +359,7 @@ void JitCodeBuffer::CommitCode(u32 length)
   if (length == 0)
     return;
 
-#if defined(CPU_AARCH32) || defined(CPU_AARCH64)
+#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64)
   // ARM instruction and data caches are not coherent, we need to flush after every block.
   FlushInstructionCache(m_free_code_ptr, length);
 #endif
@@ -306,7 +374,7 @@ void JitCodeBuffer::CommitFarCode(u32 length)
   if (length == 0)
     return;
 
-#if defined(CPU_AARCH32) || defined(CPU_AARCH64)
+#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64)
   // ARM instruction and data caches are not coherent, we need to flush after every block.
   FlushInstructionCache(m_free_far_code_ptr, length);
 #endif
@@ -318,7 +386,7 @@ void JitCodeBuffer::CommitFarCode(u32 length)
 
 void JitCodeBuffer::Reset()
 {
-  WriteProtect(false);
+  MemMap::BeginCodeWrite();
 
   m_free_code_ptr = m_code_ptr + m_guard_size + m_code_reserve_size;
   m_code_used = 0;
@@ -341,7 +409,7 @@ void JitCodeBuffer::Reset()
     FlushInstructionCache(m_free_far_code_ptr, m_far_code_size);
   }
 
-  WriteProtect(true);
+  MemMap::EndCodeWrite();
 }
 
 void JitCodeBuffer::Align(u32 alignment, u8 padding_value)
@@ -370,26 +438,3 @@ void JitCodeBuffer::FlushInstructionCache(void* address, u32 size)
 #error Unknown platform.
 #endif
 }
-
-#if defined(__APPLE__) && defined(__aarch64__)
-
-void JitCodeBuffer::WriteProtect(bool enabled)
-{
-  static bool initialized = false;
-  static bool needs_write_protect = false;
-
-  if (!initialized)
-  {
-    initialized = true;
-    needs_write_protect = (pthread_jit_write_protect_supported_np() != 0);
-    if (needs_write_protect)
-      Log_InfoPrint("pthread_jit_write_protect_np() will be used before writing to JIT space.");
-  }
-
-  if (!needs_write_protect)
-    return;
-
-  pthread_jit_write_protect_np(enabled ? 1 : 0);
-}
-
-#endif

@@ -52,9 +52,7 @@
 extern "C" {
 #endif
 
-#if !(defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64))
-#  error "Dispatching is currently only supported on x86 and x86_64."
-#endif
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
 
 /*!
  * @def XXH_X86DISPATCH_ALLOW_AVX
@@ -129,9 +127,9 @@ extern "C" {
  */
 #ifndef XXH_DISPATCH_AVX2
 #  if (defined(__GNUC__) && (__GNUC__ > 4)) /* GCC 5.0+ */ \
-   || (defined(_MSC_VER) && _MSC_VER >= 1900) /* VS 2015+ */ \
-   || (defined(_MSC_FULL_VER) && _MSC_FULL_VER >= 180030501) /* VS 2013 Update 2 */ \
-   || XXH_HAS_INCLUDE(<avx2intrin.h>) /* GCC/Clang internal header */
+   || (defined(_MSC_VER) && _MSC_VER >= 1900 && !defined(__clang__)) /* VS 2015+ */ \
+   || (defined(_MSC_FULL_VER) && _MSC_FULL_VER >= 180030501 && !defined(__clang__)) /* VS 2013 Update 2 */ \
+   || (XXH_HAS_INCLUDE(<avx2intrin.h>) && !defined(_MSC_VER)) /* GCC/Clang internal header */
 #    define XXH_DISPATCH_AVX2 1   /* enable dispatch towards AVX2 */
 #  else
 #    define XXH_DISPATCH_AVX2 0
@@ -154,8 +152,8 @@ extern "C" {
 #ifndef XXH_DISPATCH_AVX512
 #  if (defined(__GNUC__) \
        && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9))) /* GCC 4.9+ */ \
-   || (defined(_MSC_VER) && _MSC_VER >= 1910) /* VS 2017+ */ \
-   || XXH_HAS_INCLUDE(<avx512fintrin.h>) /* GCC/Clang internal header */
+   || (defined(_MSC_VER) && _MSC_VER >= 1910 && !defined(__clang__)) /* VS 2017+ */ \
+   || (XXH_HAS_INCLUDE(<avx512fintrin.h>) && !defined(_MSC_VER)) /* GCC/Clang internal header */
 #    define XXH_DISPATCH_AVX512 1   /* enable dispatch towards AVX512 */
 #  else
 #    define XXH_DISPATCH_AVX512 0
@@ -763,6 +761,8 @@ XXH3_128bits_update_dispatch(XXH3_state_t* state, const void* input, size_t len)
     if (XXH_g_dispatch128.update == NULL) XXH_setDispatch();
     return XXH_g_dispatch128.update(state, (const xxh_u8*)input, len);
 }
+
+#endif // defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
 
 #if defined (__cplusplus)
 }

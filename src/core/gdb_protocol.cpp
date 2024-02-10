@@ -4,17 +4,20 @@
 #include "gdb_protocol.h"
 #include "bus.h"
 #include "cpu_core_private.h"
-#include "common/log.h"
-#include "common/string_util.h"
 #include "cpu_core.h"
-#include "frontend-common/common_host.h"
 #include "system.h"
+
+#include "common/log.h"
+#include "common/small_string.h"
+#include "common/string_util.h"
+
 #include <functional>
 #include <iomanip>
 #include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+
 Log_SetChannel(GDBProtocol);
 
 namespace GDBProtocol
@@ -63,7 +66,7 @@ static std::optional<std::string_view> DeserializePacket(const std::string_view&
 static std::string SerializePacket(const std::string_view& in)
 {
   std::stringstream ss;
-  ss << '$' << in << '#' << StringUtil::StdStringFromFormat("%02x", ComputeChecksum(in));
+  ss << '$' << in << '#' << TinyString::from_format("{:02x}", ComputeChecksum(in));
   return ss.str();
 }
 
@@ -107,7 +110,7 @@ static const std::array<u32*, 38> REGISTERS {
   &CPU::g_state.regs.hi,
   &CPU::g_state.cop0_regs.BadVaddr,
   &CPU::g_state.cop0_regs.cause.bits,
-  &CPU::g_state.regs.pc,
+  &CPU::g_state.pc,
 };
 
 /// Number of registers in GDB remote protocol for MIPS III.
@@ -303,7 +306,7 @@ std::string ProcessPacket(const std::string_view& data)
   // Try to invoke packet command.
   bool processed = false;
   for (const auto& command : COMMANDS) {
-    if (StringUtil::StartsWith(packet->data(), command.first)) {
+    if (packet->starts_with(command.first)) {
       Log_DebugPrintf("Processing command '%s'", command.first);
 
       // Invoke command, remove command name from payload.

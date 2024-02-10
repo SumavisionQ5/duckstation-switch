@@ -2,29 +2,36 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/bitfield.h"
-#include "common/fifo_queue.h"
-#include "common/rectangle.h"
 #include "gpu_types.h"
 #include "timers.h"
 #include "types.h"
+
+#include "util/gpu_texture.h"
+
+#include "common/bitfield.h"
+#include "common/fifo_queue.h"
+#include "common/rectangle.h"
+
 #include <algorithm>
 #include <array>
 #include <deque>
 #include <memory>
+#include <string>
 #include <tuple>
 #include <vector>
 
+class SmallStringBase;
+
 class StateWrapper;
 
-class HostDisplay;
+class GPUDevice;
 class GPUTexture;
+class GPUPipeline;
 
+struct Settings;
 class TimingEvent;
-class Timers;
 
-namespace Threading
-{
+namespace Threading {
 class Thread;
 }
 
@@ -81,21 +88,24 @@ public:
   GPU();
   virtual ~GPU();
 
-  virtual GPURenderer GetRendererType() const = 0;
   virtual const Threading::Thread* GetSWThread() const = 0;
+  virtual bool IsHardwareRenderer() const = 0;
 
   virtual bool Initialize();
   virtual void Reset(bool clear_vram);
   virtual bool DoState(StateWrapper& sw, GPUTexture** save_to_texture, bool update_display);
 
   // Graphics API state reset/restore - call when drawing the UI etc.
-  virtual void ResetGraphicsAPIState();
-  virtual void RestoreGraphicsAPIState();
+  // TODO: replace with "invalidate cached state"
+  virtual void RestoreDeviceContext();
 
   // Render statistics debug window.
   void DrawDebugStateWindow();
+  void GetStatsString(SmallStringBase& str);
+  void GetMemoryStatsString(SmallStringBase& str);
+  void ResetStatistics();
+  void UpdateStatistics(u32 frame_count);
 
-  bool IsHardwareRenderer();
   void CPUClockChanged();
 
   // MMIO access
@@ -130,6 +140,9 @@ public:
     return (!m_force_progressive_scan) && m_GPUSTAT.SkipDrawingToActiveField();
   }
 
+  /// Returns true if we're in PAL mode, otherwise false if NTSC.
+  ALWAYS_INLINE bool IsInPALMode() const { return m_GPUSTAT.pal_mode; }
+
   /// Returns the number of pending GPU ticks.
   TickCount GetPendingCRTCTicks() const;
   TickCount GetPendingCommandTicks() const;
@@ -144,7 +157,7 @@ public:
   void SynchronizeCRTC();
 
   /// Recompile shaders/recreate framebuffers when needed.
-  virtual void UpdateSettings();
+  virtual void UpdateSettings(const Settings& old_settings);
 
   /// Updates the resolution scale when it's set to automatic.
   virtual void UpdateResolutionScale();
@@ -157,42 +170,48 @@ public:
 
   float ComputeHorizontalFrequency() const;
   float ComputeVerticalFrequency() const;
-  float GetDisplayAspectRatio() const;
+  float ComputeDisplayAspectRatio() const;
 
-#ifdef _WIN32
-  // gpu_hw_d3d11.cpp
-  static std::unique_ptr<GPU> CreateHardwareD3D11Renderer();
-
-  // gpu_hw_d3d12.cpp
-  static std::unique_ptr<GPU> CreateHardwareD3D12Renderer();
-#endif
-
-#ifdef WITH_OPENGL
-  // gpu_hw_opengl.cpp
-  static std::unique_ptr<GPU> CreateHardwareOpenGLRenderer();
-#endif
-
-#ifdef WITH_VULKAN
-  // gpu_hw_vulkan.cpp
-  static std::unique_ptr<GPU> CreateHardwareVulkanRenderer();
-#endif
-
-#ifdef __SWITCH__
-  static std::unique_ptr<GPU> CreateHardwareDeko3DRenderer();
-#endif
-
-  // gpu_sw.cpp
+  static std::unique_ptr<GPU> CreateHardwareRenderer();
   static std::unique_ptr<GPU> CreateSoftwareRenderer();
 
   // Converts window coordinates into horizontal ticks and scanlines. Returns false if out of range. Used for lightguns.
-  bool ConvertScreenCoordinatesToBeamTicksAndLines(s32 window_x, s32 window_y, float x_scale, u32* out_tick,
-                                                   u32* out_line) const;
+  void ConvertScreenCoordinatesToDisplayCoordinates(float window_x, float window_y, float* display_x,
+                                                    float* display_y) const;
+  bool ConvertDisplayCoordinatesToBeamTicksAndLines(float display_x, float display_y, float x_scale, u32* out_tick,
+                                                    u32* out_line) const;
 
   // Returns the video clock frequency.
   TickCount GetCRTCFrequency() const;
 
   // Dumps raw VRAM to a file.
   bool DumpVRAMToFile(const char* filename);
+
+  // Ensures all buffered vertices are drawn.
+  virtual void FlushRender();
+
+  ALWAYS_INLINE const void* GetDisplayTextureHandle() const { return m_display_texture; }
+  ALWAYS_INLINE s32 GetDisplayWidth() const { return m_display_width; }
+  ALWAYS_INLINE s32 GetDisplayHeight() const { return m_display_height; }
+  ALWAYS_INLINE float GetDisplayAspectRatio() const { return m_display_aspect_ratio; }
+  ALWAYS_INLINE bool HasDisplayTexture() const { return static_cast<bool>(m_display_texture); }
+
+  /// Helper function for computing the draw rectangle in a larger window.
+  Common::Rectangle<s32> CalculateDrawRect(s32 window_width, s32 window_height, bool apply_aspect_ratio = true) const;
+
+  /// Helper function to save current display texture to PNG.
+  bool WriteDisplayTextureToFile(std::string filename, bool full_resolution = true, bool apply_aspect_ratio = true,
+                                 bool compress_on_thread = false);
+
+  /// Renders the display, optionally with postprocessing to the specified image.
+  bool RenderScreenshotToBuffer(u32 width, u32 height, const Common::Rectangle<s32>& draw_rect, bool postfx,
+                                std::vector<u32>* out_pixels, u32* out_stride, GPUTexture::Format* out_format);
+
+  /// Helper function to save screenshot to PNG.
+  bool RenderScreenshotToFile(std::string filename, bool internal_resolution = false, bool compress_on_thread = false);
+
+  /// Draws the current display texture, with any post-processing.
+  bool PresentDisplay();
 
 protected:
   TickCount CRTCTicksToSystemTicks(TickCount crtc_ticks, TickCount fractional_ticks) const;
@@ -293,10 +312,9 @@ protected:
   virtual void UpdateVRAM(u32 x, u32 y, u32 width, u32 height, const void* data, bool set_mask, bool check_mask);
   virtual void CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 width, u32 height);
   virtual void DispatchRenderCommand();
-  virtual void FlushRender();
   virtual void ClearDisplay();
   virtual void UpdateDisplay();
-  virtual void DrawRendererStats(bool is_idle_frame);
+  virtual void DrawRendererStats();
 
   ALWAYS_INLINE void AddDrawTriangleTicks(s32 x1, s32 y1, s32 x2, s32 y2, s32 x3, s32 y3, bool shaded, bool textured,
                                           bool semitransparent)
@@ -410,27 +428,15 @@ protected:
 
     // original values
     GPUDrawModeReg mode_reg;
-    u16 palette_reg; // from vertex
+    GPUTexturePaletteReg palette_reg; // from vertex
     u32 texture_window_value;
 
     // decoded values
-    u32 texture_page_x;
-    u32 texture_page_y;
-    u32 texture_palette_x;
-    u32 texture_palette_y;
     GPUTextureWindow texture_window;
     bool texture_x_flip;
     bool texture_y_flip;
     bool texture_page_changed;
     bool texture_window_changed;
-
-    /// Returns a rectangle comprising the texture palette area.
-    ALWAYS_INLINE_RELEASE Common::Rectangle<u32> GetTexturePaletteRectangle() const
-    {
-      static constexpr std::array<u32, 4> palette_widths = {{16, 256, 0, 0}};
-      return Common::Rectangle<u32>::FromExtents(texture_palette_x, texture_palette_y,
-                                                 palette_widths[static_cast<u8>(mode_reg.texture_mode.GetValue())], 1);
-    }
 
     ALWAYS_INLINE bool IsTexturePageChanged() const { return texture_page_changed; }
     ALWAYS_INLINE void SetTexturePageChanged() { texture_page_changed = true; }
@@ -562,19 +568,61 @@ protected:
   TickCount m_max_run_ahead = 128;
   u32 m_fifo_size = 128;
 
-  struct Stats
+  void ClearDisplayTexture();
+  void SetDisplayTexture(GPUTexture* texture, s32 view_x, s32 view_y, s32 view_width, s32 view_height);
+  void SetDisplayTextureRect(s32 view_x, s32 view_y, s32 view_width, s32 view_height);
+  void SetDisplayParameters(s32 display_width, s32 display_height, s32 active_left, s32 active_top, s32 active_width,
+                            s32 active_height, float display_aspect_ratio);
+
+  Common::Rectangle<float> CalculateDrawRect(s32 window_width, s32 window_height, float* out_left_padding,
+                                             float* out_top_padding, float* out_scale, float* out_x_scale,
+                                             bool apply_aspect_ratio = true) const;
+
+  bool RenderDisplay(GPUTexture* target, const Common::Rectangle<s32>& draw_rect, bool postfx);
+
+  s32 m_display_width = 0;
+  s32 m_display_height = 0;
+  s32 m_display_active_left = 0;
+  s32 m_display_active_top = 0;
+  s32 m_display_active_width = 0;
+  s32 m_display_active_height = 0;
+  float m_display_aspect_ratio = 1.0f;
+
+  std::unique_ptr<GPUPipeline> m_display_pipeline;
+  GPUTexture* m_display_texture = nullptr;
+  s32 m_display_texture_view_x = 0;
+  s32 m_display_texture_view_y = 0;
+  s32 m_display_texture_view_width = 0;
+  s32 m_display_texture_view_height = 0;
+
+  struct Counters
   {
-    u32 num_vram_reads;
-    u32 num_vram_fills;
-    u32 num_vram_writes;
-    u32 num_vram_copies;
+    u32 num_reads;
+    u32 num_writes;
+    u32 num_copies;
     u32 num_vertices;
-    u32 num_polygons;
+    u32 num_primitives;
+
+    // u32 num_read_texture_updates;
+    // u32 num_ubo_updates;
   };
+
+  struct Stats : Counters
+  {
+    size_t host_buffer_streamed;
+    u32 host_num_draws;
+    u32 host_num_render_passes;
+    u32 host_num_copies;
+    u32 host_num_downloads;
+    u32 host_num_uploads;
+  };
+
+  Counters m_counters = {};
   Stats m_stats = {};
-  Stats m_last_stats = {};
 
 private:
+  bool CompileDisplayPipeline();
+
   using GP0CommandHandler = bool (GPU::*)();
   using GP0CommandHandlerTable = std::array<GP0CommandHandler, 256>;
   static GP0CommandHandlerTable GenerateGP0CommandHandlerTable();

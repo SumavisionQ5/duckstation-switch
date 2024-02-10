@@ -1,8 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
 #include "common/bitfield.h"
+#include "common/bitutils.h"
 #include "common/rectangle.h"
 #include "types.h"
 #include <array>
@@ -117,29 +118,25 @@ union GPURenderCommand
   }
 };
 
-// Helper/format conversion functions - constants from https://stackoverflow.com/a/9069480
-ALWAYS_INLINE static constexpr u32 VRAMConvert5To8(u32 color)
-{
-  return (((color * 527u) + 23u) >> 6);
-}
-ALWAYS_INLINE static constexpr u32 VRAMConvert8To5(u32 color)
-{
-  return (((color * 249u) + 1014u) >> 11);
-}
 ALWAYS_INLINE static constexpr u32 VRAMRGBA5551ToRGBA8888(u32 color)
 {
-  const u32 r = VRAMConvert5To8(color & 31u);
-  const u32 g = VRAMConvert5To8((color >> 5) & 31u);
-  const u32 b = VRAMConvert5To8((color >> 10) & 31u);
+  // Helper/format conversion functions - constants from https://stackoverflow.com/a/9069480
+#define E5TO8(color) ((((color) * 527u) + 23u) >> 6)
+
+  const u32 r = E5TO8(color & 31u);
+  const u32 g = E5TO8((color >> 5) & 31u);
+  const u32 b = E5TO8((color >> 10) & 31u);
   const u32 a = ((color >> 15) != 0) ? 255 : 0;
   return ZeroExtend32(r) | (ZeroExtend32(g) << 8) | (ZeroExtend32(b) << 16) | (ZeroExtend32(a) << 24);
+
+#undef E5TO8
 }
 
 ALWAYS_INLINE static constexpr u16 VRAMRGBA8888ToRGBA5551(u32 color)
 {
-  const u32 r = VRAMConvert8To5(color & 0xFFu);
-  const u32 g = VRAMConvert8To5((color >> 8) & 0xFFu);
-  const u32 b = VRAMConvert8To5((color >> 16) & 0xFFu);
+  const u32 r = (color & 0xFFu) >> 3;
+  const u32 g = ((color >> 8) & 0xFFu) >> 3;
+  const u32 b = ((color >> 16) & 0xFFu) >> 3;
   const u32 a = ((color >> 24) & 0x01u);
   return Truncate16(r | (g << 5) | (b << 10) | (a << 15));
 }
@@ -170,6 +167,9 @@ union GPUDrawModeReg
   // Bits 0..5 are returned in the GPU status register, latched at E1h/polygon draw time.
   static constexpr u32 GPUSTAT_MASK = 0b11111111111;
 
+  static constexpr std::array<u32, 4> texture_page_widths = {
+    {TEXTURE_PAGE_WIDTH / 4, TEXTURE_PAGE_WIDTH / 2, TEXTURE_PAGE_WIDTH, TEXTURE_PAGE_WIDTH}};
+
   u16 bits;
 
   BitField<u16, u8, 0, 4> texture_page_x_base;
@@ -191,8 +191,6 @@ union GPUDrawModeReg
   /// Returns a rectangle comprising the texture page area.
   ALWAYS_INLINE_RELEASE Common::Rectangle<u32> GetTexturePageRectangle() const
   {
-    static constexpr std::array<u32, 4> texture_page_widths = {
-      {TEXTURE_PAGE_WIDTH / 4, TEXTURE_PAGE_WIDTH / 2, TEXTURE_PAGE_WIDTH, TEXTURE_PAGE_WIDTH}};
     return Common::Rectangle<u32>::FromExtents(GetTexturePageBaseX(), GetTexturePageBaseY(),
                                                texture_page_widths[static_cast<u8>(texture_mode.GetValue())],
                                                TEXTURE_PAGE_HEIGHT);
@@ -210,6 +208,13 @@ union GPUTexturePaletteReg
 
   ALWAYS_INLINE u32 GetXBase() const { return static_cast<u32>(x) * 16u; }
   ALWAYS_INLINE u32 GetYBase() const { return static_cast<u32>(y); }
+
+  /// Returns a rectangle comprising the texture palette area.
+  ALWAYS_INLINE_RELEASE Common::Rectangle<u32> GetRectangle(GPUTextureMode mode) const
+  {
+    static constexpr std::array<u32, 4> palette_widths = {{16, 256, 0, 0}};
+    return Common::Rectangle<u32>::FromExtents(GetXBase(), GetYBase(), palette_widths[static_cast<u8>(mode)], 1);
+  }
 };
 
 struct GPUTextureWindow

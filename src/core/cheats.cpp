@@ -7,7 +7,7 @@
 #include "common/byte_stream.h"
 #include "common/file_system.h"
 #include "common/log.h"
-#include "common/string.h"
+#include "common/small_string.h"
 #include "common/string_util.h"
 #include "controller.h"
 #include "cpu_code_cache.h"
@@ -25,8 +25,8 @@ using KeyValuePairVector = std::vector<std::pair<std::string, std::string>>;
 
 static bool IsValidScanAddress(PhysicalMemoryAddress address)
 {
-  if ((address & CPU::DCACHE_LOCATION_MASK) == CPU::DCACHE_LOCATION &&
-      (address & CPU::DCACHE_OFFSET_MASK) < CPU::DCACHE_SIZE)
+  if ((address & CPU::SCRATCHPAD_ADDR_MASK) == CPU::SCRATCHPAD_ADDR &&
+      (address & CPU::SCRATCHPAD_OFFSET_MASK) < CPU::SCRATCHPAD_SIZE)
   {
     return true;
   }
@@ -397,9 +397,9 @@ bool CheatList::LoadFromLibretroString(const std::string& str)
 
   for (u32 i = 0; i < num_cheats; i++)
   {
-    const std::string* desc = FindKey(kvp, TinyString::FromFormat("cheat%u_desc", i));
-    const std::string* code = FindKey(kvp, TinyString::FromFormat("cheat%u_code", i));
-    const std::string* enable = FindKey(kvp, TinyString::FromFormat("cheat%u_enable", i));
+    const std::string* desc = FindKey(kvp, TinyString::from_format("cheat{}_desc", i));
+    const std::string* code = FindKey(kvp, TinyString::from_format("cheat{}_code", i));
+    const std::string* enable = FindKey(kvp, TinyString::from_format("cheat{}_enable", i));
     if (!desc || !code || !enable)
     {
       Log_WarningPrintf("Missing desc/code/enable for cheat %u", i);
@@ -689,7 +689,7 @@ bool CheatList::SaveToPCSXRFile(const char* filename)
 
 bool CheatList::LoadFromPackage(const std::string& serial)
 {
-  const std::optional<std::string> db_string(Host::ReadResourceFileToString("chtdb.txt"));
+  const std::optional<std::string> db_string(Host::ReadResourceFileToString("chtdb.txt", false));
   if (!db_string.has_value())
     return false;
 
@@ -1076,14 +1076,14 @@ void CheatCode::Apply() const
 
       case InstructionCode::ScratchpadWrite16:
       {
-        DoMemoryWrite<u16>(CPU::DCACHE_LOCATION | (inst.address & CPU::DCACHE_OFFSET_MASK), inst.value16);
+        DoMemoryWrite<u16>(CPU::SCRATCHPAD_ADDR | (inst.address & CPU::SCRATCHPAD_OFFSET_MASK), inst.value16);
         index++;
       }
       break;
 
       case InstructionCode::ExtScratchpadWrite32:
       {
-        DoMemoryWrite<u32>(CPU::DCACHE_LOCATION | (inst.address & CPU::DCACHE_OFFSET_MASK), inst.value32);
+        DoMemoryWrite<u32>(CPU::SCRATCHPAD_ADDR | (inst.address & CPU::SCRATCHPAD_OFFSET_MASK), inst.value32);
         index++;
       }
       break;
@@ -2767,7 +2767,7 @@ void CheatCode::ApplyOnDisable() const
 }
 
 static std::array<const char*, 1> s_cheat_code_type_names = {{"Gameshark"}};
-static std::array<const char*, 1> s_cheat_code_type_display_names{{TRANSLATABLE("Cheats", "Gameshark")}};
+static std::array<const char*, 1> s_cheat_code_type_display_names{{TRANSLATE_NOOP("Cheats", "Gameshark")}};
 
 const char* CheatCode::GetTypeName(Type type)
 {
@@ -2792,7 +2792,7 @@ std::optional<CheatCode::Type> CheatCode::ParseTypeName(const char* str)
 
 static std::array<const char*, 2> s_cheat_code_activation_names = {{"Manual", "EndFrame"}};
 static std::array<const char*, 2> s_cheat_code_activation_display_names{
-  {TRANSLATABLE("Cheats", "Manual"), TRANSLATABLE("Cheats", "Automatic (Frame End)")}};
+  {TRANSLATE_NOOP("Cheats", "Manual"), TRANSLATE_NOOP("Cheats", "Automatic (Frame End)")}};
 
 const char* CheatCode::GetActivationName(Activation activation)
 {

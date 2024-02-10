@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
+#include "util/window_info.h"
+
 #include "common/types.h"
-#include "common/window_info.h"
+
 #include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QWidget>
 #include <optional>
@@ -29,13 +32,13 @@ public:
   void updateCursor(bool hidden);
 
   void handleCloseEvent(QCloseEvent* event);
+  void destroy();
 
 Q_SIGNALS:
   void windowResizedEvent(int width, int height, float scale);
   void windowRestoredEvent();
   void windowKeyEvent(int key_code, bool pressed);
   void windowTextEntered(const QString& text);
-  void windowMouseMoveEvent(bool relative, float x, float y);
   void windowMouseButtonEvent(int button, bool pressed);
   void windowMouseWheelEvent(const QPoint& angle_delta);
 
@@ -43,6 +46,7 @@ protected:
   bool event(QEvent* event) override;
 
 private:
+  bool isActuallyFullscreen() const;
   void updateCenterPos();
 
   QPoint m_relative_mouse_start_pos{};
@@ -52,6 +56,7 @@ private:
   bool m_clip_mouse_enabled = false;
 #endif
   bool m_cursor_hidden = false;
+  bool m_destroying = false;
 
   std::vector<u32> m_keys_pressed_with_modifiers;
 

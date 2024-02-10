@@ -8,21 +8,20 @@
 #include "ui_displaysettingswidget.h"
 
 class PostProcessingChainConfigWidget;
-class SettingsDialog;
+class SettingsWindow;
 
 class DisplaySettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  DisplaySettingsWidget(SettingsDialog* dialog, QWidget* parent);
+  DisplaySettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~DisplaySettingsWidget();
 
 private Q_SLOTS:
   void populateGPUAdaptersAndResolutions();
   void onGPUAdapterIndexChanged();
   void onGPUFullscreenModeIndexChanged();
-  void onIntegerFilteringChanged();
   void onAspectRatioChanged();
 
 private:
@@ -30,5 +29,5 @@ private:
 
   Ui::DisplaySettingsWidget m_ui;
 
-  SettingsDialog* m_dialog;
+  SettingsWindow* m_dialog;
 };

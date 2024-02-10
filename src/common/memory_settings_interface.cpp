@@ -145,12 +145,33 @@ void MemorySettingsInterface::SetDoubleValue(const char* section, const char* ke
 
 void MemorySettingsInterface::SetBoolValue(const char* section, const char* key, bool value)
 {
-  SetValue(section, key, std::to_string(value));
+  SetValue(section, key, value ? "true" : "false");
 }
 
 void MemorySettingsInterface::SetStringValue(const char* section, const char* key, const char* value)
 {
   SetValue(section, key, value);
+}
+
+std::vector<std::pair<std::string, std::string>> MemorySettingsInterface::GetKeyValueList(const char* section) const
+{
+  std::vector<std::pair<std::string, std::string>> output;
+  auto sit = m_sections.find(section);
+  if (sit != m_sections.end())
+  {
+    for (const auto& it : sit->second)
+      output.emplace_back(it.first, it.second);
+  }
+  return output;
+}
+
+void MemorySettingsInterface::SetKeyValueList(const char* section,
+                                              const std::vector<std::pair<std::string, std::string>>& items)
+{
+  auto sit = m_sections.find(section);
+  sit->second.clear();
+  for (const auto& [key, value] : items)
+    sit->second.emplace(key, value);
 }
 
 void MemorySettingsInterface::SetValue(const char* section, const char* key, std::string value)
@@ -160,7 +181,7 @@ void MemorySettingsInterface::SetValue(const char* section, const char* key, std
     sit = m_sections.emplace(std::make_pair(std::string(section), KeyMap())).first;
 
   const auto range = sit->second.equal_range(key);
-  if (range.first == sit->second.end())
+  if (range.first == range.second)
   {
     sit->second.emplace(std::string(key), std::move(value));
     return;

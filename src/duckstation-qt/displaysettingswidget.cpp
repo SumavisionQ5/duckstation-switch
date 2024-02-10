@@ -4,22 +4,21 @@
 #include "displaysettingswidget.h"
 #include "core/gpu.h"
 #include "core/settings.h"
-#include "postprocessingchainconfigwidget.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
 #include <QtWidgets/QMessageBox>
 
 // For enumerating adapters.
 #ifdef _WIN32
-#include "frontend-common/d3d11_host_display.h"
-#include "frontend-common/d3d12_host_display.h"
+#include "util/d3d11_device.h"
+#include "util/d3d12_device.h"
 #endif
-#ifdef WITH_VULKAN
-#include "frontend-common/vulkan_host_display.h"
+#ifdef ENABLE_VULKAN
+#include "util/vulkan_device.h"
 #endif
 
-DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* parent)
+DisplaySettingsWidget::DisplaySettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
@@ -42,9 +41,9 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.displayAlignment, "Display", "Alignment",
                                                &Settings::ParseDisplayAlignment, &Settings::GetDisplayAlignmentName,
                                                Settings::DEFAULT_DISPLAY_ALIGNMENT);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayLinearFiltering, "Display", "LinearFiltering", true);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayIntegerScaling, "Display", "IntegerScaling", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayStretch, "Display", "Stretch", false);
+  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.displayScaling, "Display", "Scaling",
+                                               &Settings::ParseDisplayScaling, &Settings::GetDisplayScalingName,
+                                               Settings::DEFAULT_DISPLAY_SCALING);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.internalResolutionScreenshots, "Display",
                                                "InternalResolutionScreenshots", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vsync, "Display", "VSync", false);
@@ -57,7 +56,7 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showCPU, "Display", "ShowCPU", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showGPU, "Display", "ShowGPU", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showInput, "Display", "ShowInputs", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showSettings, "Display", "ShowEnhancements", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showGPUStatistics, "Display", "ShowGPUStatistics", false);
 
   connect(m_ui.renderer, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &DisplaySettingsWidget::populateGPUAdaptersAndResolutions);
@@ -67,15 +66,11 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
           &DisplaySettingsWidget::onGPUFullscreenModeIndexChanged);
   connect(m_ui.displayAspectRatio, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &DisplaySettingsWidget::onAspectRatioChanged);
-  connect(m_ui.displayIntegerScaling, &QCheckBox::stateChanged, this,
-          &DisplaySettingsWidget::onIntegerFilteringChanged);
   populateGPUAdaptersAndResolutions();
-  onIntegerFilteringChanged();
   onAspectRatioChanged();
 
   dialog->registerWidgetHelp(
-    m_ui.renderer, tr("Renderer"),
-    qApp->translate("GPURenderer", Settings::GetRendererDisplayName(Settings::DEFAULT_GPU_RENDERER)),
+    m_ui.renderer, tr("Renderer"), QString::fromUtf8(Settings::GetRendererDisplayName(Settings::DEFAULT_GPU_RENDERER)),
     tr("Chooses the backend to use for rendering the console/game visuals. <br>Depending on your system and hardware, "
        "Direct3D 11 and OpenGL hardware backends may be available. <br>The software renderer offers the best "
        "compatibility, but is the slowest and does not offer any enhancements."));
@@ -88,38 +83,29 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
                              tr("Chooses the fullscreen resolution and frequency."));
   dialog->registerWidgetHelp(
     m_ui.displayAspectRatio, tr("Aspect Ratio"),
-    qApp->translate("DisplayAspectRatio", Settings::GetDisplayAspectRatioName(Settings::DEFAULT_DISPLAY_ASPECT_RATIO)),
+    QString::fromUtf8(Settings::GetDisplayAspectRatioDisplayName(Settings::DEFAULT_DISPLAY_ASPECT_RATIO)),
     tr("Changes the aspect ratio used to display the console's output to the screen. The default is Auto (Game Native) "
        "which automatically adjusts the aspect ratio to match how a game would be shown on a typical TV of the era."));
   dialog->registerWidgetHelp(
     m_ui.displayCropMode, tr("Crop Mode"),
-    qApp->translate("DisplayCropMode", Settings::GetDisplayCropModeDisplayName(Settings::DEFAULT_DISPLAY_CROP_MODE)),
+    QString::fromUtf8(Settings::GetDisplayCropModeDisplayName(Settings::DEFAULT_DISPLAY_CROP_MODE)),
     tr("Determines how much of the area typically not visible on a consumer TV set to crop/hide. <br>"
        "Some games display content in the overscan area, or use it for screen effects. <br>May "
        "not display correctly with the \"All Borders\" setting. \"Only Overscan\" offers a good "
        "compromise between stability and hiding black borders."));
   dialog->registerWidgetHelp(
     m_ui.displayAlignment, tr("Position"),
-    qApp->translate("DisplayCropMode", Settings::GetDisplayAlignmentDisplayName(Settings::DEFAULT_DISPLAY_ALIGNMENT)),
+    QString::fromUtf8(Settings::GetDisplayAlignmentDisplayName(Settings::DEFAULT_DISPLAY_ALIGNMENT)),
     tr("Determines the position on the screen when black borders must be added."));
-  dialog->registerWidgetHelp(m_ui.displayLinearFiltering, tr("Linear Upscaling"), tr("Checked"),
-                             tr("Uses bilinear texture filtering when displaying the console's framebuffer to the "
-                                "screen. <br>Disabling filtering "
-                                "will producer a sharper, blockier/pixelated image. Enabling will smooth out the "
-                                "image. <br>The option will be less "
-                                "noticable the higher the resolution scale."));
   dialog->registerWidgetHelp(
-    m_ui.displayIntegerScaling, tr("Integer Upscaling"), tr("Unchecked"),
-    tr("Adds padding to the display area to ensure that the ratio between pixels on the host to "
-       "pixels in the console is an integer number. <br>May result in a sharper image in some 2D games."));
-  dialog->registerWidgetHelp(m_ui.displayStretch, tr("Stretch To Fill"), tr("Unchecked"),
-                             tr("Fills the window with the active display area, regardless of the aspect ratio."));
+    m_ui.displayScaling, tr("Scaling"), tr("Bilinear (Smooth)"),
+    tr("Determines how the emulated console's output is upscaled or downscaled to your monitor's resolution."));
   dialog->registerWidgetHelp(m_ui.internalResolutionScreenshots, tr("Internal Resolution Screenshots"), tr("Unchecked"),
                              tr("Saves screenshots at internal render resolution and without postprocessing. If this "
                                 "option is disabled, the screenshots will be taken at the window's resolution. "
                                 "Internal resolution screenshots can be very large at high rendering scales."));
   dialog->registerWidgetHelp(
-    m_ui.vsync, tr("VSync"), tr("Checked"),
+    m_ui.vsync, tr("VSync"), tr("Unchecked"),
     tr("Enable this option to match DuckStation's refresh rate with your current monitor or screen. "
        "VSync is automatically disabled when it is not possible (e.g. running at non-100% speed)."));
   dialog->registerWidgetHelp(m_ui.threadedPresentation, tr("Threaded Presentation"), tr("Checked"),
@@ -143,6 +129,10 @@ DisplaySettingsWidget::DisplaySettingsWidget(SettingsDialog* dialog, QWidget* pa
     tr("Shows the host's CPU usage based on threads in the top-right corner of the display. This does not display the "
        "emulated system CPU's usage. If a value close to 100% is being displayed, this means your host's CPU is likely "
        "the bottleneck. In this case, you should reduce enhancement-related settings such as overclocking."));
+  dialog->registerWidgetHelp(m_ui.showGPUStatistics, tr("Show GPU Statistics"), tr("Unchecked"),
+                             tr("Shows information about the emulated GPU in the top-right corner of the display."));
+  dialog->registerWidgetHelp(m_ui.showGPU, tr("Show GPU Usage"), tr("Unchecked"),
+                             tr("Shows the host's GPU usage in the top-right corner of the display."));
   dialog->registerWidgetHelp(
     m_ui.showInput, tr("Show Controller Input"), tr("Unchecked"),
     tr("Shows the current controller state of the system in the bottom-left corner of the display."));
@@ -164,48 +154,58 @@ void DisplaySettingsWidget::setupAdditionalUi()
 {
   for (u32 i = 0; i < static_cast<u32>(GPURenderer::Count); i++)
   {
-    m_ui.renderer->addItem(
-      qApp->translate("GPURenderer", Settings::GetRendererDisplayName(static_cast<GPURenderer>(i))));
+    m_ui.renderer->addItem(QString::fromUtf8(Settings::GetRendererDisplayName(static_cast<GPURenderer>(i))));
   }
 
   for (u32 i = 0; i < static_cast<u32>(DisplayAspectRatio::Count); i++)
   {
     m_ui.displayAspectRatio->addItem(
-      qApp->translate("DisplayAspectRatio", Settings::GetDisplayAspectRatioName(static_cast<DisplayAspectRatio>(i))));
+      QString::fromUtf8(Settings::GetDisplayAspectRatioDisplayName(static_cast<DisplayAspectRatio>(i))));
   }
 
   for (u32 i = 0; i < static_cast<u32>(DisplayCropMode::Count); i++)
   {
     m_ui.displayCropMode->addItem(
-      qApp->translate("DisplayCropMode", Settings::GetDisplayCropModeDisplayName(static_cast<DisplayCropMode>(i))));
+      QString::fromUtf8(Settings::GetDisplayCropModeDisplayName(static_cast<DisplayCropMode>(i))));
+  }
+
+  for (u32 i = 0; i < static_cast<u32>(DisplayScalingMode::Count); i++)
+  {
+    m_ui.displayScaling->addItem(
+      QString::fromUtf8(Settings::GetDisplayScalingDisplayName(static_cast<DisplayScalingMode>(i))));
   }
 
   for (u32 i = 0; i < static_cast<u32>(DisplayAlignment::Count); i++)
   {
     m_ui.displayAlignment->addItem(
-      qApp->translate("DisplayAlignment", Settings::GetDisplayAlignmentDisplayName(static_cast<DisplayAlignment>(i))));
+      QString::fromUtf8(Settings::GetDisplayAlignmentDisplayName(static_cast<DisplayAlignment>(i))));
   }
 }
 
 void DisplaySettingsWidget::populateGPUAdaptersAndResolutions()
 {
-  HostDisplay::AdapterAndModeList aml;
+  GPUDevice::AdapterAndModeList aml;
   bool thread_supported = false;
   bool threaded_presentation_supported = false;
   switch (static_cast<GPURenderer>(m_ui.renderer->currentIndex()))
   {
 #ifdef _WIN32
     case GPURenderer::HardwareD3D11:
-      aml = D3D11HostDisplay::StaticGetAdapterAndModeList();
+      aml = D3D11Device::StaticGetAdapterAndModeList();
       break;
 
     case GPURenderer::HardwareD3D12:
-      aml = D3D12HostDisplay::StaticGetAdapterAndModeList();
+      aml = D3D12Device::StaticGetAdapterAndModeList();
       break;
 #endif
-#ifdef WITH_VULKAN
+#ifdef __APPLE__
+    case GPURenderer::HardwareMetal:
+      aml = GPUDevice::WrapGetMetalAdapterAndModeList();
+      break;
+#endif
+#ifdef ENABLE_VULKAN
     case GPURenderer::HardwareVulkan:
-      aml = VulkanHostDisplay::StaticGetAdapterAndModeList(nullptr);
+      aml = VulkanDevice::StaticGetAdapterAndModeList();
       threaded_presentation_supported = true;
       break;
 #endif
@@ -287,16 +287,17 @@ void DisplaySettingsWidget::onGPUFullscreenModeIndexChanged()
   m_dialog->setStringSettingValue("GPU", "FullscreenMode", m_ui.fullscreenMode->currentText().toUtf8().constData());
 }
 
-void DisplaySettingsWidget::onIntegerFilteringChanged()
-{
-  m_ui.displayLinearFiltering->setEnabled(!m_ui.displayIntegerScaling->isChecked());
-  m_ui.displayStretch->setEnabled(!m_ui.displayIntegerScaling->isChecked());
-}
-
 void DisplaySettingsWidget::onAspectRatioChanged()
 {
-  const bool is_custom =
-    static_cast<DisplayAspectRatio>(m_ui.displayAspectRatio->currentIndex()) == DisplayAspectRatio::Custom;
+  const DisplayAspectRatio ratio =
+    Settings::ParseDisplayAspectRatio(
+      m_dialog
+        ->getEffectiveStringValue("Display", "AspectRatio",
+                                  Settings::GetDisplayAspectRatioName(Settings::DEFAULT_DISPLAY_ASPECT_RATIO))
+        .c_str())
+      .value_or(Settings::DEFAULT_DISPLAY_ASPECT_RATIO);
+
+  const bool is_custom = (ratio == DisplayAspectRatio::Custom);
 
   m_ui.customAspectRatioNumerator->setVisible(is_custom);
   m_ui.customAspectRatioDenominator->setVisible(is_custom);

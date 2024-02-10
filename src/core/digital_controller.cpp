@@ -1,13 +1,20 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "digital_controller.h"
-#include "common/assert.h"
 #include "host.h"
 #include "system.h"
+
 #include "util/state_wrapper.h"
 
-DigitalController::DigitalController(u32 index) : Controller(index) {}
+#include "IconsPromptFont.h"
+
+#include "common/assert.h"
+#include "common/bitutils.h"
+
+DigitalController::DigitalController(u32 index) : Controller(index)
+{
+}
 
 DigitalController::~DigitalController() = default;
 
@@ -131,10 +138,7 @@ bool DigitalController::Transfer(const u8 data_in, u8* data_out)
       return false;
 
     default:
-    {
       UnreachableCode();
-      return false;
-    }
   }
 }
 
@@ -144,41 +148,43 @@ std::unique_ptr<DigitalController> DigitalController::Create(u32 index)
 }
 
 static const Controller::ControllerBindingInfo s_binding_info[] = {
-#define BUTTON(name, display_name, button, genb)                                                                       \
+#define BUTTON(name, display_name, icon_name, button, genb)                                                            \
   {                                                                                                                    \
-    name, display_name, static_cast<u32>(button), Controller::ControllerBindingType::Button, genb                      \
+    name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb                      \
   }
 
-  BUTTON("Up", "D-Pad Up", DigitalController::Button::Up, GenericInputBinding::DPadUp),
-  BUTTON("Right", "D-Pad Right", DigitalController::Button::Right, GenericInputBinding::DPadRight),
-  BUTTON("Down", "D-Pad Down", DigitalController::Button::Down, GenericInputBinding::DPadDown),
-  BUTTON("Left", "D-Pad Left", DigitalController::Button::Left, GenericInputBinding::DPadLeft),
-  BUTTON("Triangle", "Triangle", DigitalController::Button::Triangle, GenericInputBinding::Triangle),
-  BUTTON("Circle", "Circle", DigitalController::Button::Circle, GenericInputBinding::Circle),
-  BUTTON("Cross", "Cross", DigitalController::Button::Cross, GenericInputBinding::Cross),
-  BUTTON("Square", "Square", DigitalController::Button::Square, GenericInputBinding::Square),
-  BUTTON("Select", "Select", DigitalController::Button::Select, GenericInputBinding::Select),
-  BUTTON("Start", "Start", DigitalController::Button::Start, GenericInputBinding::Start),
-  BUTTON("L1", "L1", DigitalController::Button::L1, GenericInputBinding::L1),
-  BUTTON("R1", "R1", DigitalController::Button::R1, GenericInputBinding::R1),
-  BUTTON("L2", "L2", DigitalController::Button::L2, GenericInputBinding::L2),
-  BUTTON("R2", "R2", DigitalController::Button::R2, GenericInputBinding::R2),
+  // clang-format off
+  BUTTON("Up", TRANSLATE_NOOP("DigitalController", "D-Pad Up"), ICON_PF_DPAD_UP, DigitalController::Button::Up, GenericInputBinding::DPadUp),
+  BUTTON("Right", TRANSLATE_NOOP("DigitalController", "D-Pad Right"), ICON_PF_DPAD_RIGHT, DigitalController::Button::Right, GenericInputBinding::DPadRight),
+  BUTTON("Down", TRANSLATE_NOOP("DigitalController", "D-Pad Down"), ICON_PF_DPAD_DOWN, DigitalController::Button::Down, GenericInputBinding::DPadDown),
+  BUTTON("Left", TRANSLATE_NOOP("DigitalController", "D-Pad Left"), ICON_PF_DPAD_LEFT, DigitalController::Button::Left, GenericInputBinding::DPadLeft),
+  BUTTON("Triangle", TRANSLATE_NOOP("DigitalController", "Triangle"), ICON_PF_BUTTON_TRIANGLE, DigitalController::Button::Triangle, GenericInputBinding::Triangle),
+  BUTTON("Circle", TRANSLATE_NOOP("DigitalController", "Circle"), ICON_PF_BUTTON_CIRCLE, DigitalController::Button::Circle, GenericInputBinding::Circle),
+  BUTTON("Cross", TRANSLATE_NOOP("DigitalController", "Cross"), ICON_PF_BUTTON_CROSS, DigitalController::Button::Cross, GenericInputBinding::Cross),
+  BUTTON("Square", TRANSLATE_NOOP("DigitalController", "Square"), ICON_PF_BUTTON_SQUARE, DigitalController::Button::Square, GenericInputBinding::Square),
+  BUTTON("Select", TRANSLATE_NOOP("DigitalController", "Select"), ICON_PF_SELECT_SHARE, DigitalController::Button::Select, GenericInputBinding::Select),
+  BUTTON("Start", TRANSLATE_NOOP("DigitalController", "Start"), ICON_PF_START, DigitalController::Button::Start, GenericInputBinding::Start),
+  BUTTON("L1", TRANSLATE_NOOP("DigitalController", "L1"), ICON_PF_LEFT_SHOULDER_L1, DigitalController::Button::L1, GenericInputBinding::L1),
+  BUTTON("R1", TRANSLATE_NOOP("DigitalController", "R1"), ICON_PF_RIGHT_SHOULDER_R1, DigitalController::Button::R1, GenericInputBinding::R1),
+  BUTTON("L2", TRANSLATE_NOOP("DigitalController", "L2"), ICON_PF_LEFT_TRIGGER_L2, DigitalController::Button::L2, GenericInputBinding::L2),
+  BUTTON("R2", TRANSLATE_NOOP("DigitalController", "R2"), ICON_PF_RIGHT_TRIGGER_R2, DigitalController::Button::R2, GenericInputBinding::R2),
+// clang-format on
 
 #undef BUTTON
 };
 
 static const SettingInfo s_settings[] = {
   {SettingInfo::Type::Boolean, "ForcePopnControllerMode",
-   TRANSLATABLE("DigitalController", "Force Pop'n Controller Mode"),
-   TRANSLATABLE("DigitalController", "Forces the Digital Controller to act as a Pop'n Controller."), "false"}};
+   TRANSLATE_NOOP("DigitalController", "Force Pop'n Controller Mode"),
+   TRANSLATE_NOOP("DigitalController", "Forces the Digital Controller to act as a Pop'n Controller."), "false", nullptr,
+   nullptr, nullptr, nullptr, nullptr, 0.0f}};
 
 const Controller::ControllerInfo DigitalController::INFO = {ControllerType::DigitalController,
                                                             "DigitalController",
-                                                            TRANSLATABLE("ControllerType", "Digital Controller"),
+                                                            TRANSLATE_NOOP("ControllerType", "Digital Controller"),
+                                                            ICON_PF_GAMEPAD,
                                                             s_binding_info,
-                                                            countof(s_binding_info),
                                                             s_settings,
-                                                            countof(s_settings),
                                                             Controller::VibrationCapabilities::NoVibration};
 
 void DigitalController::LoadSettings(SettingsInterface& si, const char* section)

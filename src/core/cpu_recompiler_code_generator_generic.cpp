@@ -29,8 +29,8 @@ void CodeGenerator::EmitStoreInterpreterLoadDelay(Reg reg, const Value& value)
   m_load_delay_dirty = true;
 }
 
-Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const Value& address,
-                                         const SpeculativeValue& address_spec, RegSize size)
+Value CodeGenerator::EmitLoadGuestMemory(Instruction instruction, const CodeCache::InstructionInfo& info,
+                                         const Value& address, const SpeculativeValue& address_spec, RegSize size)
 {
   if (address.IsConstant() && !SpeculativeIsCacheIsolated())
   {
@@ -47,7 +47,8 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
       // on Switch we can't do read only mappings
       // so all memory accesses need to be patchable
 #ifndef __SWITCH__
-      if (g_settings.IsUsingFastmem() && Bus::IsRAMAddress(static_cast<u32>(address.constant_value)))
+      // TODO: mask off...
+      if (CodeCache::IsUsingFastmem() && Bus::IsRAMAddress(static_cast<u32>(address.constant_value)))
       {
         // have to mask away the high bits for mirrors, since we don't map them in fastmem
         EmitLoadGuestRAMFastmem(Value::FromConstantU32(static_cast<u32>(address.constant_value) & Bus::g_ram_mask),
@@ -66,31 +67,31 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
 
   Value result = m_register_cache.AllocateScratch(HostPointerSize);
 
-  const bool use_fastmem =
+  const bool use_fastmem = !g_settings.cpu_recompiler_memory_exceptions &&
     (address_spec ? Bus::CanUseFastmemForAddress(*address_spec) : true) && !SpeculativeIsCacheIsolated();
   if (address_spec)
   {
     if (!use_fastmem)
     {
-      Log_ProfilePrintf("Non-constant load at 0x%08X, speculative address 0x%08X, using fastmem = %s", cbi.pc,
+      Log_ProfilePrintf("Non-constant load at 0x%08X, speculative address 0x%08X, using fastmem = %s", info.pc,
                         *address_spec, use_fastmem ? "yes" : "no");
     }
   }
   else
   {
-    Log_ProfilePrintf("Non-constant load at 0x%08X, speculative address UNKNOWN, using fastmem = %s", cbi.pc,
+    Log_ProfilePrintf("Non-constant load at 0x%08X, speculative address UNKNOWN, using fastmem = %s", info.pc,
                       use_fastmem ? "yes" : "no");
   }
 
-  if (g_settings.IsUsingFastmem() && use_fastmem)
+  if (CodeCache::IsUsingFastmem() && use_fastmem)
   {
-    EmitLoadGuestMemoryFastmem(cbi, address, size, result);
+    EmitLoadGuestMemoryFastmem(instruction, info, address, size, result);
   }
   else
   {
     AddPendingCycles(true);
     m_register_cache.FlushCallerSavedGuestRegisters(true, true);
-    EmitLoadGuestMemorySlowmem(cbi, address, size, result, false);
+    EmitLoadGuestMemorySlowmem(instruction, info, address, size, result, false);
   }
 
   // Downcast to ignore upper 56/48/32 bits. This should be a noop.
@@ -119,8 +120,9 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
   return result;
 }
 
-void CodeGenerator::EmitStoreGuestMemory(const CodeBlockInstruction& cbi, const Value& address,
-                                         const SpeculativeValue& address_spec, RegSize size, const Value& value)
+void CodeGenerator::EmitStoreGuestMemory(Instruction instruction, const CodeCache::InstructionInfo& info,
+                                         const Value& address, const SpeculativeValue& address_spec, RegSize size,
+                                         const Value& value)
 {
   if (address.IsConstant() && !SpeculativeIsCacheIsolated())
   {
@@ -139,31 +141,31 @@ void CodeGenerator::EmitStoreGuestMemory(const CodeBlockInstruction& cbi, const 
     }
   }
 
-  const bool use_fastmem =
+  const bool use_fastmem = !g_settings.cpu_recompiler_memory_exceptions &&
     (address_spec ? Bus::CanUseFastmemForAddress(*address_spec) : true) && !SpeculativeIsCacheIsolated();
   if (address_spec)
   {
     if (!use_fastmem)
     {
-      Log_ProfilePrintf("Non-constant store at 0x%08X, speculative address 0x%08X, using fastmem = %s", cbi.pc,
+      Log_ProfilePrintf("Non-constant store at 0x%08X, speculative address 0x%08X, using fastmem = %s", info.pc,
                         *address_spec, use_fastmem ? "yes" : "no");
     }
   }
   else
   {
-    Log_ProfilePrintf("Non-constant store at 0x%08X, speculative address UNKNOWN, using fastmem = %s", cbi.pc,
+    Log_ProfilePrintf("Non-constant store at 0x%08X, speculative address UNKNOWN, using fastmem = %s", info.pc,
                       use_fastmem ? "yes" : "no");
   }
 
-  if (g_settings.IsUsingFastmem() && use_fastmem)
+  if (CodeCache::IsUsingFastmem() && use_fastmem)
   {
-    EmitStoreGuestMemoryFastmem(cbi, address, size, value);
+    EmitStoreGuestMemoryFastmem(instruction, info, address, size, value);
   }
   else
   {
     AddPendingCycles(true);
     m_register_cache.FlushCallerSavedGuestRegisters(true, true);
-    EmitStoreGuestMemorySlowmem(cbi, address, size, value, false);
+    EmitStoreGuestMemorySlowmem(instruction, info, address, size, value, false);
   }
 }
 

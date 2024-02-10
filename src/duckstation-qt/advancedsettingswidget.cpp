@@ -5,10 +5,10 @@
 #include "core/gpu_types.h"
 #include "mainwindow.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
 
-static QCheckBox* addBooleanTweakOption(SettingsDialog* dialog, QTableWidget* table, QString name, std::string section,
+static QCheckBox* addBooleanTweakOption(SettingsWindow* dialog, QTableWidget* table, QString name, std::string section,
                                         std::string key, bool default_value)
 {
   const int row = table->rowCount();
@@ -39,7 +39,7 @@ static QCheckBox* setBooleanTweakOption(QTableWidget* table, int row, bool value
   return cb;
 }
 
-static QSpinBox* addIntRangeTweakOption(SettingsDialog* dialog, QTableWidget* table, QString name, std::string section,
+static QSpinBox* addIntRangeTweakOption(SettingsWindow* dialog, QTableWidget* table, QString name, std::string section,
                                         std::string key, int min_value, int max_value, int default_value)
 {
   const int row = table->rowCount();
@@ -72,7 +72,7 @@ static QSpinBox* setIntRangeTweakOption(QTableWidget* table, int row, int value)
   return cb;
 }
 
-static QDoubleSpinBox* addFloatRangeTweakOption(SettingsDialog* dialog, QTableWidget* table, QString name,
+static QDoubleSpinBox* addFloatRangeTweakOption(SettingsWindow* dialog, QTableWidget* table, QString name,
                                                 std::string section, std::string key, float min_value, float max_value,
                                                 float step_value, float default_value)
 {
@@ -109,10 +109,10 @@ static QDoubleSpinBox* setFloatRangeTweakOption(QTableWidget* table, int row, fl
 }
 
 template<typename T>
-static QComboBox* addChoiceTweakOption(SettingsDialog* dialog, QTableWidget* table, QString name, std::string section,
+static QComboBox* addChoiceTweakOption(SettingsWindow* dialog, QTableWidget* table, QString name, std::string section,
                                        std::string key, std::optional<T> (*parse_callback)(const char*),
                                        const char* (*get_value_callback)(T), const char* (*get_display_callback)(T),
-                                       const char* tr_context, u32 num_values, T default_value)
+                                       u32 num_values, T default_value)
 {
   const int row = table->rowCount();
 
@@ -124,7 +124,7 @@ static QComboBox* addChoiceTweakOption(SettingsDialog* dialog, QTableWidget* tab
 
   QComboBox* cb = new QComboBox(table);
   for (u32 i = 0; i < num_values; i++)
-    cb->addItem(qApp->translate(tr_context, get_display_callback(static_cast<T>(i))));
+    cb->addItem(QString::fromUtf8(get_display_callback(static_cast<T>(i))));
 
   if (!section.empty() || !key.empty())
   {
@@ -145,7 +145,7 @@ static void setChoiceTweakOption(QTableWidget* table, int row, T value)
   cb->setCurrentIndex(static_cast<int>(value));
 }
 
-static void addMSAATweakOption(SettingsDialog* dialog, QTableWidget* table, const QString& name)
+static void addMSAATweakOption(SettingsWindow* dialog, QTableWidget* table, const QString& name)
 {
   const int row = table->rowCount();
 
@@ -175,7 +175,53 @@ static void addMSAATweakOption(SettingsDialog* dialog, QTableWidget* table, cons
   table->setCellWidget(row, 1, msaa);
 }
 
-AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+static void addDirectoryOption(SettingsWindow* dialog, QTableWidget* table, const QString& name, std::string section,
+                               std::string key)
+{
+  const int row = table->rowCount();
+
+  table->insertRow(row);
+
+  QTableWidgetItem* name_item = new QTableWidgetItem(name);
+  name_item->setFlags(name_item->flags() & ~(Qt::ItemIsEditable | Qt::ItemIsSelectable));
+  table->setItem(row, 0, name_item);
+
+  QWidget* container = new QWidget(table);
+
+  QHBoxLayout* layout = new QHBoxLayout(container);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  QLineEdit* value = new QLineEdit(container);
+  value->setObjectName(QStringLiteral("value"));
+  SettingWidgetBinder::BindWidgetToStringSetting(dialog->getSettingsInterface(), value, std::move(section),
+                                                 std::move(key));
+  layout->addWidget(value, 1);
+
+  QPushButton* browse = new QPushButton(container);
+  browse->setText(QStringLiteral("..."));
+  browse->setMaximumWidth(32);
+  QObject::connect(browse, &QPushButton::clicked, browse, [browse, value, name]() {
+    const QString path(QDir::toNativeSeparators(QFileDialog::getExistingDirectory(
+      QtUtils::GetRootWidget(browse), qApp->translate("AdvancedSettingsWidget", "Select folder for %1").arg(name),
+      value->text())));
+    if (!path.isEmpty())
+      value->setText(path);
+  });
+  layout->addWidget(browse, 0);
+
+  table->setCellWidget(row, 1, container);
+}
+
+static void setDirectoryOption(QTableWidget* table, int row, const char* value)
+{
+  QWidget* widget = table->cellWidget(row, 1);
+  Assert(widget);
+  QLineEdit* valuew = widget->findChild<QLineEdit*>(QStringLiteral("value"));
+  Assert(valuew);
+  valuew->setText(QString::fromUtf8(value));
+}
+
+AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
@@ -183,7 +229,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsDialog* dialog, QWidget* 
   m_ui.setupUi(this);
 
   for (u32 i = 0; i < static_cast<u32>(LOGLEVEL_COUNT); i++)
-    m_ui.logLevel->addItem(qApp->translate("LogLevel", Settings::GetLogLevelDisplayName(static_cast<LOGLEVEL>(i))));
+    m_ui.logLevel->addItem(QString::fromUtf8(Settings::GetLogLevelDisplayName(static_cast<LOGLEVEL>(i))));
 
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.logLevel, "Logging", "LogLevel", &Settings::ParseLogLevelName,
                                                &Settings::GetLogLevelName, Settings::DEFAULT_LOG_LEVEL);
@@ -226,11 +272,23 @@ void AdvancedSettingsWidget::addTweakOptions()
                         "DisableAllEnhancements", false);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Show Status Indicators"), "Display",
                         "ShowStatusIndicators", true);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Show Frame Times"), "Display", "ShowFrameTimes", false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Show Settings Overlay"), "Display", "ShowEnhancements", false);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Apply Compatibility Settings"), "Main",
                         "ApplyCompatibilitySettings", true);
   addIntRangeTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Display FPS Limit"), "Display", "MaxFPS", 0, 1000, 0);
+  addChoiceTweakOption(
+    m_dialog, m_ui.tweakOptionTable, tr("Exclusive Fullscreen Control"), "Display", "ExclusiveFullscreenControl",
+    &Settings::ParseDisplayExclusiveFullscreenControl, &Settings::GetDisplayExclusiveFullscreenControlName,
+    &Settings::GetDisplayExclusiveFullscreenControlDisplayName,
+    static_cast<u32>(DisplayExclusiveFullscreenControl::Count), Settings::DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL);
 
   addMSAATweakOption(m_dialog, m_ui.tweakOptionTable, tr("Multisample Antialiasing"));
+
+  addChoiceTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Wireframe Mode"), "GPU", "WireframeMode",
+                       Settings::ParseGPUWireframeMode, Settings::GetGPUWireframeModeName,
+                       Settings::GetGPUWireframeModeDisplayName, static_cast<u32>(GPUWireframeMode::Count),
+                       GPUWireframeMode::Disabled);
 
   if (m_dialog->isPerGameSettings())
   {
@@ -256,9 +314,11 @@ void AdvancedSettingsWidget::addTweakOptions()
                         "RecompilerBlockLinking", true);
   addChoiceTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Enable Recompiler Fast Memory Access"), "CPU",
                        "FastmemMode", Settings::ParseCPUFastmemMode, Settings::GetCPUFastmemModeName,
-                       Settings::GetCPUFastmemModeDisplayName, "CPUFastmemMode",
-                       static_cast<u32>(CPUFastmemMode::Count), Settings::DEFAULT_CPU_FASTMEM_MODE);
+                       Settings::GetCPUFastmemModeDisplayName, static_cast<u32>(CPUFastmemMode::Count),
+                       Settings::DEFAULT_CPU_FASTMEM_MODE);
 
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Use Old MDEC Routines"), "Hacks", "UseOldMDECRoutines",
+                        false);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Enable VRAM Write Texture Replacement"),
                         "TextureReplacements", "EnableVRAMWriteReplacements", false);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Preload Texture Replacements"), "TextureReplacements",
@@ -284,15 +344,36 @@ void AdvancedSettingsWidget::addTweakOptions()
                          Settings::DEFAULT_GPU_MAX_RUN_AHEAD);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Use Debug Host GPU Device"), "GPU", "UseDebugDevice",
                         false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Disable Shader Cache"), "GPU", "DisableShaderCache",
+                        false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Disable Dual-Source Blend"), "GPU",
+                        "DisableDualSourceBlend", false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Disable Framebuffer Fetch"), "GPU",
+                        "DisableFramebufferFetch", false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Disable Texture Buffers"), "GPU", "DisableTextureBuffers",
+                        false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Disable Texture Copy To Self"), "GPU",
+                        "DisableTextureCopyToSelf", false);
+
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Stretch Display Vertically"), "Display",
+                        "StretchVertically", false);
 
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Increase Timer Resolution"), "Main",
                         "IncreaseTimerResolution", true);
 
+  addChoiceTweakOption(m_dialog, m_ui.tweakOptionTable, tr("CD-ROM Mechacon Version"), "CDROM", "MechaconVersion",
+                       Settings::ParseCDROMMechVersionName, Settings::GetCDROMMechVersionName,
+                       Settings::GetCDROMMechVersionDisplayName, static_cast<u8>(CDROMMechaconVersion::Count),
+                       Settings::DEFAULT_CDROM_MECHACON_VERSION);
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Allow Booting Without SBI File"), "CDROM",
                         "AllowBootingWithoutSBIFile", false);
 
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Create Save State Backups"), "General",
                         "CreateSaveStateBackups", false);
+
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Enable PCDrv"), "PCDrv", "Enabled", false);
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Enable PCDrv Writes"), "PCDrv", "EnableWrites", false);
+  addDirectoryOption(m_dialog, m_ui.tweakOptionTable, tr("PCDrv Root Directory"), "PCDrv", "Root");
 }
 
 void AdvancedSettingsWidget::onResetToDefaultClicked()
@@ -301,11 +382,15 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
   {
     int i = 0;
 
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);    // Disable all enhancements
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);     // Show status indicators
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);     // Apply compatibility settings
-    setIntRangeTweakOption(m_ui.tweakOptionTable, i++, 0);       // Display FPS limit
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Disable all enhancements
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);  // Show status indicators
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Show frame times
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Show settings overlay
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);  // Apply compatibility settings
+    setIntRangeTweakOption(m_ui.tweakOptionTable, i++, 0);    // Display FPS limit
+    setChoiceTweakOption(m_ui.tweakOptionTable, i++, Settings::DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL);
     setChoiceTweakOption(m_ui.tweakOptionTable, i++, 0);         // Multisample antialiasing
+    setChoiceTweakOption(m_ui.tweakOptionTable, i++, 0);         // Wireframe mode
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);    // PGXP vertex cache
     setFloatRangeTweakOption(m_ui.tweakOptionTable, i++, -1.0f); // PGXP geometry tolerance
     setFloatRangeTweakOption(m_ui.tweakOptionTable, i++,
@@ -313,14 +398,15 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);             // Recompiler memory exceptions
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);              // Recompiler block linking
     setChoiceTweakOption(m_ui.tweakOptionTable, i++, Settings::DEFAULT_CPU_FASTMEM_MODE); // Recompiler fastmem mode
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                             // Use Old MDEC Routines
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // VRAM write texture replacement
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Preload texture replacements
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Dump replacable VRAM writes
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Set dumped VRAM write alpha channel
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);  // Set dumped VRAM write alpha channel
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
                            Settings::DEFAULT_VRAM_WRITE_DUMP_WIDTH_THRESHOLD); // Minimum dumped VRAM width
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
-                           Settings::DEFAULT_VRAM_WRITE_DUMP_HEIGHT_THRESHOLD); // Minimum dumped VRAm height
+                           Settings::DEFAULT_VRAM_WRITE_DUMP_HEIGHT_THRESHOLD); // Minimum dumped VRAM height
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
                            static_cast<int>(Settings::DEFAULT_DMA_MAX_SLICE_TICKS)); // DMA max slice ticks
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
@@ -330,9 +416,20 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
                            static_cast<int>(Settings::DEFAULT_GPU_MAX_RUN_AHEAD)); // GPU max run-ahead
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Use debug host GPU device
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);                       // Increase timer resolution
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Allow booting without SBI file
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Create save state backups
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Disable Shader Cache
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Disable Dual-Source Blend
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Disable Framebuffer Fetch
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Disable Texture Buffers
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Disable Texture Copy To Self
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);                      // Stretch Display Vertically
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true);                       // Increase Timer Resolution
+    setChoiceTweakOption(m_ui.tweakOptionTable, i++,
+                         Settings::DEFAULT_CDROM_MECHACON_VERSION); // CDROM Mechacon Version
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);       // Allow booting without SBI file
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);       // Create save state backups
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);       // Enable PCDRV
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);       // Enable PCDRV Writes
+    setDirectoryOption(m_ui.tweakOptionTable, i++, "");             // PCDrv Root Directory
 
     return;
   }
@@ -342,12 +439,16 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
   sif->DeleteValue("Main", "DisableAllEnhancements");
   sif->DeleteValue("Display", "ShowEnhancements");
   sif->DeleteValue("Display", "ShowStatusIndicators");
+  sif->DeleteValue("Display", "ShowFrameTimes");
+  sif->DeleteValue("Display", "ShowEnhancements");
   sif->DeleteValue("Main", "ApplyCompatibilitySettings");
   sif->DeleteValue("Display", "MaxFPS");
   sif->DeleteValue("Display", "ActiveStartOffset");
   sif->DeleteValue("Display", "ActiveEndOffset");
   sif->DeleteValue("Display", "LineStartOffset");
   sif->DeleteValue("Display", "LineEndOffset");
+  sif->DeleteValue("Display", "StretchVertically");
+  sif->DeleteValue("Display", "ExclusiveFullscreenControl");
   sif->DeleteValue("GPU", "Multisamples");
   sif->DeleteValue("GPU", "PerSampleShading");
   sif->DeleteValue("GPU", "PGXPVertexCache");
@@ -362,14 +463,25 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
   sif->DeleteValue("TextureReplacements", "DumpVRAMWriteForceAlphaChannel");
   sif->DeleteValue("TextureReplacements", "DumpVRAMWriteWidthThreshold");
   sif->DeleteValue("TextureReplacements", "DumpVRAMWriteHeightThreshold");
+  sif->DeleteValue("Hacks", "UseOldMDECRoutines");
   sif->DeleteValue("Hacks", "DMAMaxSliceTicks");
   sif->DeleteValue("Hacks", "DMAHaltTicks");
   sif->DeleteValue("Hacks", "GPUFIFOSize");
   sif->DeleteValue("Hacks", "GPUMaxRunAhead");
   sif->DeleteValue("GPU", "UseDebugDevice");
+  sif->DeleteValue("GPU", "DisableShaderCache");
+  sif->DeleteValue("GPU", "DisableDualSourceBlend");
+  sif->DeleteValue("GPU", "DisableFramebufferFetch");
+  sif->DeleteValue("GPU", "DisableTextureBuffers");
+  sif->DeleteValue("GPU", "DisableTextureCopyToSelf");
+  sif->DeleteValue("Display", "StretchVertically");
   sif->DeleteValue("Main", "IncreaseTimerResolution");
+  sif->DeleteValue("CDROM", "MechaconVersion");
   sif->DeleteValue("CDROM", "AllowBootingWithoutSBIFile");
   sif->DeleteValue("General", "CreateSaveStateBackups");
+  sif->DeleteValue("PCDrv", "Enabled");
+  sif->DeleteValue("PCDrv", "EnableWrites");
+  sif->DeleteValue("PCDrv", "Root");
   sif->Save();
   while (m_ui.tweakOptionTable->rowCount() > 0)
     m_ui.tweakOptionTable->removeRow(m_ui.tweakOptionTable->rowCount() - 1);

@@ -7,7 +7,6 @@
 #include "common/string_util.h"
 #include "common/threading.h"
 #include "core/host.h"
-#include "core/host_settings.h"
 #include "nogui_host.h"
 #include "nogui_platform.h"
 
@@ -150,6 +149,11 @@ bool WaylandNoGUIPlatform::CreatePlatformWindow(std::string title)
   return true;
 }
 
+bool WaylandNoGUIPlatform::HasPlatformWindow() const
+{
+  return (m_surface != nullptr);
+}
+
 void WaylandNoGUIPlatform::DestroyPlatformWindow()
 {
   m_window_info = {};
@@ -270,7 +274,7 @@ void WaylandNoGUIPlatform::TopLevelConfigure(void* data, struct xdg_toplevel* xd
 
 void WaylandNoGUIPlatform::TopLevelClose(void* data, struct xdg_toplevel* xdg_toplevel)
 {
-  Host::RunOnCPUThread([]() { Host::RequestExit(g_settings.save_state_on_exit); });
+  Host::RunOnCPUThread([]() { Host::RequestExit(false); });
 }
 
 void WaylandNoGUIPlatform::SeatCapabilities(void* data, wl_seat* seat, uint32_t capabilities)

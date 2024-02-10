@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "qtutils.h"
-#include "common/byte_stream.h"
-#include "common/make_array.h"
+
+#include "core/game_list.h"
 #include "core/system.h"
-#include "frontend-common/game_list.h"
+
+#include "common/byte_stream.h"
+
 #include <QtCore/QCoreApplication>
 #include <QtCore/QMetaObject>
 #include <QtGui/QDesktopServices>
@@ -848,6 +850,7 @@ QIcon GetIconForRegion(DiscRegion region)
     case DiscRegion::NTSC_U:
       return QIcon(QStringLiteral(":/icons/flag-uc.svg"));
     case DiscRegion::Other:
+    case DiscRegion::NonPS1:
     default:
       return QIcon::fromTheme(QStringLiteral("file-unknow-line"));
   }
@@ -858,14 +861,14 @@ QIcon GetIconForEntryType(GameList::EntryType type)
   switch (type)
   {
     case GameList::EntryType::Disc:
-      return QIcon::fromTheme(QStringLiteral("dvd-line"));
+      return QIcon::fromTheme(QStringLiteral("disc-line"));
     case GameList::EntryType::Playlist:
       return QIcon::fromTheme(QStringLiteral("play-list-2-line"));
     case GameList::EntryType::PSF:
       return QIcon::fromTheme(QStringLiteral("file-music-line"));
     case GameList::EntryType::PSExe:
     default:
-      return QIcon::fromTheme(QStringLiteral("settings-5-line"));
+      return QIcon::fromTheme(QStringLiteral("settings-3-line"));
   }
 }
 

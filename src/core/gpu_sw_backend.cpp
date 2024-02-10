@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "gpu_sw_backend.h"
-#include "common/assert.h"
-#include "common/log.h"
-#include "gpu_sw_backend.h"
-#include "host_display.h"
 #include "system.h"
+
+#include "util/gpu_device.h"
+
 #include <algorithm>
-Log_SetChannel(GPU_SW_Backend);
 
 GPU_SW_Backend::GPU_SW_Backend() : GPUBackend()
 {
@@ -207,6 +205,9 @@ void ALWAYS_INLINE_RELEASE GPU_SW_Backend::ShadePixel(const GPUBackendDrawComman
           color.bits = Truncate16((sum - carry) | (carry - (carry >> 5)));
         }
         break;
+
+        default:
+          break;
       }
 
       // See above.

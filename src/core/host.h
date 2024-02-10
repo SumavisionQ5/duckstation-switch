@@ -3,128 +3,128 @@
 
 #pragma once
 
-#include "common/string.h"
+#include "util/host.h"
+
+#include "common/small_string.h"
 #include "common/types.h"
 
 #include <ctime>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+class SettingsInterface;
 struct WindowInfo;
 enum class AudioBackend : u8;
 enum class AudioStretchMode : u8;
+enum class RenderAPI : u32;
 class AudioStream;
 class CDImage;
 
-/// Marks a core string as being translatable.
-#define TRANSLATABLE(context, str) str
-
-/// Generic input bindings. These roughly match a DualShock 4 or XBox One controller.
-/// They are used for automatic binding to PS2 controller types, and for big picture mode navigation.
-enum class GenericInputBinding : u8
-{
-  Unknown,
-
-  DPadUp,
-  DPadRight,
-  DPadLeft,
-  DPadDown,
-
-  LeftStickUp,
-  LeftStickRight,
-  LeftStickDown,
-  LeftStickLeft,
-  L3,
-
-  RightStickUp,
-  RightStickRight,
-  RightStickDown,
-  RightStickLeft,
-  R3,
-
-  Triangle, // Y on XBox pads.
-  Circle,   // B on XBox pads.
-  Cross,    // A on XBox pads.
-  Square,   // X on XBox pads.
-
-  Select, // Share on DS4, View on XBox pads.
-  Start,  // Options on DS4, Menu on XBox pads.
-  System, // PS button on DS4, Guide button on XBox pads.
-
-  L1, // LB on Xbox pads.
-  L2, // Left trigger on XBox pads.
-  R1, // RB on XBox pads.
-  R2, // Right trigger on Xbox pads.
-
-  SmallMotor, // High frequency vibration.
-  LargeMotor, // Low frequency vibration.
-
-  Count,
-};
-
 namespace Host {
-/// Reads a file from the resources directory of the application.
-/// This may be outside of the "normal" filesystem on platforms such as Mac.
-std::optional<std::vector<u8>> ReadResourceFile(const char* filename);
+// Base setting retrieval, bypasses layers.
+std::string GetBaseStringSettingValue(const char* section, const char* key, const char* default_value = "");
+bool GetBaseBoolSettingValue(const char* section, const char* key, bool default_value = false);
+s32 GetBaseIntSettingValue(const char* section, const char* key, s32 default_value = 0);
+u32 GetBaseUIntSettingValue(const char* section, const char* key, u32 default_value = 0);
+float GetBaseFloatSettingValue(const char* section, const char* key, float default_value = 0.0f);
+double GetBaseDoubleSettingValue(const char* section, const char* key, double default_value = 0.0);
+std::vector<std::string> GetBaseStringListSetting(const char* section, const char* key);
 
-/// Reads a resource file file from the resources directory as a string.
-std::optional<std::string> ReadResourceFileToString(const char* filename);
+// Allows the emucore to write settings back to the frontend. Use with care.
+// You should call CommitBaseSettingChanges() if you directly write to the layer (i.e. not these functions), or it may
+// not be written to disk.
+void SetBaseBoolSettingValue(const char* section, const char* key, bool value);
+void SetBaseIntSettingValue(const char* section, const char* key, s32 value);
+void SetBaseUIntSettingValue(const char* section, const char* key, u32 value);
+void SetBaseFloatSettingValue(const char* section, const char* key, float value);
+void SetBaseStringSettingValue(const char* section, const char* key, const char* value);
+void SetBaseStringListSettingValue(const char* section, const char* key, const std::vector<std::string>& values);
+bool AddValueToBaseStringListSetting(const char* section, const char* key, const char* value);
+bool RemoveValueFromBaseStringListSetting(const char* section, const char* key, const char* value);
+void DeleteBaseSettingValue(const char* section, const char* key);
+void CommitBaseSettingChanges();
 
-/// Returns the modified time of a resource.
-std::optional<std::time_t> GetResourceFileTimestamp(const char* filename);
+// Settings access, thread-safe.
+std::string GetStringSettingValue(const char* section, const char* key, const char* default_value = "");
+bool GetBoolSettingValue(const char* section, const char* key, bool default_value = false);
+int GetIntSettingValue(const char* section, const char* key, s32 default_value = 0);
+u32 GetUIntSettingValue(const char* section, const char* key, u32 default_value = 0);
+float GetFloatSettingValue(const char* section, const char* key, float default_value = 0.0f);
+double GetDoubleSettingValue(const char* section, const char* key, double default_value = 0.0);
+std::vector<std::string> GetStringListSetting(const char* section, const char* key);
 
-/// Translates a string to the current language.
-TinyString TranslateString(const char* context, const char* str, const char* disambiguation = nullptr, int n = -1);
-std::string TranslateStdString(const char* context, const char* str, const char* disambiguation = nullptr, int n = -1);
+/// Direct access to settings interface. Must hold the lock when calling GetSettingsInterface() and while using it.
+std::unique_lock<std::mutex> GetSettingsLock();
+SettingsInterface* GetSettingsInterface();
+
+/// Returns the settings interface that controller bindings should be loaded from.
+/// If an input profile is being used, this will be the input layer, otherwise the layered interface.
+SettingsInterface* GetSettingsInterfaceForBindings();
+
+
 
 std::unique_ptr<AudioStream> CreateAudioStream(AudioBackend backend, u32 sample_rate, u32 channels, u32 buffer_ms,
                                                u32 latency_ms, AudioStretchMode stretch);
-
-/// Returns the scale of OSD elements.
-float GetOSDScale();
-
-/// Adds OSD messages, duration is in seconds.
-void AddOSDMessage(std::string message, float duration = 2.0f);
-void AddKeyedOSDMessage(std::string key, std::string message, float duration = 2.0f);
-void AddIconOSDMessage(std::string key, const char* icon, std::string message, float duration = 2.0f);
-void AddFormattedOSDMessage(float duration, const char* format, ...);
-void AddKeyedFormattedOSDMessage(std::string key, float duration, const char* format, ...);
-void RemoveKeyedOSDMessage(std::string key);
-void ClearOSDMessages();
-
-/// Displays an asynchronous error on the UI thread, i.e. doesn't block the caller.
-void ReportErrorAsync(const std::string_view& title, const std::string_view& message);
-void ReportFormattedErrorAsync(const std::string_view& title, const char* format, ...);
-
-/// Displays a synchronous confirmation on the UI thread, i.e. blocks the caller.
-bool ConfirmMessage(const std::string_view& title, const std::string_view& message);
-bool ConfirmFormattedMessage(const std::string_view& title, const char* format, ...);
 
 /// Debugger feedback.
 void ReportDebuggerMessage(const std::string_view& message);
 void ReportFormattedDebuggerMessage(const char* format, ...);
 
+/// Returns a list of supported languages and codes (suffixes for translation files).
+std::span<const std::pair<const char*, const char*>> GetAvailableLanguageList();
+
+/// Refreshes the UI when the language is changed.
+bool ChangeLanguage(const char* new_language);
+
 /// Displays a loading screen with the logo, rendered with ImGui. Use when executing possibly-time-consuming tasks
 /// such as compiling shaders when starting up.
 void DisplayLoadingScreen(const char* message, int progress_min = -1, int progress_max = -1, int progress_value = -1);
 
-/// Internal method used by pads to dispatch vibration updates to input sources.
-/// Intensity is normalized from 0 to 1.
-void SetPadVibrationIntensity(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity);
-
-/// Enables "relative" mouse mode, locking the cursor position and returning relative coordinates.
-void SetMouseMode(bool relative, bool hide_cursor);
-
 /// Safely executes a function on the VM thread.
 void RunOnCPUThread(std::function<void()> function, bool block = false);
 
-/// Opens a URL, using the default application.
-void OpenURL(const std::string_view& url);
+/// Requests shut down and exit of the hosting application. This may not actually exit,
+/// if the user cancels the shutdown confirmation.
+void RequestExit(bool allow_confirm);
 
-/// Copies the provided text to the host's clipboard, if present.
-bool CopyTextToClipboard(const std::string_view& text);
+/// Attempts to create the rendering device backend.
+bool CreateGPUDevice(RenderAPI api);
+
+/// Handles fullscreen transitions and such.
+void UpdateDisplayWindow();
+
+/// Called when the window is resized.
+void ResizeDisplayWindow(s32 width, s32 height, float scale);
+
+/// Destroys any active rendering device.
+void ReleaseGPUDevice();
+
+/// Called before drawing the OSD and other display elements.
+void BeginPresentFrame();
+
+namespace Internal {
+/// Retrieves the base settings layer. Must call with lock held.
+SettingsInterface* GetBaseSettingsLayer();
+
+/// Retrieves the game settings layer, if present. Must call with lock held.
+SettingsInterface* GetGameSettingsLayer();
+
+/// Retrieves the input settings layer, if present. Must call with lock held.
+SettingsInterface* GetInputSettingsLayer();
+
+/// Sets the base settings layer. Should be called by the host at initialization time.
+void SetBaseSettingsLayer(SettingsInterface* sif);
+
+/// Sets the game settings layer. Called by VMManager when the game changes.
+void SetGameSettingsLayer(SettingsInterface* sif);
+
+/// Sets the input profile settings layer. Called by VMManager when the game changes.
+void SetInputSettingsLayer(SettingsInterface* sif);
+} // namespace Internal
 } // namespace Host

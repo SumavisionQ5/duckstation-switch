@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "emulationsettingswidget.h"
-#include "common/make_array.h"
 #include "core/system.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
 #include <QtWidgets/QMessageBox>
 #include <limits>
 
-EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
@@ -96,7 +95,7 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget
        "the console's refresh rate is too far from the host's refresh rate. Users with variable refresh rate displays "
        "should disable this option."));
   dialog->registerWidgetHelp(m_ui.displayAllFrames, tr("Optimal Frame Pacing"), tr("Unchecked"),
-                             tr("Enable this option will ensure every frame the console renders is displayed to the "
+                             tr("Enabling this option will ensure every frame the console renders is displayed to the "
                                 "screen, for optimal frame pacing. If you are having difficulties maintaining full "
                                 "speed, or are getting audio glitches, try disabling this option."));
   dialog->registerWidgetHelp(
@@ -128,8 +127,8 @@ void EmulationSettingsWidget::fillComboBoxWithEmulationSpeeds(QComboBox* cb, flo
 
   cb->addItem(tr("Unlimited"), QVariant(0.0f));
 
-  static constexpr auto speeds = make_array(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200, 250, 300, 350,
-                                            400, 450, 500, 600, 700, 800, 900, 1000);
+  static constexpr const std::array speeds = {10,  20,  30,  40,  50,  60,  70,  80,  90,  100, 125, 150, 175,
+                                              200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000};
   for (const int speed : speeds)
   {
     cb->addItem(tr("%1% [%2 FPS (NTSC) / %3 FPS (PAL)]").arg(speed).arg((60 * speed) / 100).arg((50 * speed) / 100),
@@ -184,13 +183,14 @@ void EmulationSettingsWidget::updateRewind()
 
   if (!runahead_enabled && rewind_enabled)
   {
+    const u32 resolution_scale = static_cast<u32>(m_dialog->getEffectiveIntValue("GPU", "ResolutionScale", 1));
     const u32 frames = static_cast<u32>(m_ui.rewindSaveSlots->value());
     const float frequency = static_cast<float>(m_ui.rewindSaveFrequency->value());
     const float duration =
       ((frequency <= std::numeric_limits<float>::epsilon()) ? (1.0f / 60.0f) : frequency) * static_cast<float>(frames);
 
     u64 ram_usage, vram_usage;
-    System::CalculateRewindMemoryUsage(frames, &ram_usage, &vram_usage);
+    System::CalculateRewindMemoryUsage(frames, resolution_scale, &ram_usage, &vram_usage);
 
     m_ui.rewindSummary->setText(
       tr("Rewind for %n frame(s), lasting %1 second(s) will require up to %2MB of RAM and %3MB of VRAM.", "", frames)

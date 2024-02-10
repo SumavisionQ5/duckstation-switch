@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "generalsettingswidget.h"
@@ -7,10 +7,26 @@
 #include "mainwindow.h"
 #include "qtutils.h"
 #include "scmversion/scmversion.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
 
-GeneralSettingsWidget::GeneralSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+const char* GeneralSettingsWidget::THEME_NAMES[] = {
+  QT_TRANSLATE_NOOP("MainWindow", "Native"),
+  QT_TRANSLATE_NOOP("MainWindow", "Fusion"),
+  QT_TRANSLATE_NOOP("MainWindow", "Dark Fusion (Gray)"),
+  QT_TRANSLATE_NOOP("MainWindow", "Dark Fusion (Blue)"),
+  QT_TRANSLATE_NOOP("MainWindow", "Grey Matter"),
+  QT_TRANSLATE_NOOP("MainWindow", "QDarkStyle"),
+  nullptr,
+};
+
+const char* GeneralSettingsWidget::THEME_VALUES[] = {
+  "", "fusion", "darkfusion", "darkfusionblue", "greymatter", "qdarkstyle", nullptr,
+};
+
+const char* GeneralSettingsWidget::DEFAULT_THEME_NAME = "darkfusion";
+
+GeneralSettingsWidget::GeneralSettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
@@ -39,6 +55,7 @@ GeneralSettingsWidget::GeneralSettingsWidget(SettingsDialog* dialog, QWidget* pa
                                                Settings::DEFAULT_SAVE_STATE_BACKUPS);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.compressSaveStates, "Main", "CompressSaveStates",
                                                Settings::DEFAULT_SAVE_STATE_COMPRESSION);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableDiscordPresence, "Main", "EnableDiscordPresence", false);
   connect(m_ui.renderToSeparateWindow, &QCheckBox::stateChanged, this,
           &GeneralSettingsWidget::onRenderToSeparateWindowChanged);
 
@@ -83,19 +100,9 @@ GeneralSettingsWidget::GeneralSettingsWidget(SettingsDialog* dialog, QWidget* pa
        "leave this option enabled except when testing enhancements with incompatible games."));
   dialog->registerWidgetHelp(m_ui.autoLoadCheats, tr("Automatically Load Cheats"), tr("Unchecked"),
                              tr("Automatically loads and applies cheats on game start."));
+  dialog->registerWidgetHelp(m_ui.enableDiscordPresence, tr("Enable Discord Presence"), tr("Unchecked"),
+                             tr("Shows the game you are currently playing as part of your profile in Discord."));
 
-#ifdef WITH_DISCORD_PRESENCE
-  {
-    SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableDiscordPresence, "Main", "EnableDiscordPresence",
-                                                 false);
-    dialog->registerWidgetHelp(m_ui.enableDiscordPresence, tr("Enable Discord Presence"), tr("Unchecked"),
-                               tr("Shows the game you are currently playing as part of your profile in Discord."));
-  }
-#else
-  {
-    m_ui.enableDiscordPresence->setEnabled(false);
-  }
-#endif
   if (!m_dialog->isPerGameSettings() && AutoUpdaterDialog::isSupported())
   {
     SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.autoUpdateEnabled, "AutoUpdater", "CheckAtStartup", true);

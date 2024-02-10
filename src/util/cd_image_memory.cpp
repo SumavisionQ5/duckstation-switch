@@ -1,15 +1,20 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
+
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
+
 #include <algorithm>
 #include <cerrno>
+
 Log_SetChannel(CDImageMemory);
+
+namespace {
 
 class CDImageMemory : public CDImage
 {
@@ -32,6 +37,8 @@ private:
   u32 m_memory_sectors = 0;
   CDSubChannelReplacement m_sbi;
 };
+
+} // namespace
 
 CDImageMemory::CDImageMemory() = default;
 
@@ -115,7 +122,7 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
   m_filename = image->GetFileName();
   m_lba_count = image->GetLBACount();
 
-  m_sbi.LoadSBI(Path::ReplaceExtension(m_filename, "sbi").c_str());
+  m_sbi.LoadFromImagePath(m_filename);
 
   return Seek(1, Position{0, 0, 0});
 }

@@ -1,15 +1,24 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "analog_controller.h"
-#include "IconsFontAwesome5.h"
-#include "common/log.h"
-#include "common/string_util.h"
 #include "host.h"
 #include "settings.h"
 #include "system.h"
+
+#include "util/imgui_manager.h"
+#include "util/input_manager.h"
 #include "util/state_wrapper.h"
+
+#include "common/bitutils.h"
+#include "common/log.h"
+#include "common/string_util.h"
+
+#include "IconsFontAwesome5.h"
+#include "IconsPromptFont.h"
+
 #include <cmath>
+
 Log_SetChannel(AnalogController);
 
 AnalogController::AnalogController(u32 index) : Controller(index)
@@ -53,12 +62,12 @@ void AnalogController::Reset()
 
   if (m_force_analog_on_reset)
   {
-    if (g_settings.controller_disable_analog_mode_forcing || System::IsRunningBIOS())
+    if (g_settings.controller_disable_analog_mode_forcing || System::IsRunningUnknownGame())
     {
       Host::AddIconOSDMessage(
         fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
-        Host::TranslateStdString(
-          "OSDMessage", "Analog mode forcing is disabled by game settings. Controller will start in digital mode."),
+        TRANSLATE_STR("OSDMessage",
+                      "Analog mode forcing is disabled by game settings. Controller will start in digital mode."),
         10.0f);
     }
     else
@@ -86,8 +95,6 @@ bool AnalogController::DoState(StateWrapper& sw, bool apply_input_state)
   sw.DoEx(&button_state, 44, static_cast<u16>(0xFFFF));
   if (apply_input_state)
     m_button_state = button_state;
-  else
-    m_analog_mode = old_analog_mode;
 
   sw.Do(&m_command);
 
@@ -106,14 +113,12 @@ bool AnalogController::DoState(StateWrapper& sw, bool apply_input_state)
 
     if (old_analog_mode != m_analog_mode)
     {
-      Host::AddIconOSDMessage(
-        fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
-        fmt::format((m_analog_mode ?
-                       Host::TranslateString("AnalogController", "Controller {} switched to analog mode.") :
-                       Host::TranslateString("AnalogController", "Controller {} switched to digital mode."))
-                      .GetCharArray(),
-                    m_index + 1u),
-        5.0f);
+      Host::AddIconOSDMessage(fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
+                              fmt::format(m_analog_mode ?
+                                            TRANSLATE_FS("AnalogController", "Controller {} switched to analog mode.") :
+                                            TRANSLATE_FS("AnalogController", "Controller {} switched to digital mode."),
+                                          m_index + 1u),
+                              5.0f);
     }
   }
   return true;
@@ -294,13 +299,12 @@ void AnalogController::SetAnalogMode(bool enabled, bool show_message)
   Log_InfoPrintf("Controller %u switched to %s mode.", m_index + 1u, enabled ? "analog" : "digital");
   if (show_message)
   {
-    Host::AddIconOSDMessage(
-      fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
-      fmt::format((enabled ? Host::TranslateString("AnalogController", "Controller {} switched to analog mode.") :
-                             Host::TranslateString("AnalogController", "Controller {} switched to digital mode."))
-                    .GetCharArray(),
-                  m_index + 1u),
-      5.0f);
+    Host::AddIconOSDMessage(fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
+                            fmt::format(enabled ?
+                                          TRANSLATE_FS("AnalogController", "Controller {} switched to analog mode.") :
+                                          TRANSLATE_FS("AnalogController", "Controller {} switched to digital mode."),
+                                        m_index + 1u),
+                            5.0f);
   }
   m_analog_mode = enabled;
 }
@@ -311,10 +315,9 @@ void AnalogController::ProcessAnalogModeToggle()
   {
     Host::AddIconOSDMessage(
       fmt::format("Controller{}AnalogMode", m_index), ICON_FA_GAMEPAD,
-      fmt::format((m_analog_mode ?
-                     Host::TranslateString("AnalogController", "Controller %u is locked to analog mode by the game.") :
-                     Host::TranslateString("AnalogController", "Controller %u is locked to digital mode by the game."))
-                    .GetCharArray(),
+      fmt::format(m_analog_mode ?
+                    TRANSLATE_FS("AnalogController", "Controller {} is locked to analog mode by the game.") :
+                    TRANSLATE_FS("AnalogController", "Controller {} is locked to digital mode by the game."),
                   m_index + 1u),
       5.0f);
   }
@@ -352,7 +355,7 @@ void AnalogController::UpdateHostVibration()
     hvalues[motor] = (state != 0) ? static_cast<float>(strength / 65535.0) : 0.0f;
   }
 
-  Host::SetPadVibrationIntensity(m_index, hvalues[0], hvalues[1]);
+  InputManager::SetPadVibrationIntensity(m_index, hvalues[0], hvalues[1]);
 }
 
 u8 AnalogController::GetExtraButtonMaskLSB() const
@@ -787,92 +790,95 @@ std::unique_ptr<AnalogController> AnalogController::Create(u32 index)
 }
 
 static const Controller::ControllerBindingInfo s_binding_info[] = {
-#define BUTTON(name, display_name, button, genb)                                                                       \
+#define BUTTON(name, display_name, icon_name, button, genb)                                                            \
   {                                                                                                                    \
-    name, display_name, static_cast<u32>(button), Controller::ControllerBindingType::Button, genb                      \
+    name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb                      \
   }
-#define AXIS(name, display_name, halfaxis, genb)                                                                       \
+#define AXIS(name, display_name, icon_name, halfaxis, genb)                                                            \
   {                                                                                                                    \
-    name, display_name, static_cast<u32>(AnalogController::Button::Count) + static_cast<u32>(halfaxis),                \
-      Controller::ControllerBindingType::HalfAxis, genb                                                                \
+    name, display_name, icon_name, static_cast<u32>(AnalogController::Button::Count) + static_cast<u32>(halfaxis),     \
+      InputBindingInfo::Type::HalfAxis, genb                                                                           \
   }
 
-  BUTTON("Up", "D-Pad Up", AnalogController::Button::Up, GenericInputBinding::DPadUp),
-  BUTTON("Right", "D-Pad Right", AnalogController::Button::Right, GenericInputBinding::DPadRight),
-  BUTTON("Down", "D-Pad Down", AnalogController::Button::Down, GenericInputBinding::DPadDown),
-  BUTTON("Left", "D-Pad Left", AnalogController::Button::Left, GenericInputBinding::DPadLeft),
-  BUTTON("Triangle", "Triangle", AnalogController::Button::Triangle, GenericInputBinding::Triangle),
-  BUTTON("Circle", "Circle", AnalogController::Button::Circle, GenericInputBinding::Circle),
-  BUTTON("Cross", "Cross", AnalogController::Button::Cross, GenericInputBinding::Cross),
-  BUTTON("Square", "Square", AnalogController::Button::Square, GenericInputBinding::Square),
-  BUTTON("Select", "Select", AnalogController::Button::Select, GenericInputBinding::Select),
-  BUTTON("Start", "Start", AnalogController::Button::Start, GenericInputBinding::Start),
-  BUTTON("Analog", "Analog Toggle", AnalogController::Button::Analog, GenericInputBinding::System),
-  BUTTON("L1", "L1", AnalogController::Button::L1, GenericInputBinding::L1),
-  BUTTON("R1", "R1", AnalogController::Button::R1, GenericInputBinding::R1),
-  BUTTON("L2", "L2", AnalogController::Button::L2, GenericInputBinding::L2),
-  BUTTON("R2", "R2", AnalogController::Button::R2, GenericInputBinding::R2),
-  BUTTON("L3", "L3", AnalogController::Button::L3, GenericInputBinding::L3),
-  BUTTON("R3", "R3", AnalogController::Button::R3, GenericInputBinding::R3),
+  // clang-format off
+  BUTTON("Up", TRANSLATE_NOOP("AnalogController", "D-Pad Up"), ICON_PF_DPAD_UP, AnalogController::Button::Up, GenericInputBinding::DPadUp),
+  BUTTON("Right", TRANSLATE_NOOP("AnalogController", "D-Pad Right"), ICON_PF_DPAD_RIGHT, AnalogController::Button::Right, GenericInputBinding::DPadRight),
+  BUTTON("Down", TRANSLATE_NOOP("AnalogController", "D-Pad Down"), ICON_PF_DPAD_DOWN, AnalogController::Button::Down, GenericInputBinding::DPadDown),
+  BUTTON("Left", TRANSLATE_NOOP("AnalogController", "D-Pad Left"), ICON_PF_DPAD_LEFT, AnalogController::Button::Left, GenericInputBinding::DPadLeft),
+  BUTTON("Triangle", TRANSLATE_NOOP("AnalogController", "Triangle"), ICON_PF_BUTTON_TRIANGLE, AnalogController::Button::Triangle, GenericInputBinding::Triangle),
+  BUTTON("Circle", TRANSLATE_NOOP("AnalogController", "Circle"), ICON_PF_BUTTON_CIRCLE, AnalogController::Button::Circle, GenericInputBinding::Circle),
+  BUTTON("Cross", TRANSLATE_NOOP("AnalogController", "Cross"), ICON_PF_BUTTON_CROSS, AnalogController::Button::Cross, GenericInputBinding::Cross),
+  BUTTON("Square", TRANSLATE_NOOP("AnalogController", "Square"), ICON_PF_BUTTON_SQUARE, AnalogController::Button::Square, GenericInputBinding::Square),
+  BUTTON("Select", TRANSLATE_NOOP("AnalogController", "Select"), ICON_PF_SELECT_SHARE, AnalogController::Button::Select, GenericInputBinding::Select),
+  BUTTON("Start", TRANSLATE_NOOP("AnalogController", "Start"),ICON_PF_START, AnalogController::Button::Start, GenericInputBinding::Start),
+  BUTTON("Analog", TRANSLATE_NOOP("AnalogController", "Analog Toggle"), ICON_PF_ANALOG_LEFT_RIGHT, AnalogController::Button::Analog, GenericInputBinding::System),
+  BUTTON("L1", TRANSLATE_NOOP("AnalogController", "L1"), ICON_PF_LEFT_SHOULDER_L1, AnalogController::Button::L1, GenericInputBinding::L1),
+  BUTTON("R1", TRANSLATE_NOOP("AnalogController", "R1"), ICON_PF_RIGHT_SHOULDER_R1, AnalogController::Button::R1, GenericInputBinding::R1),
+  BUTTON("L2", TRANSLATE_NOOP("AnalogController", "L2"), ICON_PF_LEFT_TRIGGER_L2, AnalogController::Button::L2, GenericInputBinding::L2),
+  BUTTON("R2", TRANSLATE_NOOP("AnalogController", "R2"), ICON_PF_RIGHT_TRIGGER_R2, AnalogController::Button::R2, GenericInputBinding::R2),
+  BUTTON("L3", TRANSLATE_NOOP("AnalogController", "L3"), ICON_PF_LEFT_ANALOG_CLICK, AnalogController::Button::L3, GenericInputBinding::L3),
+  BUTTON("R3", TRANSLATE_NOOP("AnalogController", "R3"), ICON_PF_RIGHT_ANALOG_CLICK, AnalogController::Button::R3, GenericInputBinding::R3),
 
-  AXIS("LLeft", "Left Stick Left", AnalogController::HalfAxis::LLeft, GenericInputBinding::LeftStickLeft),
-  AXIS("LRight", "Left Stick Right", AnalogController::HalfAxis::LRight, GenericInputBinding::LeftStickRight),
-  AXIS("LDown", "Left Stick Down", AnalogController::HalfAxis::LDown, GenericInputBinding::LeftStickDown),
-  AXIS("LUp", "Left Stick Up", AnalogController::HalfAxis::LUp, GenericInputBinding::LeftStickUp),
-  AXIS("RLeft", "Right Stick Left", AnalogController::HalfAxis::RLeft, GenericInputBinding::RightStickLeft),
-  AXIS("RRight", "Right Stick Right", AnalogController::HalfAxis::RRight, GenericInputBinding::RightStickRight),
-  AXIS("RDown", "Right Stick Down", AnalogController::HalfAxis::RDown, GenericInputBinding::RightStickDown),
-  AXIS("RUp", "Right Stick Up", AnalogController::HalfAxis::RUp, GenericInputBinding::RightStickUp),
+  AXIS("LLeft", TRANSLATE_NOOP("AnalogController", "Left Stick Left"), ICON_PF_LEFT_ANALOG_LEFT, AnalogController::HalfAxis::LLeft, GenericInputBinding::LeftStickLeft),
+  AXIS("LRight", TRANSLATE_NOOP("AnalogController", "Left Stick Right"), ICON_PF_LEFT_ANALOG_RIGHT, AnalogController::HalfAxis::LRight, GenericInputBinding::LeftStickRight),
+  AXIS("LDown", TRANSLATE_NOOP("AnalogController", "Left Stick Down"), ICON_PF_LEFT_ANALOG_DOWN, AnalogController::HalfAxis::LDown, GenericInputBinding::LeftStickDown),
+  AXIS("LUp", TRANSLATE_NOOP("AnalogController", "Left Stick Up"), ICON_PF_LEFT_ANALOG_UP, AnalogController::HalfAxis::LUp, GenericInputBinding::LeftStickUp),
+  AXIS("RLeft", TRANSLATE_NOOP("AnalogController", "Right Stick Left"), ICON_PF_RIGHT_ANALOG_LEFT, AnalogController::HalfAxis::RLeft, GenericInputBinding::RightStickLeft),
+  AXIS("RRight", TRANSLATE_NOOP("AnalogController", "Right Stick Right"), ICON_PF_RIGHT_ANALOG_RIGHT, AnalogController::HalfAxis::RRight, GenericInputBinding::RightStickRight),
+  AXIS("RDown", TRANSLATE_NOOP("AnalogController", "Right Stick Down"), ICON_PF_RIGHT_ANALOG_DOWN, AnalogController::HalfAxis::RDown, GenericInputBinding::RightStickDown),
+  AXIS("RUp", TRANSLATE_NOOP("AnalogController", "Right Stick Up"), ICON_PF_RIGHT_ANALOG_UP, AnalogController::HalfAxis::RUp, GenericInputBinding::RightStickUp),
+// clang-format on
 
 #undef AXIS
 #undef BUTTON
 };
 
-static const char* s_invert_settings[] = {TRANSLATABLE("AnalogController", "Not Inverted"),
-                                          TRANSLATABLE("AnalogController", "Invert Left/Right"),
-                                          TRANSLATABLE("AnalogController", "Invert Up/Down"),
-                                          TRANSLATABLE("AnalogController", "Invert Left/Right + Up/Down"), nullptr};
+static const char* s_invert_settings[] = {TRANSLATE_NOOP("AnalogController", "Not Inverted"),
+                                          TRANSLATE_NOOP("AnalogController", "Invert Left/Right"),
+                                          TRANSLATE_NOOP("AnalogController", "Invert Up/Down"),
+                                          TRANSLATE_NOOP("AnalogController", "Invert Left/Right + Up/Down"), nullptr};
 
 static const SettingInfo s_settings[] = {
-  {SettingInfo::Type::Boolean, "ForceAnalogOnReset", TRANSLATABLE("AnalogController", "Force Analog Mode on Reset"),
-   TRANSLATABLE("AnalogController", "Forces the controller to analog mode when the console is reset/powered on. May "
-                                    "cause issues with games, so it is recommended to leave this option off."),
-   "true"},
+  {SettingInfo::Type::Boolean, "ForceAnalogOnReset", TRANSLATE_NOOP("AnalogController", "Force Analog Mode on Reset"),
+   TRANSLATE_NOOP("AnalogController", "Forces the controller to analog mode when the console is reset/powered on."),
+   "true", nullptr, nullptr, nullptr, nullptr, nullptr, 0.0f},
   {SettingInfo::Type::Boolean, "AnalogDPadInDigitalMode",
-   TRANSLATABLE("AnalogController", "Use Analog Sticks for D-Pad in Digital Mode"),
-   TRANSLATABLE("AnalogController",
-                "Allows you to use the analog sticks to control the d-pad in digital mode, as well as the buttons."),
-   "true"},
-  {SettingInfo::Type::Float, "AnalogDeadzone", TRANSLATABLE("AnalogController", "Analog Deadzone"),
-   TRANSLATABLE("AnalogController",
-                "Sets the analog stick deadzone, i.e. the fraction of the stick movement which will be ignored."),
+   TRANSLATE_NOOP("AnalogController", "Use Analog Sticks for D-Pad in Digital Mode"),
+   TRANSLATE_NOOP("AnalogController",
+                  "Allows you to use the analog sticks to control the d-pad in digital mode, as well as the buttons."),
+   "true", nullptr, nullptr, nullptr, nullptr, nullptr, 0.0f},
+  {SettingInfo::Type::Float, "AnalogDeadzone", TRANSLATE_NOOP("AnalogController", "Analog Deadzone"),
+   TRANSLATE_NOOP("AnalogController",
+                  "Sets the analog stick deadzone, i.e. the fraction of the stick movement which will be ignored."),
    "0.00f", "0.00f", "1.00f", "0.01f", "%.0f%%", nullptr, 100.0f},
-  {SettingInfo::Type::Float, "AnalogSensitivity", TRANSLATABLE("AnalogController", "Analog Sensitivity"),
-   TRANSLATABLE(
+  {SettingInfo::Type::Float, "AnalogSensitivity", TRANSLATE_NOOP("AnalogController", "Analog Sensitivity"),
+   TRANSLATE_NOOP(
      "AnalogController",
      "Sets the analog stick axis scaling factor. A value between 130% and 140% is recommended when using recent "
      "controllers, e.g. DualShock 4, Xbox One Controller."),
    "1.33f", "0.01f", "2.00f", "0.01f", "%.0f%%", nullptr, 100.0f},
-  {SettingInfo::Type::Float, "ButtonDeadzone", "Button/Trigger Deadzone",
-   "Sets the deadzone for activating buttons/triggers, i.e. the fraction of the trigger which will be ignored.", "0.25",
-   "0.00", "1.00", "0.01", "%.0f%%", nullptr, 100.0f},
-  {SettingInfo::Type::Integer, "VibrationBias", TRANSLATABLE("AnalogController", "Vibration Bias"),
-   TRANSLATABLE("AnalogController", "Sets the rumble bias value. If rumble in some games is too weak or not "
-                                    "functioning, try increasing this value."),
+  {SettingInfo::Type::Float, "ButtonDeadzone", TRANSLATE_NOOP("AnalogController", "Button/Trigger Deadzone"),
+   TRANSLATE_NOOP("AnalogController", "Sets the deadzone for activating buttons/triggers, "
+                                      "i.e. the fraction of the trigger which will be ignored."),
+   "0.25", "0.01", "1.00", "0.01", "%.0f%%", nullptr, 100.0f},
+  {SettingInfo::Type::Integer, "VibrationBias", TRANSLATE_NOOP("AnalogController", "Vibration Bias"),
+   TRANSLATE_NOOP("AnalogController", "Sets the rumble bias value. If rumble in some games is too weak or not "
+                                      "functioning, try increasing this value."),
    "8", "0", "255", "1", "%d", nullptr, 1.0f},
-  {SettingInfo::Type::IntegerList, "InvertLeftStick", "Invert Left Stick",
-   "Inverts the direction of the left analog stick.", "0", "0", "3", nullptr, nullptr, s_invert_settings, 0.0f},
-  {SettingInfo::Type::IntegerList, "InvertRightStick", "Invert Right Stick",
-   "Inverts the direction of the right analog stick.", "0", "0", "3", nullptr, nullptr, s_invert_settings, 0.0f},
+  {SettingInfo::Type::IntegerList, "InvertLeftStick", TRANSLATE_NOOP("AnalogController", "Invert Left Stick"),
+   TRANSLATE_NOOP("AnalogController", "Inverts the direction of the left analog stick."), "0", "0", "3", nullptr,
+   nullptr, s_invert_settings, 0.0f},
+  {SettingInfo::Type::IntegerList, "InvertRightStick", TRANSLATE_NOOP("AnalogController", "Invert Right Stick"),
+   TRANSLATE_NOOP("AnalogController", "Inverts the direction of the right analog stick."), "0", "0", "3", nullptr,
+   nullptr, s_invert_settings, 0.0f},
 };
 
 const Controller::ControllerInfo AnalogController::INFO = {ControllerType::AnalogController,
                                                            "AnalogController",
-                                                           TRANSLATABLE("ControllerType", "Analog Controller"),
+                                                           TRANSLATE_NOOP("ControllerType", "Analog Controller"),
+                                                           ICON_PF_GAMEPAD,
                                                            s_binding_info,
-                                                           countof(s_binding_info),
                                                            s_settings,
-                                                           countof(s_settings),
                                                            Controller::VibrationCapabilities::LargeSmallMotors};
 
 void AnalogController::LoadSettings(SettingsInterface& si, const char* section)
@@ -883,7 +889,7 @@ void AnalogController::LoadSettings(SettingsInterface& si, const char* section)
   m_analog_deadzone = std::clamp(si.GetFloatValue(section, "AnalogDeadzone", DEFAULT_STICK_DEADZONE), 0.0f, 1.0f);
   m_analog_sensitivity =
     std::clamp(si.GetFloatValue(section, "AnalogSensitivity", DEFAULT_STICK_SENSITIVITY), 0.01f, 3.0f);
-  m_button_deadzone = std::clamp(si.GetFloatValue(section, "ButtonDeadzone", DEFAULT_BUTTON_DEADZONE), 0.0f, 1.0f);
+  m_button_deadzone = std::clamp(si.GetFloatValue(section, "ButtonDeadzone", DEFAULT_BUTTON_DEADZONE), 0.01f, 1.0f);
   m_rumble_bias = static_cast<u8>(std::min<u32>(si.GetIntValue(section, "VibrationBias", 8), 255));
   m_invert_left_stick = static_cast<u8>(si.GetIntValue(section, "InvertLeftStick", 0));
   m_invert_right_stick = static_cast<u8>(si.GetIntValue(section, "InvertRightStick", 0));

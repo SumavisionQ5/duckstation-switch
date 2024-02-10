@@ -12,23 +12,23 @@ add_library(common
   dimensional_array.h
   error.cpp
   error.h
+  fastjmp.cpp
+  fastjmp.h
   fifo_queue.h
   file_system.cpp
   file_system.h
-  gpu_texture.cpp
-  gpu_texture.h
   image.cpp
   image.h
+  intrin.h
   hash_combine.h
   heap_array.h
   heterogeneous_containers.h
-  http_downloader.cpp
-  http_downloader.h
   layered_settings_interface.cpp
   layered_settings_interface.h
   log.cpp
   log.h
-  make_array.h
+  memmap.cpp
+  memmap.h
   md5_digest.cpp
   md5_digest.h
   memory_settings_interface.cpp
@@ -36,7 +36,8 @@ add_library(common
   minizip_helpers.cpp
   minizip_helpers.h
   path.h
-  platform.h
+  perf_scope.cpp
+  perf_scope.h
   progress_callback.cpp
   progress_callback.h
   rectangle.h
@@ -44,23 +45,22 @@ add_library(common
   settings_interface.h
   sha1_digest.cpp
   sha1_digest.h
-  string.cpp
-  string.h
+  small_string.cpp
+  small_string.h
   string_util.cpp
   string_util.h
-  thirdparty/thread_pool.cpp
-  thirdparty/thread_pool.h
+  thirdparty/SmallVector.cpp
+  thirdparty/SmallVector.h
   threading.cpp
   threading.h
   timer.cpp
   timer.h
   types.h
-  window_info.cpp
-  window_info.h
 )
 
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
 if (SWITCH)
   target_sources(common PRIVATE
     deko3d/context.cpp
@@ -78,56 +78,44 @@ if (SWITCH)
     deko3d/stream_buffer.cpp
     deko3d/stream_buffer.h
   )
-else()
-  target_link_libraries(common PUBLIC vulkan-headers)
-  target_link_libraries(common PRIVATE "${CMAKE_DL_LIBS}")
 endif()
-target_link_libraries(common PUBLIC fmt Threads::Threads)
-target_link_libraries(common PRIVATE stb libchdr zlib minizip Zstd::Zstd)
+target_link_libraries(common PUBLIC fmt Threads::Threads fast_float)
+target_link_libraries(common PRIVATE stb ZLIB::ZLIB minizip "${CMAKE_DL_LIBS}")
 
 if(WIN32)
   target_sources(common PRIVATE
-    d3d12/context.cpp
-    d3d12/context.h
-    d3d12/descriptor_heap_manager.cpp
-    d3d12/descriptor_heap_manager.h
-    d3d12/shader_cache.cpp
-    d3d12/shader_cache.h
-    d3d12/staging_texture.cpp
-    d3d12/staging_texture.h
-    d3d12/stream_buffer.cpp
-    d3d12/stream_buffer.h
-    d3d12/texture.cpp
-    d3d12/texture.h
-    d3d12/util.cpp
-    d3d12/util.h
-    d3d11/shader_cache.cpp
-    d3d11/shader_cache.h
-    d3d11/shader_compiler.cpp
-    d3d11/shader_compiler.h
-    d3d11/stream_buffer.cpp
-    d3d11/stream_buffer.h
-    d3d11/texture.cpp
-    d3d11/texture.h
-    http_downloader_winhttp.cpp
-    http_downloader_winhttp.h
     thirdparty/StackWalker.cpp
     thirdparty/StackWalker.h
-    win32_progress_callback.cpp
-    win32_progress_callback.h
     windows_headers.h
   )
-  target_link_libraries(common PRIVATE d3dcompiler.lib)
+  target_link_libraries(common PRIVATE OneCore.lib)
 endif()
 
-if(NOT WIN32 AND NOT ANDROID)
-  target_sources(common PRIVATE
-    http_downloader_curl.cpp
-    http_downloader_curl.h
+if(MSVC)
+  if(CPU_ARCH_X64)
+    enable_language(ASM_MASM)
+    target_sources(common PRIVATE fastjmp_x86.asm)
+    set_source_files_properties(fastjmp_x86.asm PROPERTIES COMPILE_FLAGS "/D_M_X86_64")
+  elseif(CPU_ARCH_ARM32 OR CPU_ARCH_ARM64)
+    enable_language(ASM_MARMASM)
+    target_sources(common PRIVATE fastjmp_arm.asm)
+  endif()
+endif()
+
+if(APPLE)
+  set(MAC_SOURCES
+    cocoa_tools.h
+    cocoa_tools.mm
   )
-  target_link_libraries(common PRIVATE
-    CURL::libcurl
-  )
+  target_sources(common PRIVATE ${MAC_SOURCES})
+  set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
+  find_library(COCOA_LIBRARY Cocoa REQUIRED)
+  target_link_libraries(common PRIVATE ${COCOA_LIBRARY})
+endif()
+
+if(NOT WIN32 AND NOT ANDROID AND LIBBACKTRACE_FOUND)
+  target_compile_definitions(common PRIVATE "-DENABLE_LIBBACKTRACE=1")
+  target_link_libraries(common PRIVATE libbacktrace::libbacktrace)
 endif()
 
 if (SWITCH)
@@ -137,145 +125,6 @@ endif()
 
 if(ANDROID)
   target_link_libraries(common PRIVATE log)
-endif()
-
-if(USE_X11)
-  target_sources(common PRIVATE
-      gl/x11_window.cpp
-      gl/x11_window.h
-  )
-  target_compile_definitions(common PRIVATE "-DUSE_X11=1")
-  target_include_directories(common PRIVATE "${X11_INCLUDE_DIR}" "${X11_Xrandr_INCLUDE_PATH}")
-  target_link_libraries(common PRIVATE "${X11_LIBRARIES}" "${X11_Xrandr_LIB}")
-endif()
-
-if(USE_WAYLAND)
-  target_compile_definitions(common PRIVATE "-DUSE_WAYLAND=1")
-endif()
-
-if(USE_DRMKMS)
-  target_sources(common PRIVATE
-    drm_display.cpp
-    drm_display.h
-  )
-  target_link_libraries(common PUBLIC Libdrm::Libdrm)
-endif()
-
-if(ENABLE_OPENGL)
-  target_sources(common PRIVATE
-    gl/context.cpp
-    gl/context.h
-    gl/program.cpp
-    gl/program.h
-    gl/shader_cache.cpp
-    gl/shader_cache.h
-    gl/stream_buffer.cpp
-    gl/stream_buffer.h
-    gl/texture.cpp
-    gl/texture.h
-  )
-  target_compile_definitions(common PUBLIC "WITH_OPENGL=1")
-  target_link_libraries(common PRIVATE glad)
-
-  if(WIN32)
-    target_sources(common PRIVATE
-      gl/context_wgl.cpp
-      gl/context_wgl.h
-    )
-  endif()
-
-  if(USE_EGL)
-    target_sources(common PRIVATE
-      gl/context_egl.cpp
-      gl/context_egl.h
-    )
-    target_compile_definitions(common PRIVATE "-DUSE_EGL=1")
-
-    if(USE_X11)
-      target_sources(common PRIVATE
-        gl/context_egl_x11.cpp
-        gl/context_egl_x11.h
-      )
-
-      # We set EGL_NO_X11 because otherwise X comes in with its macros and breaks
-      # a bunch of files from compiling, if we include the EGL headers. This just
-      # makes the data types opaque, we can still use it with X11 if needed.
-      target_compile_definitions(common PRIVATE "-DEGL_NO_X11=1")
-    endif()
-    if(ANDROID AND USE_EGL)
-      target_sources(common PRIVATE
-        gl/context_egl_android.cpp
-        gl/context_egl_android.h
-      )
-    endif()
-    if(USE_DRMKMS)
-      target_compile_definitions(common PRIVATE "-DUSE_GBM=1")
-      target_sources(common PRIVATE
-        gl/context_egl_gbm.cpp
-        gl/context_egl_gbm.h
-      )
-      target_link_libraries(common PUBLIC GBM::GBM)
-    endif()
-    if(USE_FBDEV)
-      target_compile_definitions(common PRIVATE "-DUSE_FBDEV=1")
-      target_sources(common PRIVATE
-        gl/context_egl_fbdev.cpp
-        gl/context_egl_fbdev.h
-      )
-    endif()
-  endif()
-
-  if(USE_X11)
-    target_sources(common PRIVATE
-      gl/context_glx.cpp
-      gl/context_glx.h
-    )
-    target_compile_definitions(common PRIVATE "-DUSE_GLX=1")
-  endif()
-
-  if(USE_WAYLAND)
-    target_sources(common PRIVATE
-      gl/context_egl_wayland.cpp
-      gl/context_egl_wayland.h
-    )
-  endif()
-
-  if(APPLE)
-    target_sources(common PRIVATE
-      gl/context_agl.mm
-      gl/context_agl.h
-    )
-  endif()
-endif()
-
-if(ENABLE_VULKAN)
-  target_sources(common PRIVATE
-    vulkan/builders.cpp
-    vulkan/builders.h
-    vulkan/context.cpp
-    vulkan/context.h
-    vulkan/loader.h
-    vulkan/loader.cpp
-    vulkan/shader_cache.cpp
-    vulkan/shader_cache.h
-    vulkan/shader_compiler.cpp
-    vulkan/shader_compiler.h
-    vulkan/stream_buffer.cpp
-    vulkan/stream_buffer.h
-    vulkan/swap_chain.cpp
-    vulkan/swap_chain.h
-    vulkan/texture.cpp
-    vulkan/texture.h
-    vulkan/util.cpp
-    vulkan/util.h
-  )
-  target_compile_definitions(common PUBLIC "WITH_VULKAN=1")
-  target_link_libraries(common PRIVATE glslang)
-
-  if(APPLE)
-    # Needed for Vulkan Swap Chain.
-    target_link_libraries(common PRIVATE "objc")
-  endif()
 endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")

@@ -1,23 +1,27 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
+#include "gdbserver.h"
+#include "qtutils.h"
+
+#include "core/game_list.h"
 #include "core/host.h"
-#include "core/host_display.h"
-#include "core/host_settings.h"
 #include "core/system.h"
 #include "core/types.h"
-#include "frontend-common/common_host.h"
-#include "frontend-common/game_list.h"
-#include "frontend-common/input_manager.h"
-#include "qtutils.h"
+
+#include "util/gpu_device.h"
+#include "util/input_manager.h"
+
 #include <QtCore/QByteArray>
 #include <QtCore/QMetaType>
 #include <QtCore/QObject>
 #include <QtCore/QSemaphore>
-#include <QtCore/QSettings>
 #include <QtCore/QString>
 #include <QtCore/QThread>
+#include <QtGui/QIcon>
+
 #include <atomic>
 #include <functional>
 #include <map>
@@ -38,18 +42,17 @@ class QTranslator;
 
 class INISettingsInterface;
 
-class HostDisplay;
+class GPUDevice;
 
 class MainWindow;
 class DisplayWidget;
 
+namespace Achievements {
+enum class LoginRequestReason;
+}
+
 Q_DECLARE_METATYPE(std::optional<bool>);
 Q_DECLARE_METATYPE(std::shared_ptr<SystemBootParameters>);
-
-// These cause errors when compiling with gcc, implicitly defined?
-// Q_DECLARE_METATYPE(std::function<void()>);
-// Q_DECLARE_METATYPE(GPURenderer);
-// Q_DECLARE_METATYPE(InputBindingKey);
 
 class EmuThread : public QThread
 {
@@ -86,6 +89,7 @@ public:
   static void stop();
 
   ALWAYS_INLINE bool isOnThread() const { return QThread::currentThread() == this; }
+  ALWAYS_INLINE bool isOnUIThread() const { return QThread::currentThread() == m_ui_thread; }
 
   ALWAYS_INLINE QEventLoop* getEventLoop() const { return m_event_loop; }
 
@@ -94,10 +98,9 @@ public:
   ALWAYS_INLINE bool isSurfaceless() const { return m_is_surfaceless; }
   ALWAYS_INLINE bool isRunningFullscreenUI() const { return m_run_fullscreen_ui; }
 
-  bool acquireHostDisplay(RenderAPI api);
+  std::optional<WindowInfo> acquireRenderWindow(bool recreate_window);
   void connectDisplaySignals(DisplayWidget* widget);
-  void releaseHostDisplay();
-  void renderDisplay(bool skip_present);
+  void releaseRenderWindow();
 
   void startBackgroundControllerPollTimer();
   void stopBackgroundControllerPollTimer();
@@ -105,7 +108,6 @@ public:
 
   bool shouldRenderToMain() const;
   void loadSettings(SettingsInterface& si);
-  void setInitialState();
   void checkForSettingsChanges(const Settings& old_settings);
 
   void bootOrLoadState(std::string path);
@@ -121,7 +123,7 @@ Q_SIGNALS:
   void errorReported(const QString& title, const QString& message);
   bool messageConfirmed(const QString& title, const QString& message);
   void debuggerMessageReported(const QString& message);
-  void settingsResetToDefault();
+  void settingsResetToDefault(bool system, bool controller);
   void onInputDevicesEnumerated(const QList<QPair<QString, QString>>& devices);
   void onInputDeviceConnected(const QString& identifier, const QString& device_name);
   void onInputDeviceDisconnected(const QString& identifier);
@@ -132,17 +134,24 @@ Q_SIGNALS:
   void systemPaused();
   void systemResumed();
   void gameListRefreshed();
-  bool createDisplayRequested(bool fullscreen, bool render_to_main);
-  bool updateDisplayRequested(bool fullscreen, bool render_to_main, bool surfaceless);
-  void displaySizeRequested(qint32 width, qint32 height);
+  std::optional<WindowInfo> onAcquireRenderWindowRequested(bool recreate_window, bool fullscreen, bool render_to_main,
+                                                           bool surfaceless, bool use_main_window_pos);
+  void onResizeRenderWindowRequested(qint32 width, qint32 height);
+  void onReleaseRenderWindowRequested();
   void focusDisplayWidgetRequested();
-  void destroyDisplayRequested();
   void runningGameChanged(const QString& filename, const QString& game_serial, const QString& game_title);
   void inputProfileLoaded();
   void mouseModeRequested(bool relative, bool hide_cursor);
-  void achievementsRefreshed(quint32 id, const QString& game_info_string, quint32 total, quint32 points);
-  void achievementsChallengeModeChanged();
+  void fullscreenUIStateChange(bool running);
+  void achievementsLoginRequested(Achievements::LoginRequestReason reason);
+  void achievementsLoginSucceeded(const QString& display_name, quint32 points, quint32 sc_points,
+                                  quint32 unread_messages);
+  void achievementsRefreshed(quint32 id, const QString& game_info_string);
+  void achievementsChallengeModeChanged(bool enabled);
   void cheatEnabled(quint32 index, bool enabled);
+
+  /// Big Picture UI requests.
+  void onCoverDownloaderOpenRequested();
 
 public Q_SLOTS:
   void setDefaultSettings(bool system = true, bool controller = true);
@@ -180,20 +189,21 @@ public Q_SLOTS:
   void saveScreenshot();
   void redrawDisplayWindow();
   void toggleFullscreen();
-  void setFullscreen(bool fullscreen);
+  void setFullscreen(bool fullscreen, bool allow_render_to_main);
   void setSurfaceless(bool surfaceless);
   void requestDisplaySize(float scale);
   void loadCheatList(const QString& filename);
   void setCheatEnabled(quint32 index, bool enabled);
   void applyCheat(quint32 index);
   void reloadPostProcessingShaders();
+  void updatePostProcessingSettings();
+  void clearInputBindStateFromSource(InputBindingKey key);
 
 private Q_SLOTS:
   void stopInThread();
-  void onDisplayWindowMouseMoveEvent(bool relative, float x, float y);
   void onDisplayWindowMouseButtonEvent(int button, bool pressed);
   void onDisplayWindowMouseWheelEvent(const QPoint& delta_angle);
-  void onDisplayWindowResized(int width, int height);
+  void onDisplayWindowResized(int width, int height, float scale);
   void onDisplayWindowKeyEvent(int key, bool pressed);
   void onDisplayWindowTextEntered(const QString& text);
   void doBackgroundControllerPoll();
@@ -208,7 +218,7 @@ private:
 
   void createBackgroundControllerPollTimer();
   void destroyBackgroundControllerPollTimer();
-  void updateDisplayState();
+  void setInitialState(std::optional<bool> override_fullscreen);
 
   QThread* m_ui_thread;
   QSemaphore m_started_semaphore;
@@ -231,10 +241,12 @@ private:
   float m_last_video_fps = std::numeric_limits<float>::infinity();
   u32 m_last_render_width = std::numeric_limits<u32>::max();
   u32 m_last_render_height = std::numeric_limits<u32>::max();
-  GPURenderer m_last_renderer = GPURenderer::Count;
+  RenderAPI m_last_render_api = RenderAPI::None;
+  bool m_last_hardware_renderer = false;
 };
 
 extern EmuThread* g_emu_thread;
+extern GDBServer* g_gdb_server;
 
 namespace QtHost {
 /// Sets batch mode (exit after game shutdown).
@@ -246,11 +258,11 @@ bool InNoGUIMode();
 /// Executes a function on the UI thread.
 void RunOnUIThread(const std::function<void()>& func, bool block = false);
 
-/// Returns a list of supported languages and codes (suffixes for translation files).
-std::vector<std::pair<QString, QString>> GetAvailableLanguageList();
+/// Default language for the platform.
+const char* GetDefaultLanguage();
 
 /// Call when the language changes.
-void InstallTranslator();
+void InstallTranslator(QWidget* dialog_parent);
 
 /// Returns the application name and version, optionally including debug/devel config indicator.
 QString GetAppNameAndVersion();
@@ -258,8 +270,18 @@ QString GetAppNameAndVersion();
 /// Returns the debug/devel config indicator.
 QString GetAppConfigSuffix();
 
+/// Returns the main application icon.
+QIcon GetAppIcon();
+
 /// Returns the base path for resources. This may be : prefixed, if we're using embedded resources.
 QString GetResourcesBasePath();
+
+/// Downloads the specified URL to the provided path.
+bool DownloadFile(QWidget* parent, const QString& title, std::string url, const char* path);
+
+/// Downloads the specified URL, and extracts the specified file from a zip to a provided path.
+bool DownloadFileFromZip(QWidget* parent, const QString& title, std::string url, const char* zip_filename,
+                         const char* output_path);
 
 /// Thread-safe settings access.
 void QueueSettingsSave();
@@ -267,4 +289,9 @@ void QueueSettingsSave();
 /// VM state, safe to access on UI thread.
 bool IsSystemValid();
 bool IsSystemPaused();
+
+/// Accessors for game information.
+const QString& GetCurrentGameTitle();
+const QString& GetCurrentGameSerial();
+const QString& GetCurrentGamePath();
 } // namespace QtHost

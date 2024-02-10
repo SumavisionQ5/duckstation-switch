@@ -12,7 +12,7 @@
 #include <type_traits>
 #include <vector>
 
-class String;
+class SmallStringBase;
 
 class StateWrapper
 {
@@ -74,7 +74,7 @@ public:
   }
 
   /// Overload for POD types, such as structs.
-  template<typename T, std::enable_if_t<std::is_pod_v<T>, int> = 0>
+  template<typename T, std::enable_if_t<std::is_standard_layout_v<T> && std::is_trivial_v<T>, int> = 0>
   void DoPOD(T* value_ptr)
   {
     if (m_mode == Mode::Read)
@@ -104,10 +104,11 @@ public:
   }
 
   void DoBytes(void* data, size_t length);
+  void DoBytesEx(void* data, size_t length, u32 version_introduced, const void* default_value);
 
   void Do(bool* value_ptr);
   void Do(std::string* value_ptr);
-  void Do(String* value_ptr);
+  void Do(SmallStringBase* value_ptr);
 
   template<typename T, size_t N>
   void Do(std::array<T, N>* data)
@@ -116,7 +117,7 @@ public:
   }
 
   template<typename T, size_t N>
-  void Do(HeapArray<T, N>* data)
+  void Do(FixedHeapArray<T, N>* data)
   {
     DoArray(data->data(), data->size());
   }
@@ -182,7 +183,7 @@ public:
   template<typename T>
   void DoEx(T* data, u32 version_introduced, T default_value)
   {
-    if (m_version < version_introduced)
+    if (m_mode == Mode::Read && m_version < version_introduced)
     {
       *data = std::move(default_value);
       return;

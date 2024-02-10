@@ -58,13 +58,13 @@ void DebuggerWindow::refreshAll()
   m_stack_model->invalidateView();
   m_ui.memoryView->repaint();
 
-  m_code_model->setPC(CPU::g_state.regs.pc);
+  m_code_model->setPC(CPU::g_state.pc);
   scrollToPC();
 }
 
 void DebuggerWindow::scrollToPC()
 {
-  return scrollToCodeAddress(CPU::g_state.regs.pc);
+  return scrollToCodeAddress(CPU::g_state.pc);
 }
 
 void DebuggerWindow::scrollToCodeAddress(VirtualMemoryAddress address)
@@ -239,6 +239,39 @@ void DebuggerWindow::onCodeViewItemActivated(QModelIndex index)
   }
 }
 
+void DebuggerWindow::onCodeViewContextMenuRequested(const QPoint& pt)
+{
+  const QModelIndex index = m_ui.codeView->indexAt(pt);
+  if (!index.isValid())
+    return;
+
+  const VirtualMemoryAddress address = m_code_model->getAddressForIndex(index);
+
+  QMenu menu;
+  menu.addAction(QStringLiteral("0x%1").arg(static_cast<uint>(address), 8, 16, QChar('0')))->setEnabled(false);
+  menu.addSeparator();
+
+  QAction* action = menu.addAction(QIcon(":/icons/media-record@2x.png"), tr("Toggle &Breakpoint"));
+  connect(action, &QAction::triggered, this, [this, address]() { toggleBreakpoint(address); });
+
+  action = menu.addAction(QIcon(":/icons/debug-run-cursor.png"), tr("&Run To Cursor"));
+  connect(action, &QAction::triggered, this, [address]() {
+    Host::RunOnCPUThread([address]() {
+      CPU::AddBreakpoint(address, true, true);
+      g_emu_thread->setSystemPaused(false);
+    });
+  });
+
+  menu.addSeparator();
+  action = menu.addAction(QIcon(":/icons/antialias-icon.png"), tr("View in &Dump"));
+  connect(action, &QAction::triggered, this, [this, address]() { scrollToMemoryAddress(address); });
+
+  action = menu.addAction(QIcon(":/icons/debug-trace.png"), tr("Follow Load/Store"));
+  connect(action, &QAction::triggered, this, [this, address]() { tryFollowLoadStore(address); });
+
+  menu.exec(m_ui.codeView->mapToGlobal(pt));
+}
+
 void DebuggerWindow::onMemorySearchTriggered()
 {
   m_ui.memoryView->clearHighlightRange();
@@ -357,10 +390,11 @@ void DebuggerWindow::onMemorySearchStringChanged(const QString&)
 
 void DebuggerWindow::closeEvent(QCloseEvent* event)
 {
-  QMainWindow::closeEvent(event);
+  g_emu_thread->disconnect(this);
   g_emu_thread->setSystemPaused(true, true);
-  CPU::ClearBreakpoints();
+  Host::RunOnCPUThread(&CPU::ClearBreakpoints);
   g_emu_thread->setSystemPaused(false);
+  QMainWindow::closeEvent(event);
   emit closed();
 }
 
@@ -380,16 +414,17 @@ void DebuggerWindow::setupAdditionalUi()
   m_ui.memoryView->setFont(fixedFont);
   m_ui.stackView->setFont(fixedFont);
 
+  m_ui.codeView->setContextMenuPolicy(Qt::CustomContextMenu);
+
   setCentralWidget(nullptr);
   delete m_ui.centralwidget;
 }
 
 void DebuggerWindow::connectSignals()
 {
-  EmuThread* hi = g_emu_thread;
-  connect(hi, &EmuThread::systemPaused, this, &DebuggerWindow::onEmulationPaused);
-  connect(hi, &EmuThread::systemResumed, this, &DebuggerWindow::onEmulationResumed);
-  connect(hi, &EmuThread::debuggerMessageReported, this, &DebuggerWindow::onDebuggerMessageReported);
+  connect(g_emu_thread, &EmuThread::systemPaused, this, &DebuggerWindow::onEmulationPaused);
+  connect(g_emu_thread, &EmuThread::systemResumed, this, &DebuggerWindow::onEmulationResumed);
+  connect(g_emu_thread, &EmuThread::debuggerMessageReported, this, &DebuggerWindow::onDebuggerMessageReported);
 
   connect(m_ui.actionPause, &QAction::toggled, this, &DebuggerWindow::onPauseActionToggled);
   connect(m_ui.actionRunToCursor, &QAction::triggered, this, &DebuggerWindow::onRunToCursorTriggered);
@@ -405,6 +440,7 @@ void DebuggerWindow::connectSignals()
   connect(m_ui.actionClearBreakpoints, &QAction::triggered, this, &DebuggerWindow::onClearBreakpointsTriggered);
   connect(m_ui.actionClose, &QAction::triggered, this, &DebuggerWindow::close);
   connect(m_ui.codeView, &QTreeView::activated, this, &DebuggerWindow::onCodeViewItemActivated);
+  connect(m_ui.codeView, &QTreeView::customContextMenuRequested, this, &DebuggerWindow::onCodeViewContextMenuRequested);
 
   connect(m_ui.memoryRegionRAM, &QRadioButton::clicked, [this]() { setMemoryViewRegion(Bus::MemoryRegion::RAM); });
   connect(m_ui.memoryRegionEXP1, &QRadioButton::clicked, [this]() { setMemoryViewRegion(Bus::MemoryRegion::EXP1); });

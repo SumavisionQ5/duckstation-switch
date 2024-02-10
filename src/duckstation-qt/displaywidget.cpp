@@ -1,14 +1,19 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "displaywidget.h"
-#include "common/assert.h"
-#include "common/bitutils.h"
-#include "common/log.h"
-#include "frontend-common/imgui_manager.h"
 #include "mainwindow.h"
 #include "qthost.h"
 #include "qtutils.h"
+
+#include "core/fullscreen_ui.h"
+
+#include "util/imgui_manager.h"
+
+#include "common/assert.h"
+#include "common/bitutils.h"
+#include "common/log.h"
+
 #include <QtCore/QDebug>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
@@ -135,7 +140,9 @@ void DisplayWidget::handleCloseEvent(QCloseEvent* event)
 {
   // Closing the separate widget will either cancel the close, or trigger shutdown.
   // In the latter case, it's going to destroy us, so don't let Qt do it first.
-  if (QtHost::IsSystemValid())
+  // Treat a close event while fullscreen as an exit, that way ALT+F4 closes DuckStation,
+  // rather than just the game.
+  if (QtHost::IsSystemValid() && !isActuallyFullscreen())
   {
     QMetaObject::invokeMethod(g_main_window, "requestShutdown", Q_ARG(bool, true), Q_ARG(bool, true),
                               Q_ARG(bool, false));
@@ -146,6 +153,27 @@ void DisplayWidget::handleCloseEvent(QCloseEvent* event)
   }
 
   event->ignore();
+}
+
+void DisplayWidget::destroy()
+{
+  m_destroying = true;
+
+#ifdef __APPLE__
+  // See Qt documentation, entire application is in full screen state, and the main
+  // window will get reopened fullscreen instead of windowed if we don't close the
+  // fullscreen window first.
+  if (isActuallyFullscreen())
+    close();
+#endif
+  deleteLater();
+}
+
+bool DisplayWidget::isActuallyFullscreen() const
+{
+  // I hate you QtWayland... have to check the parent, not ourselves.
+  QWidget* container = qobject_cast<QWidget*>(parent());
+  return container ? container->isFullScreen() : isFullScreen();
 }
 
 void DisplayWidget::updateCenterPos()
@@ -244,7 +272,7 @@ bool DisplayWidget::event(QEvent* event)
 
         const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * dpr);
         const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * dpr);
-        emit windowMouseMoveEvent(false, scaled_x, scaled_y);
+        InputManager::UpdatePointerAbsolutePosition(0, scaled_x, scaled_y);
       }
       else
       {
@@ -270,8 +298,10 @@ bool DisplayWidget::event(QEvent* event)
         }
 #endif
 
-        if (dx != 0.0f || dy != 0.0f)
-          emit windowMouseMoveEvent(true, dx, dy);
+        if (dx != 0.0f)
+          InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, dx);
+        if (dy != 0.0f)
+          InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::Y, dy);
       }
 
       return true;
@@ -286,9 +316,12 @@ bool DisplayWidget::event(QEvent* event)
 
       // don't toggle fullscreen when we're bound.. that wouldn't end well.
       if (event->type() == QEvent::MouseButtonDblClick &&
-          static_cast<const QMouseEvent*>(event)->button() == Qt::LeftButton &&
-          !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0)) && QtHost::IsSystemValid() &&
-          !QtHost::IsSystemPaused() && Host::GetBoolSettingValue("Main", "DoubleClickTogglesFullscreen", true))
+          static_cast<const QMouseEvent*>(event)->button() == Qt::LeftButton && QtHost::IsSystemValid() &&
+          !FullscreenUI::HasActiveWindow() &&
+          ((!QtHost::IsSystemPaused() &&
+            !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0))) ||
+           (QtHost::IsSystemPaused() && !ImGuiManager::WantsMouseInput())) &&
+          Host::GetBoolSettingValue("Main", "DoubleClickTogglesFullscreen", true))
       {
         g_emu_thread->toggleFullscreen();
       }
@@ -337,6 +370,9 @@ bool DisplayWidget::event(QEvent* event)
 
     case QEvent::Close:
     {
+      if (m_destroying)
+        return QWidget::event(event);
+
       handleCloseEvent(static_cast<QCloseEvent*>(event));
       return true;
     }
@@ -356,7 +392,9 @@ bool DisplayWidget::event(QEvent* event)
   }
 }
 
-DisplayContainer::DisplayContainer() : QStackedWidget(nullptr) {}
+DisplayContainer::DisplayContainer() : QStackedWidget(nullptr)
+{
+}
 
 DisplayContainer::~DisplayContainer() = default;
 
