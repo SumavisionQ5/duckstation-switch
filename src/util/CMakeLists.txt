@@ -273,7 +273,7 @@ elseif(APPLE)
   find_library(QUARTZCORE_LIBRARY QuartzCore)
   target_link_libraries(util PRIVATE ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOK_LIBRARY})
   set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
-elseif(NOT ANDROID)
+elseif(NOT ANDROID AND NOT NINTENDO_SWITCH)
   target_sources(util PRIVATE
     platform_misc_unix.cpp
   )
@@ -281,6 +281,11 @@ elseif(NOT ANDROID)
   pkg_check_modules(DBUS REQUIRED dbus-1)
   target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
   target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
+elseif(NINTENDO_SWITCH)
+  target_sources(util PRIVATE
+    platform_misc_switch.cpp
+    switch_input_source.cpp
+  )
 endif()
 
 if(NOT WIN32 AND NOT ANDROID)

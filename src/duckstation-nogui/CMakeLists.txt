@@ -9,7 +9,7 @@ target_link_libraries(duckstation-nogui PRIVATE core util common imgui scmversio
 
 add_core_resources(duckstation-nogui)
 
-if(SWITCH)
+if(NINTENDO_SWITCH)
   enable_language(ASM)
 
   target_sources(duckstation-nogui PRIVATE
@@ -19,13 +19,17 @@ if(SWITCH)
   )
   target_link_libraries(duckstation-nogui PUBLIC "${NX_LIBRARIES}")
 
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/control.nacp
-    COMMAND ${NACPTOOL} --create "duckstation" "Stenzek, RSDuck" "aaaa" ${CMAKE_BINARY_DIR}/control.nacp)
-  
-    add_custom_target(duckstation.nro ALL
-      ${ELF2NRO} ${CMAKE_BINARY_DIR}/bin/duckstation-nogui ${CMAKE_BINARY_DIR}/duckstation.nro --icon=${CMAKE_SOURCE_DIR}/extras/icons/icon-switch.jpg --nacp=${CMAKE_BINARY_DIR}/control.nacp
-      DEPENDS duckstation-nogui
-      ${CMAKE_BINARY_DIR}/control.nacp)
+  nx_generate_nacp (duckstation.nacp
+    NAME    "duckstation"
+    AUTHOR  "Stenzek, RSDuck (port)"
+    VERSION "pre-release 1"
+  )
+
+  nx_create_nro(duckstation-nogui
+    OUTPUT ${CMAKE_BINARY_DIR}/duckstation.nro
+    NACP  duckstation.nacp
+    ICON  "${CMAKE_SOURCE_DIR}/extras/icons/icon-switch.jpg"
+  )
 endif()
 
 if(WIN32)

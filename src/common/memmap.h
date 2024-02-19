@@ -8,7 +8,10 @@
 #include <map>
 #include <string>
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__SWITCH__)
+
+// not actually what is used on Switch
+// but they will work for us
 
 // eww :/ but better than including windows.h
 enum class PageProtect : u32
@@ -19,6 +22,11 @@ enum class PageProtect : u32
   ReadExecute = 0x20,      // PAGE_EXECUTE_READ
   ReadWriteExecute = 0x40, // PAGE_EXECUTE_READWRITE
 };
+
+#ifdef __SWITCH__
+struct VirtmemReservation;
+#endif
+
 #else
 
 #include <sys/mman.h>
@@ -78,6 +86,10 @@ private:
   size_t m_size = 0;
   size_t m_num_pages = 0;
   size_t m_num_mappings = 0;
+
+#ifdef __SWITCH__
+  VirtmemReservation* m_virtmem_reservation;
+#endif
 
 #ifdef _WIN32
   using PlaceholderMap = std::map<size_t, size_t>;

@@ -61,26 +61,11 @@ add_library(common
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
-if (SWITCH)
-  target_sources(common PRIVATE
-    deko3d/context.cpp
-    deko3d/context.h
-    deko3d/memory_heap.cpp
-    deko3d/memory_heap.h
-    deko3d/swap_chain.cpp
-    deko3d/swap_chain.h
-    deko3d/texture.cpp
-    deko3d/texture.h
-    deko3d/util.cpp
-    deko3d/util.h
-    deko3d/shader_cache.cpp
-    deko3d/shader_cache.h
-    deko3d/stream_buffer.cpp
-    deko3d/stream_buffer.h
-  )
-endif()
 target_link_libraries(common PUBLIC fmt Threads::Threads fast_float)
-target_link_libraries(common PRIVATE stb ZLIB::ZLIB minizip "${CMAKE_DL_LIBS}")
+target_link_libraries(common PRIVATE stb ZLIB::ZLIB minizip)
+if (NOT NINTENDO_SWITCH)
+  target_link_libraries(common PRIVATE "${CMAKE_DL_LIBS}")
+endif()
 
 if(WIN32)
   target_sources(common PRIVATE
@@ -118,7 +103,7 @@ if(NOT WIN32 AND NOT ANDROID AND LIBBACKTRACE_FOUND)
   target_link_libraries(common PRIVATE libbacktrace::libbacktrace)
 endif()
 
-if (SWITCH)
+if (NINTENDO_SWITCH)
   # switch curl depends on libnx, so we have to link it here...
   target_link_libraries(common PRIVATE uam "${NX_LIBRARIES}")
 endif()

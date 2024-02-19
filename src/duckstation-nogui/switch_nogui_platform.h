@@ -24,6 +24,7 @@ public:
   void SetDefaultConfig(SettingsInterface& si) override;
 
   bool CreatePlatformWindow(std::string title) override;
+  bool HasPlatformWindow() const override;
   void DestroyPlatformWindow() override;
   std::optional<WindowInfo> GetPlatformWindowInfo() override;
   void SetPlatformWindowTitle(std::string title) override;
@@ -34,6 +35,7 @@ public:
   void RunMessageLoop() override;
   void ExecuteInMessageLoop(std::function<void()> func) override;
   void QuitMessageLoop() override;
+
 
   void SetFullscreen(bool enabled) override;
 

@@ -1669,7 +1669,7 @@ void CPU::CodeCache::BackpatchLoadStore(void* host_pc, const LoadstoreBackpatchI
 {
 #ifdef ENABLE_RECOMPILER
   if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
-    Recompiler::CodeGenerator::BackpatchLoadStore(host_pc, info);
+    Recompiler::CodeGenerator::BackpatchLoadStore(host_pc, &s_code_buffer, info);
 #endif
 #ifdef ENABLE_NEWREC
   if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)

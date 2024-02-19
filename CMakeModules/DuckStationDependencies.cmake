@@ -1,4 +1,5 @@
 if(ENABLE_SDL2)
+  message(${ENABLE_SDL2})
   find_package(SDL2 2.30.0 REQUIRED)
 endif()
 if(NOT WIN32 AND NOT ANDROID)

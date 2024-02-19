@@ -1397,7 +1397,10 @@ int main(int argc, char* argv[])
 {
 #ifdef __SWITCH__
   socketInitializeDefault();
-  nxlinkStdio();
+  int nxlinkStdioHandle = nxlinkStdio();
+
+  if (nxlinkStdioHandle != -1)
+    NoGUIHost::InitializeEarlyConsole();
 #endif
   CrashHandler::Install();
 

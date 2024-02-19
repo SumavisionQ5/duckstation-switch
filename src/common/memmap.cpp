@@ -11,6 +11,8 @@
 
 #if defined(_WIN32)
 #include "windows_headers.h"
+#elif defined(__SWITCH__)
+#include <switch.h>
 #elif !defined(__ANDROID__)
 #include <cerrno>
 #include <fcntl.h>
@@ -271,6 +273,302 @@ bool SharedMemoryMappingArea::Unmap(void* map_base, size_t map_size)
   m_num_mappings--;
   return true;
 }
+
+#elif defined(__SWITCH__)
+
+struct Mirror
+{
+  void* addr, *source;
+  u64 size;
+  std::vector<bool> mapping_state;
+
+  u64 FindIslandSize(u64 offset)
+  {
+    bool start_state = mapping_state[offset >> 12];
+    u64 island_size = 0x1000;
+    while ((offset + island_size) < size && mapping_state[(offset + island_size) >> 12] == start_state)
+      island_size += 0x1000;
+
+    return island_size;
+  }
+};
+
+struct VMemReservation
+{
+  void* addr;
+  VirtmemReservation* reservation;
+};
+
+struct CodeMemoryMapping
+{
+  void* heap_memory;
+  void* codemem_mirror;
+  size_t size;
+};
+
+std::vector<VMemReservation> VMemReservations;
+std::vector<CodeMemoryMapping> CodeMemories;
+std::vector<Mirror> Mappings;
+
+// not necessary on Switch
+std::string MemMap::GetFileMappingName(const char* prefix)
+{
+  return {};
+}
+
+void* ReserveVirtmem(size_t size)
+{
+  void* addr = virtmemFindAslr(size, 0x1000);
+  if (!addr)
+  {
+    Log_ErrorPrintf("virtmemFindAslr failed (size %zx)", size);
+    return nullptr;
+  }
+  VirtmemReservation* reservation = virtmemAddReservation(addr, size);
+  if (!addr)
+    Log_ErrorPrintf("virtmemAddReservation failed");
+
+  Mappings.push_back({addr, reservation});
+
+  return addr;
+}
+
+void FreeVirtmem(void* addr)
+{
+  for (auto it = VMemReservations.begin(); it != VMemReservations.end(); ++it)
+  {
+    if (it->addr == addr)
+    {
+      virtmemRemoveReservation(it->reservation);
+
+      VMemReservations.erase(it);
+      return;
+    }
+  }
+
+  Log_ErrorPrintf("Trying to free unknown virtmem reservation %p", addr);
+}
+
+void* MemMap::CreateSharedMemory(const char* name, size_t size)
+{
+  virtmemLock();
+  void* heapMemory = aligned_alloc(0x1000, size);
+
+  if (!heapMemory)
+  {
+    Log_ErrorPrintf("Failed to allocate heap memory backing %zx", size);
+    virtmemUnlock();
+    return nullptr;
+  }
+
+  void* codeMemMirror = ReserveVirtmem(size);
+
+  Result result = svcMapProcessCodeMemory(envGetOwnProcessHandle(),
+    reinterpret_cast<u64>(codeMemMirror),
+    reinterpret_cast<u64>(heapMemory),
+    size);
+
+  if (!R_SUCCEEDED(result))
+  {
+    FreeVirtmem(codeMemMirror);
+    virtmemUnlock();
+  }
+
+  CodeMemories.push_back(CodeMemoryMapping{heapMemory, codeMemMirror, size});
+
+  virtmemUnlock();
+  return codeMemMirror;
+}
+
+void MemMap::DestroySharedMemory(void* ptr)
+{
+  virtmemLock();
+
+  for (auto it = CodeMemories.begin(); it != CodeMemories.end(); ++it)
+  {
+    if (it->codemem_mirror == ptr)
+    {
+      Result r = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(),
+        reinterpret_cast<u64>(it->codemem_mirror),
+        reinterpret_cast<u64>(it->heap_memory),
+        it->size);
+
+      if (R_SUCCEEDED(r))
+      {
+        FreeVirtmem(it->codemem_mirror);
+
+        free(it->heap_memory);
+      }
+      else
+      {
+        Log_ErrorPrintf("svcUnmapProcessCodeMemory failed with code %x", r);
+      }
+
+      CodeMemories.erase(it);
+
+      virtmemUnlock();
+      return;
+    }
+  }
+
+  Log_ErrorPrintf("Trying to destroy unknown shared memory %p", ptr);
+  virtmemUnlock();
+}
+
+void* MemMap::MapSharedMemory(void* handle, size_t offset, void* baseaddr, size_t size, PageProtect mode)
+{
+  AssertMsg(mode == PageProtect::ReadWrite, "Switch requires mapping to be ReadWrite initially");
+  virtmemLock();
+
+  if (!baseaddr)
+  {
+    baseaddr = ReserveVirtmem(size);
+    if (!baseaddr)
+    {
+      virtmemLock();
+      return nullptr;
+    }
+  }
+
+  Mappings.push_back({baseaddr, static_cast<u8*>(handle) + offset, size, std::vector<bool>(size >> 12)});
+
+  if (!MemMap::MemProtect(baseaddr, size, PageProtect::ReadWrite))
+  {
+    Log_ErrorPrintf("Failed to setup mapping handle=%p offset=%zx baseaddr=%p size=%zx mode=%x",
+      handle, offset, baseaddr, size, static_cast<u32>(mode));
+    Mappings.pop_back();
+    return nullptr;
+  }
+
+  virtmemUnlock();
+  return baseaddr;
+}
+
+void MemMap::UnmapSharedMemory(void* baseaddr, size_t size)
+{
+  virtmemLock();
+  for (auto it = Mappings.begin(); it != Mappings.end(); ++it)
+  {
+    if (it->addr == baseaddr)
+    {
+      Result result = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(),
+        reinterpret_cast<u64>(baseaddr),
+        reinterpret_cast<u64>(it->source),
+        size);
+
+      if (!R_SUCCEEDED(result))
+      {
+        Log_ErrorPrintf("svcUnmapProcessCodeMemory failed with code %x", result);
+        virtmemUnlock();
+        return;
+      }
+
+      Mappings.erase(it);
+      virtmemUnlock();
+      return;
+    }
+  }
+
+  Log_ErrorPrintf("Trying to unmap unknown shared memory (baseaddr=%p, size=%zx)", baseaddr, size);
+  virtmemUnlock();
+}
+
+bool MemMap::MemProtect(void* baseaddr, size_t size, PageProtect mode)
+{
+  for (auto it = Mappings.begin(); it != Mappings.end(); ++it)
+  {
+    if (reinterpret_cast<u64>(baseaddr) >= reinterpret_cast<u64>(it->addr) &&
+        reinterpret_cast<u64>(baseaddr) + size <= reinterpret_cast<u64>(it->addr) + it->size)
+    {
+      u64 offset = reinterpret_cast<u64>(baseaddr) - reinterpret_cast<u64>(it->addr);
+      u64 src = reinterpret_cast<u64>(it->source);
+
+      while (size > 0)
+      {
+        u64 island_size = it->FindIslandSize(offset);
+        if (island_size > size)
+          island_size = size;
+
+        if (mode == PageProtect::ReadWrite)
+        {
+          if (!it->mapping_state[offset >> 12])
+          {
+            if (R_FAILED(svcMapProcessMemory(reinterpret_cast<void*>(reinterpret_cast<u64>(it->addr) + offset),
+              envGetOwnProcessHandle(), src + offset, island_size)))
+            {
+              Log_ErrorPrintf("Map process memory failed\n");
+              return false;
+            }
+          }
+        }
+        else
+        {
+          if (it->mapping_state[offset >> 12])
+          {
+            if (R_FAILED(svcUnmapProcessMemory(reinterpret_cast<void*>(reinterpret_cast<u64>(it->addr) + offset),
+              envGetOwnProcessHandle(), src + offset, island_size)))
+            {
+              Log_ErrorPrintf("Unmap process memory failed %lx %lx\n", offset, island_size);
+              return false;
+            }
+          }
+        }
+
+        bool original_state = it->mapping_state[offset >> 12];
+        for (u64 i = 0; i < island_size >> 12; i++)
+        {
+          DebugAssert(it->mapping_state[(offset >> 12) + i] == original_state);
+          it->mapping_state[(offset >> 12) + i] = mode == PageProtect::ReadWrite;
+        }
+
+        offset += island_size;
+        size -= island_size;
+      }
+
+      return true;
+    }
+  }
+
+  Log_ErrorPrintf("Trying to reprotect memory which was never mapped");
+  return false;
+}
+
+SharedMemoryMappingArea::SharedMemoryMappingArea()
+{}
+SharedMemoryMappingArea::~SharedMemoryMappingArea()
+{}
+
+bool SharedMemoryMappingArea::Create(size_t size)
+{
+  virtmemLock();
+  m_base_ptr = reinterpret_cast<u8*>(ReserveVirtmem(size));
+  if (!m_base_ptr)
+    Log_ErrorPrintf("failed to create memory area (size=%zx)", size);
+
+  virtmemUnlock();
+  return !m_base_ptr;
+}
+
+void SharedMemoryMappingArea::Destroy()
+{
+  virtmemLock();
+  FreeVirtmem(m_base_ptr);
+  virtmemUnlock();
+}
+
+u8* SharedMemoryMappingArea::Map(void* file_handle, size_t file_offset, void* map_base, size_t map_size, PageProtect mode)
+{
+  return static_cast<u8*>(MemMap::MapSharedMemory(file_handle, file_offset, map_base, map_size, mode));
+}
+
+bool SharedMemoryMappingArea::Unmap(void* map_base, size_t map_size)
+{
+  MemMap::UnmapSharedMemory(map_base, map_size);
+  return true; // cheat
+}
+
+ALWAYS_INLINE static void BeginCodeWrite() { }
+ALWAYS_INLINE static void EndCodeWrite() { }
 
 #elif !defined(__ANDROID__)
 

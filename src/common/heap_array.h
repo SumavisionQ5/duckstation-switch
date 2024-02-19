@@ -353,7 +353,12 @@ private:
       if (!m_data)
         Panic("Memory allocation failed.");
 #else
+#ifdef __SWITCH__
+      m_data = reinterpret_cast<T*>(aligned_alloc(alignment, size * sizeof(T)));
+      if (!m_data)
+#else
       if (posix_memalign(reinterpret_cast<void**>(&m_data), alignment, size * sizeof(T)) != 0)
+#endif
         Panic("Memory allocation failed.");
 
       if (prev_ptr)

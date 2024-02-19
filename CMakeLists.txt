@@ -25,7 +25,7 @@ option(ENABLE_OPENGL "Build with OpenGL renderer" ON)
 option(ENABLE_VULKAN "Build with Vulkan renderer" ON)
 
 # Global options.
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT NINTENDO_SWITCH)
   option(BUILD_NOGUI_FRONTEND "Build the NoGUI frontend" OFF)
   option(BUILD_QT_FRONTEND "Build the Qt frontend" ON)
   option(BUILD_REGTEST "Build regression test runner" OFF)

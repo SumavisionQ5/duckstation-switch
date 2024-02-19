@@ -1321,7 +1321,7 @@ static constexpr const std::array s_audio_backend_names = {
 static constexpr const std::array s_audio_backend_display_names = {
   TRANSLATE_NOOP("AudioBackend", "Null (No Output)"),
 #ifdef __SWITCH__
-  TRANSLATABLE("AudioBackend", "Switch"),
+  TRANSLATE_NOOP("AudioBackend", "Nintendo Switch"),
 #endif
 #ifdef ENABLE_CUBEB
   TRANSLATE_NOOP("AudioBackend", "Cubeb"),

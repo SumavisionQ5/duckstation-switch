@@ -117,10 +117,6 @@ endif()
 
 cmake_push_check_state(RESET)
 list(APPEND CMAKE_REQUIRED_LIBRARIES "${EGL_LIBRARY}")
-if (SWITCH)
-    # mesa depends on libnx, so we need to link it in for the build to be sucessful
-    list(APPEND CMAKE_REQUIRED_LIBRARIES "nx")
-endif()
 list(APPEND CMAKE_REQUIRED_INCLUDES "${EGL_INCLUDE_DIR}")
 
 check_cxx_source_compiles("

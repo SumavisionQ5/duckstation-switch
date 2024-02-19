@@ -1,5 +1,7 @@
 #include "switch_nogui_platform.h"
 
+#include "core/host.h"
+
 #include <switch.h>
 
 namespace Common::PageFaultHandler {
@@ -15,13 +17,13 @@ void HandleFault(uint64_t pc, uint64_t lr, uint64_t fp, uint64_t faultAddr, uint
 {
   if (pc >= (uint64_t)&__start__ && pc < (uint64_t)&__rodata_start)
   {
-    printf("unintentional fault in .text at %p (type %d) (trying to access %p?)\n", (void*)(pc - (uint64_t)&__start__),
+    printf("Unintentional fault in .text at %p (type %d) (trying to access %p?)\n", (void*)(pc - (uint64_t)&__start__),
            desc, (void*)faultAddr);
 
     int frameNum = 0;
     while (true)
     {
-      printf("stack frame %d %p\n", frameNum, (void*)(lr - (uint64_t)&__start__));
+      printf("Stack frame %d %p\n", frameNum, (void*)(lr - (uint64_t)&__start__));
       lr = *(uint64_t*)(fp + 8);
       fp = *(uint64_t*)fp;
 
@@ -32,9 +34,9 @@ void HandleFault(uint64_t pc, uint64_t lr, uint64_t fp, uint64_t faultAddr, uint
   }
   else
   {
-    printf("unintentional fault somewhere in deep (address) space at %p (type %d)\n", (void*)pc, desc);
+    printf("Unintentional fault somewhere in deep (address) space at %p (type %d)\n", (void*)pc, desc);
     if (lr >= (uint64_t)&__start__ && lr < (uint64_t)&__rodata_start)
-      printf("lr in range: %p\n", (void*)(lr - (uint64_t)&__start__));
+      printf("LR in range: %p\n", (void*)(lr - (uint64_t)&__start__));
   }
 }
 
@@ -108,6 +110,11 @@ bool SwitchNoGUIPlatform::CreatePlatformWindow(std::string title)
   return true;
 }
 
+bool SwitchNoGUIPlatform::HasPlatformWindow() const
+{
+  return true;
+}
+
 void SwitchNoGUIPlatform::DestroyPlatformWindow() {}
 
 std::optional<WindowInfo> SwitchNoGUIPlatform::GetPlatformWindowInfo()
@@ -125,7 +132,7 @@ std::optional<WindowInfo> SwitchNoGUIPlatform::GetPlatformWindowInfo()
     wi.surface_height = 1080;
   }
   wi.surface_scale = 1.2f;
-  wi.surface_format = WindowInfo::SurfaceFormat::RGBA8;
+  wi.surface_format = GPUTexture::Format::RGBA8;
   wi.type = WindowInfo::Type::Switch;
   wi.window_handle = nwindowGetDefault();
   return wi;
@@ -148,7 +155,7 @@ void SwitchNoGUIPlatform::RunMessageLoop()
   while (m_message_loop_running.load(std::memory_order_acquire))
   {
     if (!appletMainLoop())
-      Host::RequestExit(true);
+      Host::RunOnCPUThread([]() { Host::RequestExit(false); });
 
     std::unique_lock lock(m_callback_queue_mutex);
     while (!m_callback_queue.empty())

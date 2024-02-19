@@ -235,13 +235,13 @@ std::optional<InputBindingKey> SwitchInputSource::ParseKeyString(const std::stri
       if (binding.substr(1) == s_switch_axis_names[i])
       {
         key.source_subtype = InputSubclass::ControllerAxis;
-        key.negative = binding[0] == '-';
+        key.invert = binding[0] == '-';
         key.data = i;
         return key;
       }
     }
   }
-  else if (StringUtil::EndsWith(binding, "Motor"))
+  else if (binding.ends_with("Motor"))
   {
     key.source_subtype = InputSubclass::ControllerMotor;
     if (binding == "LargeMotor")
@@ -274,28 +274,34 @@ std::optional<InputBindingKey> SwitchInputSource::ParseKeyString(const std::stri
   return std::nullopt;
 }
 
-std::string SwitchInputSource::ConvertKeyToString(InputBindingKey key)
+TinyString SwitchInputSource::ConvertKeyToString(InputBindingKey key)
 {
-  std::string ret;
+  TinyString ret;
 
   if (key.source_type == InputSourceType::Switch)
   {
     if (key.source_subtype == InputSubclass::ControllerAxis && key.data < NUM_AXIS)
     {
-      ret = StringUtil::StdStringFromFormat("P%u/%c%s", key.source_index, key.negative ? '-' : '+',
-                                            s_switch_axis_names[key.data]);
+      ret.format("P{}/{}{}", static_cast<u32>(key.source_index), key.invert ? '-' : '+',
+        s_switch_axis_names[key.data]);
     }
     else if (key.source_subtype == InputSubclass::ControllerButton && key.data < NUM_BUTTONS)
     {
-      ret = StringUtil::StdStringFromFormat("P%u/%s", key.source_index, s_switch_button_names[key.data]);
+      ret.format("P{}/{}", static_cast<u32>(key.source_index),
+        s_switch_button_names[key.data]);
     }
     else if (key.source_subtype == InputSubclass::ControllerMotor)
     {
-      ret = StringUtil::StdStringFromFormat("P%u/%sMotor", key.source_index, key.data ? "Small" : "Large");
+      ret.format("P{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Small" : "Large");
     }
   }
 
   return ret;
+}
+
+TinyString SwitchInputSource::ConvertKeyToIcon(InputBindingKey key)
+{
+  return {};
 }
 
 std::unique_ptr<InputSource> InputSource::CreateSwitchSource()

@@ -148,7 +148,6 @@ void HTTPDownloaderCurl::InternalPollRequests()
       char* content_type = nullptr;
       if (curl_easy_getinfo(req->handle, CURLINFO_CONTENT_TYPE, &content_type) == CURLE_OK && content_type)
         req->content_type = content_type;
-#endif
 
       Log_DevFmt("Request for '{}' returned status code {} and {} bytes", req->url, req->status_code, req->data.size());
     }
@@ -160,8 +159,10 @@ void HTTPDownloaderCurl::InternalPollRequests()
     req->state.store(Request::State::Complete, std::memory_order_release);
   }
 
+#ifndef __SWITCH__
   if (pthread_sigmask(SIG_UNBLOCK, &new_block_mask, &old_block_mask) != 0)
     Log_WarningPrint("Failed to unblock SIGPIPE");
+#endif
 }
 
 bool HTTPDownloaderCurl::StartRequest(HTTPDownloader::Request* request)

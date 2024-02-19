@@ -133,42 +133,6 @@ target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(core PUBLIC Threads::Threads common util ZLIB::ZLIB)
 target_link_libraries(core PRIVATE stb xxhash imgui rapidyaml rcheevos)
 
-if (SWITCH)
-  target_sources(core PRIVATE
-    gpu_hw_deko3d.cpp
-    gpu_hw_deko3d.h
-  )
-endif()
-
-if(WIN32)
-  target_sources(core PRIVATE
-    gpu_hw_d3d12.cpp
-    gpu_hw_d3d12.h
-    gpu_hw_d3d11.cpp
-    gpu_hw_d3d11.h
-  )
-  target_link_libraries(core PRIVATE winmm.lib)
-endif()
-
-if(ENABLE_CUBEB)
-  target_compile_definitions(core PUBLIC "WITH_CUBEB=1")
-endif()
-
-if(ENABLE_OPENGL)
-  target_sources(core PRIVATE
-    gpu_hw_opengl.cpp
-    gpu_hw_opengl.h
-  )
-  target_link_libraries(core PRIVATE glad)
-endif()
-
-if(ENABLE_VULKAN)
-  target_sources(core PRIVATE
-    gpu_hw_vulkan.cpp
-    gpu_hw_vulkan.h
-  )
-endif()
-
 if(CPU_ARCH_X64)
   target_compile_definitions(core PUBLIC "ENABLE_RECOMPILER=1" "ENABLE_NEWREC=1" "ENABLE_MMAP_FASTMEM=1")
   target_sources(core PRIVATE ${RECOMPILER_SRCS} ${NEWREC_SOURCES}
@@ -224,6 +188,10 @@ function(add_resources target path basedir)
 	if(APPLE)
 		target_sources(${target} PRIVATE ${path})
 		set_source_files_properties(${path} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/${subdir})
+  elseif(NINTENDO_SWITCH)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/exefs/resources/${subdir}"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${path}" "${CMAKE_BINARY_DIR}/exefs/resources/${subdir}")
 	else()
 		add_custom_command(TARGET ${target} POST_BUILD
 			COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${target}>/resources/${subdir}"
