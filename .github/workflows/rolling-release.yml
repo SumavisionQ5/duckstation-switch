@@ -6,7 +6,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container: devkitpro/devkita64:latest
-    
+    env:
+      DEVKITPRO: ${{ secrets.DEVKITPRO }}
+
     steps:
       - name: Set up build environment
         run: |
@@ -28,11 +30,9 @@ jobs:
           restore-keys: ccache-switch-${{ matrix.config.name }}-
 
       - name: CMake
-        env:
-          DEVKITPRO: ${{ secrets.DEVKITPRO }}
-          run: |
-            $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
-            $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake --build build-release
+        run: |
+          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake --build build-release
    
       - uses: actions/upload-artifact@v4
         with:
