@@ -35,4 +35,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: duckstation-switch
-          path: /__w/duckstation-switch/duckstation-switch/
+          path: /__w/duckstation-switch/duckstation-switch/build/
