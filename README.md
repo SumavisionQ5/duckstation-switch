@@ -25,6 +25,8 @@ Other features include:
  - CPU Recompiler/JIT (x86-64, armv7/AArch32, AArch64, RISC-V/RV64).
  - Hardware (D3D11, D3D12, OpenGL, Vulkan, Metal) and software rendering.
  - Upscaling, texture filtering, and true colour (24-bit) in hardware renderers.
+
+   尝试在线编译NS版
  - PGXP for geometry precision, texture correction, and depth buffer emulation.
  - Adaptive downsampling filter.
  - Post processing shader chains (GLSL and experimental Reshade FX).
