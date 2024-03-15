@@ -37,10 +37,8 @@ jobs:
         run: |
           $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DCMAKE_INSTALL_PREFIX=artifact -G Ninja ${{ matrix.config.cmakeArgs }}
           cmake --build build --config Release
-          cd /__w/duckstation-switch/
-          ls | grep .nro
 
       - uses: actions/upload-artifact@v4
         with:
           name: duckstation-switch
-          path: /__w/duckstation-switch/duckstation-switch/
+          path: /opt/devkitpro/devkitA64/bin/
