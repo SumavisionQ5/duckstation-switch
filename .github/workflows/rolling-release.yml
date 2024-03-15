@@ -29,8 +29,11 @@ jobs:
 
       - name: CMake
         run: |
-          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
-          cmake --build build-release
+          cd /__w/duckstation-switch/duckstation-switch/
+          mkdir /build
+          cd /build
+          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON ..
+          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake --build .
    
       - uses: actions/upload-artifact@v4
         with:
