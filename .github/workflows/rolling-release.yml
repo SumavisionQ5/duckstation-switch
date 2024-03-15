@@ -41,4 +41,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: duckstation-switch
-          path: $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake/
+          path: ${CMAKE_BINARY_DIR}/
