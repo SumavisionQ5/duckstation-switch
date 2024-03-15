@@ -4,9 +4,15 @@ on: [push, pull_request]
 
 jobs:
   build:
+    name: ${{ matrix.config.name }}
     runs-on: ubuntu-latest
     container: devkitpro/devkita64:latest
-    
+
+    strategy:
+      matrix:
+        config:
+          - {name: standalone, destDir: switch}
+
     steps:
       - name: Set up build environment
         run: |
@@ -27,15 +33,12 @@ jobs:
           key: ccache-switch-${{ matrix.config.name }}-${{ github.sha }}
           restore-keys: ccache-switch-${{ matrix.config.name }}-
 
-      - name: CMake step 1
+      - name: CMake
         run: |
-          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DCMAKE_INSTALL_PREFIX=artifact -G Ninja ${{ matrix.config.cmakeArgs }}
+          cmake --build build --config Release --target install
 
-      - name: CMake step 2
-        run: |
-          $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake --build build-release
-   
       - uses: actions/upload-artifact@v4
         with:
-          name: duckstation-switch
-          path: /__w/duckstation-switch/duckstation-switch/
+          name: flycast-switch-${{ matrix.config.name }}
+          path: artifact/bin
