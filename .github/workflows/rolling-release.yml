@@ -4,20 +4,41 @@ on: [push, pull_request]
 
 jobs:
   build:
+    name: ${{ matrix.config.name }}
     runs-on: ubuntu-latest
-    container: 
-      image: git.libretro.com:5050/libretro-infrastructure/libretro-build-libnx-devkitpro:latest
-      options: --user root
+    container: devkitpro/devkita64:latest
+
+    strategy:
+      matrix:
+        config:
+          - {name: standalone, destDir: switch}
 
     steps:
-    - uses: actions/checkout@v3
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install awscli ccache
 
-    - name: CMake
-      run: |
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Mark git repository as safe
+        run: git config --global --add safe.directory $PWD
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-switch-${{ matrix.config.name }}-${{ github.sha }}
+          restore-keys: ccache-switch-${{ matrix.config.name }}-
+
+      - name: CMake
+        run: |
           $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -G Ninja ${{ matrix.config.cmakeArgs }}
           cmake --build build --config Release
 
-    - uses: actions/upload-artifact@v4
-      with:
+      - uses: actions/upload-artifact@v4
+        with:
           name: duckstation-switch
           path: /__w/duckstation-switch/
