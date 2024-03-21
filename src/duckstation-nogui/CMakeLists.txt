@@ -17,7 +17,7 @@ if(NINTENDO_SWITCH)
     switch_nogui_platform.h
     switch_asm.s
   )
-  target_link_libraries(duckstation-nogui PUBLIC "${NX_LIBRARIES}" "-llua5.1")
+  target_link_libraries(duckstation-nogui PUBLIC "${NX_LIBRARIES}")
 
   nx_generate_nacp (duckstation.nacp
     NAME    "duckstation"
