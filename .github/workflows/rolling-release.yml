@@ -43,4 +43,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: duckstation-switch
-          path: /__w/duckstation-switch/duckstation-switch/switch-liblua51-5.1.5-1-any.pkg.tar.zst
+          path: /__w/duckstation-switch/duckstation-switch/switch-liblua51-5.1.5-1-any.pkg.tar
