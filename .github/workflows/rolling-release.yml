@@ -36,11 +36,11 @@ jobs:
       - name: CMake
         run: |
           $DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DENABLE_VULKAN=OFF -DENABLE_CUBEB=OFF -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -G Ninja ${{ matrix.config.cmakeArgs }} -DLUA_LIBRARIES=/usr/lib/x86_64-linux-gnu/liblua5.3.so -DLUA_INCLUDE_DIR=/usr/include/lua5.3
-          zstd -d libnx-4.6.0-1-any.pkg.tar.zst
+          zstd -d switch-liblua51-5.1.5-1-any.pkg.tar.zst
           #cmake --build build --config Release
           
 
       - uses: actions/upload-artifact@v4
         with:
           name: duckstation-switch
-          path: /__w/duckstation-switch/
+          path: /__w/duckstation-switch/duckstation-switch/switch-liblua51-5.1.5-1-any.pkg.tar.zst
