@@ -96,7 +96,23 @@ bool SwitchNoGUIPlatform::Initialize()
   return true;
 }
 
-void SwitchNoGUIPlatform::ReportError(const std::string_view& title, const std::string_view& message) {}
+void SwitchNoGUIPlatform::ReportError(const std::string_view& title, const std::string_view& message)
+{
+  // The title is usually just error which is not that informative
+  // so we append the first line of the message
+  std::string shortError(title);
+  shortError += ": ";
+  shortError += message.substr(0, message.find('\n'));
+  // small hack to make the error messages nicer to look at.
+  if (shortError[shortError.size()-1] == ':')
+    shortError[shortError.size()-1] = '.';
+  std::string longError(message);
+
+  ErrorApplicationConfig errapp;
+  errorApplicationCreate(&errapp, shortError.c_str(), longError.c_str());
+
+  errorApplicationShow(&errapp);
+}
 
 bool SwitchNoGUIPlatform::ConfirmMessage(const std::string_view& title, const std::string_view& message)
 {

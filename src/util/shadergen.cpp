@@ -42,6 +42,9 @@ ShaderGen::ShaderGen(RenderAPI render_api, bool supports_dual_source_blend, bool
     m_use_glsl_binding_layout = true;
 #endif
   }
+#else // deko3D
+  m_use_glsl_interface_blocks = true;
+  m_use_glsl_binding_layout = true;
 #endif
 }
 
@@ -117,6 +120,8 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
 {
   if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
     ss << m_glsl_version_string << "\n\n";
+  else if (m_render_api == RenderAPI::Deko3D)
+    ss << "#version 460\n\n";
   else if (m_spirv)
     ss << "#version 450 core\n\n";
 
@@ -174,6 +179,7 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
   DefineMacro(ss, "API_D3D12", m_render_api == RenderAPI::D3D12);
   DefineMacro(ss, "API_VULKAN", m_render_api == RenderAPI::Vulkan);
   DefineMacro(ss, "API_METAL", m_render_api == RenderAPI::Metal);
+  DefineMacro(ss, "API_DEKO3D", m_render_api == RenderAPI::Deko3D);
 
 #ifdef ENABLE_OPENGL
   if (m_render_api == RenderAPI::OpenGLES)
@@ -306,6 +312,13 @@ void ShaderGen::WriteUniformBufferDeclaration(std::stringstream& ss, bool push_c
   {
     ss << "layout(std140, set = 0, binding = 0) uniform UBOBlock\n";
     m_has_uniform_buffer = true;
+  }
+  else if (IsDeko3D())
+  {
+    if (push_constant_on_vulkan)
+      ss << "layout(std140, binding = 0) uniform UBOBlock\n";
+    else
+      ss << "layout(std140, binding = 1) uniform UBOBlock\n";
   }
   else if (m_glsl)
   {
@@ -658,7 +671,7 @@ std::string ShaderGen::GenerateScreenQuadVertexShader()
 {
   v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
   v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
+  #if API_OPENGL || API_OPENGL_ES || API_VULKAN || API_DEKO3D
     v_pos.y = -v_pos.y;
   #endif
 }
@@ -678,7 +691,7 @@ std::string ShaderGen::GenerateUVQuadVertexShader()
   v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
   v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
   v_tex0 = u_uv_min + (u_uv_max - u_uv_min) * v_tex0;
-  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
+  #if API_OPENGL || API_OPENGL_ES || API_VULKAN || API_DEKO3D
     v_pos.y = -v_pos.y;
   #endif
 }

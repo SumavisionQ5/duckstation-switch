@@ -154,6 +154,10 @@ static std::thread s_async_op_thread;
 static AsyncOpProgressCallback* s_async_op_progress = nullptr;
 } // namespace NoGUIHost
 
+#ifdef __SWITCH__
+std::string switch_program_path;
+#endif
+
 //////////////////////////////////////////////////////////////////////////
 // Initialization/Shutdown
 //////////////////////////////////////////////////////////////////////////
@@ -200,8 +204,14 @@ void NoGUIHost::SetAppRoot()
 void NoGUIHost::SetResourcesDirectory()
 {
 #ifndef __APPLE__NOT_USED // Not using bundles yet.
+
+#if defined(__SWITCH__) && defined(NDEBUG)
+  EmuFolders::Resources = "romfs:/resources";
+#else
   // On Windows/Linux, these are in the binary directory.
   EmuFolders::Resources = Path::Combine(EmuFolders::AppRoot, "resources");
+#endif
+
 #else
   // On macOS, this is in the bundle resources directory.
   EmuFolders::Resources = Path::Canonicalize(Path::Combine(EmuFolders::AppRoot, "../Resources"));
@@ -1396,12 +1406,35 @@ void NoGUIHost::AsyncOpProgressCallback::SetCancelled()
 int main(int argc, char* argv[])
 {
 #ifdef __SWITCH__
+  // the earlier we do this the lesser the chance
+  // things crash and burn due to applet mode
+  if (appletGetAppletType() != AppletType_Application)
+  {
+    ErrorApplicationConfig errcfg;
+    errorApplicationCreate(&errcfg,
+      "duckstation requires to be run in application mode. It does not work in applet (\"Album\") mode!"
+      "See details for more information.",
+      "The hbmenu needs to be started with title override. By default this is"
+      "accomplished by pressing R while starting any application from the homemenu\n\n"
+
+      "With Atmosphere's override_config.ini config file this behaviour can be customised.");
+    errorApplicationShow(&errcfg);
+
+    return 0;
+  }
+
+  switch_program_path = argv[0];
+
   socketInitializeDefault();
   int nxlinkStdioHandle = nxlinkStdio();
 
+  // slight hack, but passing arguments with a dash does
+  // not seem to work via nxlink so we cannot enable
+  // early logging via command line
   if (nxlinkStdioHandle != -1)
     NoGUIHost::InitializeEarlyConsole();
 #endif
+
   CrashHandler::Install();
 
   g_nogui_window = NoGUIHost::CreatePlatform();

@@ -285,7 +285,18 @@ elseif(NINTENDO_SWITCH)
   target_sources(util PRIVATE
     platform_misc_switch.cpp
     switch_input_source.cpp
+
+    deko3d_device.cpp
+    deko3d_stream_buffer.cpp
+    deko3d_texture.cpp
+    deko3d_memory_heap.cpp
+    deko3d_pipeline.cpp
+    deko3d_swap_chain.cpp
   )
+
+  if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_link_libraries(util PRIVATE deko3dd nxd)
+  endif()
 endif()
 
 if(NOT WIN32 AND NOT ANDROID)

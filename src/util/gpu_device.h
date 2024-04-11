@@ -33,7 +33,8 @@ enum class RenderAPI : u32
   Vulkan,
   OpenGL,
   OpenGLES,
-  Metal
+  Metal,
+  Deko3D
 };
 
 class GPUSampler

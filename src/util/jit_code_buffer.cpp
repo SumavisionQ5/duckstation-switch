@@ -104,7 +104,7 @@ bool JitCodeBuffer::Allocate(u32 size /* = 64 * 1024 * 1024 */, u32 far_code_siz
           break;
       if (i++ > 8)
       {
-          Log_ErrorPrintf("couldn't find unmapped place for jit memory\n");
+          Log_ErrorPrintf("Couldn't find unmapped place for JIT memory\n");
           m_code_ptr = nullptr;
           return false;
       }

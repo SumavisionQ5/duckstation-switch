@@ -27,6 +27,7 @@ public:
 protected:
   ALWAYS_INLINE bool IsVulkan() const { return (m_render_api == RenderAPI::Vulkan); }
   ALWAYS_INLINE bool IsMetal() const { return (m_render_api == RenderAPI::Metal); }
+  ALWAYS_INLINE bool IsDeko3D() const { return (m_render_api == RenderAPI::Deko3D); }
 
   const char* GetInterpolationQualifier(bool interface_block, bool centroid_interpolation, bool sample_interpolation,
                                         bool is_out) const;

@@ -328,7 +328,7 @@ void* ReserveVirtmem(size_t size)
   if (!addr)
     Log_ErrorPrintf("virtmemAddReservation failed");
 
-  Mappings.push_back({addr, reservation});
+  VMemReservations.push_back({addr, reservation});
 
   return addr;
 }
@@ -370,6 +370,7 @@ void* MemMap::CreateSharedMemory(const char* name, size_t size)
 
   if (!R_SUCCEEDED(result))
   {
+    Log_ErrorPrintf("svcMapProcessCodeMemory failed with code %x", result);
     FreeVirtmem(codeMemMirror);
     virtmemUnlock();
   }
@@ -546,7 +547,7 @@ bool SharedMemoryMappingArea::Create(size_t size)
     Log_ErrorPrintf("failed to create memory area (size=%zx)", size);
 
   virtmemUnlock();
-  return !m_base_ptr;
+  return m_base_ptr;
 }
 
 void SharedMemoryMappingArea::Destroy()

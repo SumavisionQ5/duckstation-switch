@@ -189,7 +189,9 @@ bool Path::IsAbsolute(const std::string_view& path)
           path[1] == ':' && (path[2] == '/' || path[2] == '\\')) ||
          (path.length() >= 3 && path[0] == '\\' && path[1] == '\\');
 #elif defined(__SWITCH__)
-  return (path.length() >= 1 && path[0] == '/') || StringUtil::StartsWithNoCase(path, "sdmc:");
+  return (path.length() >= 1 && path[0] == '/') ||
+    StringUtil::StartsWithNoCase(path, "sdmc:") ||
+    StringUtil::StartsWithNoCase(path, "romfs:");
 #else
   return (path.length() >= 1 && path[0] == '/');
 #endif
@@ -2090,6 +2092,10 @@ bool FileSystem::DeleteDirectory(const char* path)
   return (rmdir(path) == 0);
 }
 
+#ifdef __SWITCH__
+extern std::string switch_program_path;
+#endif
+
 std::string FileSystem::GetProgramPath()
 {
 #if defined(__linux__)
@@ -2156,9 +2162,7 @@ std::string FileSystem::GetProgramPath()
   buffer[cb] = '\0';
   return buffer;
 #elif defined(__SWITCH__)
-  // cheating, but otherwise things would get messy while debugging
-  // because nxlink sends binaries to /switch
-  return "/switch/duckstation/duckstation.nro";
+  return switch_program_path;
 #else
   return {};
 #endif
