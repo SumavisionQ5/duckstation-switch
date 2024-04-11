@@ -935,7 +935,6 @@ int gladLoadGL(void) {
 
     return status;
 }
-#endif
 
 struct gladGLversionStruct GLVersion;
 
