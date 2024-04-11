@@ -595,6 +595,7 @@ class MacroAssembler : public Assembler, public MacroAssemblerInterface {
   MacroAssembler(size_t capacity,
                  PositionIndependentCodeOption pic = PositionIndependentCode);
   MacroAssembler(byte* buffer,
+                 ptrdiff_t rw_diff,
                  size_t capacity,
                  PositionIndependentCodeOption pic = PositionIndependentCode);
   ~MacroAssembler();

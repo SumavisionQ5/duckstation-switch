@@ -43,12 +43,12 @@ public:
   ALWAYS_INLINE u32 GetFreeFarCodeSpace() const { return static_cast<u32>(m_far_code_size - m_far_code_used); }
   void CommitFarCode(u32 length);
 
-  ALWAYS_INLINE u8* ToRwAddr(const u8* addr)
+  ALWAYS_INLINE ptrdiff_t GetRWDiff()
   {
 #ifdef __SWITCH__
-    return addr - m_code_ptr + m_rw_ptr;
+    return m_rw_ptr - m_code_ptr;
 #else
-    return addr;
+    return 0;
 #endif
   }
 

@@ -418,9 +418,10 @@ class Assembler : public vixl::internal::AssemblerBase {
         pic_(pic),
         cpu_features_(CPUFeatures::AArch64LegacyBaseline()) {}
   Assembler(byte* buffer,
+            ptrdiff_t rw_diff,
             size_t capacity,
             PositionIndependentCodeOption pic = PositionIndependentCode)
-      : AssemblerBase(buffer, capacity),
+      : AssemblerBase(buffer, rw_diff, capacity),
         pic_(pic),
         cpu_features_(CPUFeatures::AArch64LegacyBaseline()) {}
 

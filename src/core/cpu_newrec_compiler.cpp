@@ -31,7 +31,7 @@ CPU::NewRec::Compiler::Compiler() = default;
 CPU::NewRec::Compiler::~Compiler() = default;
 
 void CPU::NewRec::Compiler::Reset(CodeCache::Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
-                                  u32 far_code_space)
+                                  u32 far_code_space, ptrdiff_t rw_diff)
 {
   m_block = block;
   m_compiler_pc = block->pc;
@@ -101,7 +101,7 @@ const void* CPU::NewRec::Compiler::CompileBlock(CodeCache::Block* block, u32* ho
 {
   JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
   Reset(block, buffer.GetFreeCodePointer(), buffer.GetFreeCodeSpace(), buffer.GetFreeFarCodePointer(),
-        buffer.GetFreeFarCodeSpace());
+        buffer.GetFreeFarCodeSpace(), buffer.GetRWDiff());
 
   Log_DebugPrintf("Block range: %08X -> %08X", block->pc, block->pc + block->size * 4);
 
@@ -2316,9 +2316,10 @@ void CPU::NewRec::BackpatchLoadStore(void* exception_pc, const CodeCache::Loadst
 
   JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
   void* thunk_address = buffer.GetFreeFarCodePointer();
-  const u32 thunk_size = CompileLoadStoreThunk(
-    thunk_address, buffer.GetFreeFarCodeSpace(), exception_pc, info.code_size, cycles_to_add, cycles_to_remove,
-    info.gpr_bitmask, info.address_register, info.data_register, info.AccessSize(), info.is_signed, info.is_load);
+  const u32 thunk_size =
+    CompileLoadStoreThunk(thunk_address, buffer.GetFreeFarCodeSpace(), exception_pc, info.code_size, buffer.GetRWDiff(), cycles_to_add,
+                          cycles_to_remove, info.gpr_bitmask, info.address_register, info.data_register,
+                          info.AccessSize(), info.is_signed, info.is_load);
 
 #if 0
   Log_DebugPrintf("**Backpatch Thunk**");
@@ -2326,7 +2327,7 @@ void CPU::NewRec::BackpatchLoadStore(void* exception_pc, const CodeCache::Loadst
 #endif
 
   // backpatch to a jump to the slowmem handler
-  CodeCache::EmitJump(exception_pc, thunk_address, true);
+  CodeCache::EmitJump(exception_pc, thunk_address, buffer.GetRWDiff(), true);
 
   buffer.CommitFarCode(thunk_size);
 }

@@ -28,8 +28,8 @@ protected:
   void StoreHostRegToCPUPointer(u32 reg, const void* ptr) override;
   void CopyHostReg(u32 dst, u32 src) override;
 
-  void Reset(CodeCache::Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
-             u32 far_code_space) override;
+  void Reset(CodeCache::Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space,
+             ptrdiff_t rw_diff) override;
   void BeginBlock() override;
   void GenerateBlockProtectCheck(const u8* ram_ptr, const u8* shadow_ptr, u32 size) override;
   void GenerateICacheCheckAndUpdate() override;

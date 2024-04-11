@@ -292,7 +292,7 @@ void VeneerPool::Emit(EmitOption option, size_t amount) {
       // Patch the branch to point to the current position, and emit a branch
       // to the label.
       Instruction* veneer = masm_->GetCursorAddress<Instruction*>();
-      branch->SetImmPCOffsetTarget(veneer);
+      branch->SetImmPCOffsetTarget(veneer, masm_->GetBuffer()->GetRWDiff());
       {
         ExactAssemblyScopeWithoutPoolsCheck guard(masm_, kInstructionSize);
         masm_->b(label);
@@ -352,9 +352,10 @@ MacroAssembler::MacroAssembler(size_t capacity,
 
 
 MacroAssembler::MacroAssembler(byte* buffer,
+                               ptrdiff_t rw_diff,
                                size_t capacity,
                                PositionIndependentCodeOption pic)
-    : Assembler(buffer, capacity, pic),
+    : Assembler(buffer, rw_diff, capacity, pic),
 #ifdef VIXL_DEBUG
       allow_macro_instructions_(true),
 #endif

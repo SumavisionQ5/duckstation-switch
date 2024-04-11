@@ -39,11 +39,11 @@ class CodeBuffer {
   static const size_t kDefaultCapacity = 4 * KBytes;
 
   explicit CodeBuffer(size_t capacity = kDefaultCapacity);
-  CodeBuffer(byte* buffer, size_t capacity);
+  CodeBuffer(byte* buffer, ptrdiff_t rw_diff, size_t capacity);
   ~CodeBuffer();
 
   void Reset();
-  void Reset(byte* buffer, size_t capacity, bool managed = false);
+  void Reset(byte* buffer, ptrdiff_t rw_diff, size_t capacity, bool managed = false);
 
 #ifdef VIXL_CODE_BUFFER_MMAP
   void SetExecutable();
@@ -108,6 +108,10 @@ class CodeBuffer {
     return cursor_ - buffer_;
   }
 
+  ptrdiff_t GetRWDiff() const {
+    return rw_diff_;
+  }
+
   // A code buffer can emit:
   //  * 8, 16, 32 or 64-bit data: constant.
   //  * 16 or 32-bit data: instruction.
@@ -128,7 +132,7 @@ class CodeBuffer {
   void Emit(T value) {
     VIXL_ASSERT(HasSpaceFor(sizeof(value)));
     dirty_ = true;
-    memcpy(cursor_, &value, sizeof(value));
+    memcpy(cursor_ + rw_diff_, &value, sizeof(value));
     cursor_ += sizeof(value);
   }
 
@@ -185,6 +189,8 @@ class CodeBuffer {
   bool dirty_;
   // Capacity in bytes of the backing store.
   size_t capacity_;
+  // Difference between RW and RX mapping of the code buffer
+  ptrdiff_t rw_diff_;
 };
 
 }  // namespace vixl

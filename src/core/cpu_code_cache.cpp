@@ -744,7 +744,9 @@ Common::PageFaultHandler::HandlerResult CPU::CodeCache::ExceptionHandler(void* e
       static_cast<const u8*>(fault_address) < (Bus::g_ram + Bus::RAM_8MB_SIZE))
   {
     // Writing to protected RAM.
-    DebugAssert(is_write);
+    // On Switch we currently only set memory as either
+    // RW or not accessible at all, so unfortunately this has to be commented
+    // DebugAssert(is_write);
     const u32 guest_address = static_cast<u32>(static_cast<const u8*>(fault_address) - Bus::g_ram);
     const u32 page_index = Bus::GetRAMCodePageIndex(guest_address);
     Log_DevFmt("Page fault on protected RAM @ 0x{:08X} (page #{}), invalidating code cache.", guest_address,
@@ -1419,7 +1421,7 @@ void CPU::CodeCache::BacklinkBlocks(u32 pc, const void* dst)
   {
     Log_DebugPrintf("Backlinking %p with dst pc %08X to %p%s", it->second, pc, dst,
                     (dst == g_compile_or_revalidate_block) ? "[compiler]" : "");
-    EmitJump(it->second, dst, true);
+    EmitJump(it->second, dst, s_code_buffer.GetRWDiff(), true);
   }
 }
 
@@ -1471,7 +1473,8 @@ void CPU::CodeCache::CompileASMFunctions()
 {
   MemMap::BeginCodeWrite();
 
-  const u32 asm_size = EmitASMFunctions(s_code_buffer.GetFreeCodePointer(), s_code_buffer.GetFreeCodeSpace());
+  const u32 asm_size =
+    EmitASMFunctions(s_code_buffer.GetFreeCodePointer(), s_code_buffer.GetFreeCodeSpace(), s_code_buffer.GetRWDiff());
 
 #ifdef ENABLE_RECOMPILER_PROFILING
   MIPSPerfScope.Register(s_code_buffer.GetFreeCodePointer(), asm_size, "ASMFunctions");

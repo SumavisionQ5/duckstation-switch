@@ -52,14 +52,14 @@ const void* CPU::NewRec::AArch64Compiler::GetCurrentCodePointer()
 }
 
 void CPU::NewRec::AArch64Compiler::Reset(CodeCache::Block* block, u8* code_buffer, u32 code_buffer_space,
-                                         u8* far_code_buffer, u32 far_code_space)
+                                         u8* far_code_buffer, u32 far_code_space, ptrdiff_t rw_diff)
 {
-  Compiler::Reset(block, code_buffer, code_buffer_space, far_code_buffer, far_code_space);
+  Compiler::Reset(block, code_buffer, code_buffer_space, far_code_buffer, far_code_space, rw_diff);
 
   // TODO: don't recreate this every time..
   DebugAssert(!armAsm);
-  m_emitter.GetBuffer()->Reset(code_buffer, code_buffer_space);
-  m_far_emitter.GetBuffer()->Reset(far_code_buffer, far_code_space);
+  m_emitter.GetBuffer()->Reset(code_buffer, rw_diff, code_buffer_space);
+  m_far_emitter.GetBuffer()->Reset(far_code_buffer, rw_diff, far_code_space);
   armAsm = &m_emitter;
 
 #ifdef VIXL_DEBUG
@@ -2113,11 +2113,11 @@ void CPU::NewRec::AArch64Compiler::Compile_cop2(CompileFlags cf)
 }
 
 u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size,
-                                       TickCount cycles_to_add, TickCount cycles_to_remove, u32 gpr_bitmask,
-                                       u8 address_register, u8 data_register, MemoryAccessSize size, bool is_signed,
-                                       bool is_load)
+                                       ptrdiff_t rw_diff, TickCount cycles_to_add, TickCount cycles_to_remove,
+                                       u32 gpr_bitmask, u8 address_register, u8 data_register, MemoryAccessSize size,
+                                       bool is_signed, bool is_load)
 {
-  Assembler arm_asm(static_cast<u8*>(thunk_code), thunk_space);
+  Assembler arm_asm(static_cast<u8*>(thunk_code), rw_diff, thunk_space);
   Assembler* armAsm = &arm_asm;
 
 #ifdef VIXL_DEBUG

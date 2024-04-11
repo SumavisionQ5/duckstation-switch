@@ -66,7 +66,7 @@ void Assembler::BindToOffset(Label* label, ptrdiff_t offset) {
   for (Label::LabelLinksIterator it(label); !it.Done(); it.Advance()) {
     Instruction* link =
         GetBuffer()->GetOffsetAddress<Instruction*>(*it.Current());
-    link->SetImmPCOffsetTarget(GetLabelAddress<Instruction*>(label));
+    link->SetImmPCOffsetTarget(GetLabelAddress<Instruction*>(label), buffer_.GetRWDiff());
   }
   label->ClearAllLinks();
 }
@@ -124,7 +124,7 @@ void Assembler::place(RawLiteral* literal) {
       done = (imm19 == 0);
       offset += imm19 * kLiteralEntrySize;
 
-      ldr->SetImmLLiteral(target);
+      ldr->SetImmLLiteral(target, buffer_.GetRWDiff());
     } while (!done);
   }
 
