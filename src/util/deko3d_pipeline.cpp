@@ -94,8 +94,8 @@ Deko3DPipeline::Deko3DPipeline(Layout layout, const RasterizationState& rs, cons
                                std::shared_ptr<Deko3DInternalShader> frg_shader,
                                std::shared_ptr<Deko3DInternalShader> geom_shader)
   : m_layout(layout), m_blend_state(bs), m_rasterization_state(rs), m_depth_state(ds), m_topology(topology),
-    m_vertex_shader(vtx_shader), m_fragment_shader(frg_shader), m_geometry_shader(geom_shader),
-    m_num_attributes(num_attribs), m_attributes(attribs), m_stride(stride)
+    m_vertex_shader(vtx_shader), m_fragment_shader(frg_shader), m_geometry_shader(geom_shader), m_attributes(attribs),
+    m_num_attributes(num_attribs), m_stride(stride)
 {
 }
 
@@ -150,18 +150,16 @@ std::unique_ptr<GPUPipeline> Deko3DDevice::CreatePipeline(const GPUPipeline::Gra
     attributes[i] = DkVtxAttribState{0, 0, va.offset, m.sizes[va.components.GetValue() - 1], m.type, 0};
   }
 
-  auto p =
+  return std::unique_ptr<GPUPipeline>(
     new Deko3DPipeline(config.layout, config.rasterization, config.depth, config.blend,
                        primitives[static_cast<u32>(config.primitive)], config.input_layout.vertex_attributes.size(),
-                       attributes, config.input_layout.vertex_stride, vtx_shader, frg_shader, geom_shader);
-  printf("%p\n", p);
-  return std::unique_ptr<GPUPipeline>(p);
+                       attributes, config.input_layout.vertex_stride, vtx_shader, frg_shader, geom_shader));
 }
 
 void Deko3DDevice::ApplyRasterizationState(GPUPipeline::RasterizationState rs)
 {
-  // if (m_last_rasterization_state == rs)
-  //   return;
+  //if (m_last_rasterization_state == rs)
+  //  return;
 
   static constexpr std::array<DkFace, static_cast<u32>(GPUPipeline::CullMode::MaxCount)> map_cull_face{
     {DkFace_None, DkFace_Front, DkFace_Back}};
@@ -175,8 +173,8 @@ void Deko3DDevice::ApplyRasterizationState(GPUPipeline::RasterizationState rs)
 
 void Deko3DDevice::ApplyDepthState(GPUPipeline::DepthState ds)
 {
-  // if (m_last_depth_state == ds)
-  //   return;
+  //if (m_last_depth_state == ds)
+  //  return;
 
   // is deko3D like OpenGL in that disabling depth testing also disables depth writing?
   // probably considering the GPU is an OpenGL hardware implementation in a lot of ways
@@ -226,19 +224,19 @@ void Deko3DDevice::ApplyBlendState(GPUPipeline::BlendState bs)
     DkBlendOp_Max,    // Max
   }};
 
-  if (bs == m_last_blend_state)
-    return;
+  //if (bs == m_last_blend_state)
+  //  return;
 
   dk::CmdBuf cmdbuf = GetCurrentCommandBuffer();
 
-  if (bs.enable != m_last_blend_state.enable)
+  //if (bs.enable != m_last_blend_state.enable)
   {
     dk::ColorState dk_colorstate;
     dk_colorstate.setBlendEnable(0, bs.enable);
     cmdbuf.bindColorState(dk_colorstate);
   }
 
-  if (bs.enable)
+  //if (bs.enable)
   {
     if (bs.blend_factors != m_last_blend_state.blend_factors || bs.blend_ops != m_last_blend_state.blend_ops)
     {
@@ -255,15 +253,15 @@ void Deko3DDevice::ApplyBlendState(GPUPipeline::BlendState bs)
     if (bs.constant != m_last_blend_state.constant)
       cmdbuf.setBlendConst(bs.GetConstantRed(), bs.GetConstantGreen(), bs.GetConstantBlue(), bs.GetConstantAlpha());
   }
-  else
+  /*else
   {
     // Keep old values for blend options to potentially avoid calls when re-enabling.
     bs.blend_factors.SetValue(m_last_blend_state.blend_factors);
     bs.blend_ops.SetValue(m_last_blend_state.blend_ops);
     bs.constant.SetValue(m_last_blend_state.constant);
-  }
+  }*/
 
-  if (bs.write_mask != m_last_blend_state.write_mask)
+  //if (bs.write_mask != m_last_blend_state.write_mask)
   {
     dk::ColorWriteState dk_colorwritestate;
     uint32_t mask = 0;
@@ -284,34 +282,33 @@ void Deko3DDevice::ApplyBlendState(GPUPipeline::BlendState bs)
 
 void Deko3DDevice::SetPipeline(GPUPipeline* pipeline)
 {
-  if (pipeline == m_current_pipeline)
-    return;
+  //if (pipeline == m_current_pipeline)
+  //  return;
 
   Deko3DPipeline* const P = static_cast<Deko3DPipeline*>(pipeline);
 
-  printf("pipeline: %p %d\n", pipeline, P->m_num_attributes);
-  m_current_pipeline = P;
+  /*if (m_current_pipeline && P->GetLayout() != m_current_pipeline->GetLayout() &&
+      (P->GetLayout() == GPUPipeline::Layout::SingleTextureBufferAndPushConstants ||
+       m_current_pipeline->GetLayout() == GPUPipeline::Layout::SingleTextureBufferAndPushConstants))*/
+  // a change in pipeline layout may switch between textures and texture buffer
+  m_textures_dirty |= 1;
+
   ApplyRasterizationState(P->GetRasterizationState());
   ApplyDepthState(P->GetDepthState());
   ApplyBlendState(P->GetBlendState());
   dk::CmdBuf cmdbuf = GetCurrentCommandBuffer();
 
-  // TODO: diff these so they only get rebound when necessary
-  for (int i = 0; i < P->m_num_attributes; i++)
-  {
-    printf("%d %d %d %d\n", (&P->m_attributes[0])[i].bufferId, (&P->m_attributes[0])[i].offset,
-           (&P->m_attributes[0])[i].type, (&P->m_attributes[0])[i].size);
-  }
   cmdbuf.bindVtxAttribState(dk::detail::ArrayProxy<const DkVtxAttribState>(P->m_num_attributes, &P->m_attributes[0]));
   cmdbuf.bindVtxBufferState({{P->m_stride, 0}});
 
-  DebugAssert(P->m_vertex_shader->shader.isValid());
   if (P->m_geometry_shader)
     cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Geometry | DkStageFlag_Fragment,
                        {&P->m_vertex_shader->shader, &P->m_geometry_shader->shader, &P->m_fragment_shader->shader});
   else
     cmdbuf.bindShaders(DkStageFlag_Vertex | DkStageFlag_Fragment,
                        {&P->m_vertex_shader->shader, &P->m_fragment_shader->shader});
+
+  m_current_pipeline = P;
 }
 
 bool Deko3DDevice::ReadPipelineCache(const std::string& filename)

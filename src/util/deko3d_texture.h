@@ -32,6 +32,7 @@ public:
                                                Format format, uint32_t flags);
 
   ALWAYS_INLINE const dk::Image& GetImage() const { return m_image; }
+  ALWAYS_INLINE const dk::ImageDescriptor& GetDescriptor() const { return m_descriptor; }
 
   ALWAYS_INLINE u64 GetBarrierCounter() const { return m_barrier_counter; }
   ALWAYS_INLINE void SetBarrierCounter(u64 counter) { m_barrier_counter = counter; }
@@ -41,6 +42,7 @@ public:
 
   ALWAYS_INLINE u32 GetDescriptorIdx() const { return m_descriptor_idx; }
   ALWAYS_INLINE void setDescriptorIdx(u32 idx) { m_descriptor_idx = idx; }
+
 private:
   Deko3DTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, Format format,
                 const dk::ImageLayout& layout, const Deko3DMemoryHeap::Allocation& memory);
@@ -71,6 +73,7 @@ private:
 
   Deko3DMemoryHeap::Allocation m_memory;
   dk::Image m_image;
+  dk::ImageDescriptor m_descriptor;
 };
 
 class Deko3DSampler final : public GPUSampler
@@ -89,6 +92,7 @@ public:
   ALWAYS_INLINE void setDescriptorIdx(u32 idx) { m_descriptor_idx = idx; }
 
   const dk::SamplerDescriptor& GetDescriptor() const { return m_descriptor; }
+
 private:
   Deko3DSampler(const dk::SamplerDescriptor& descriptor);
 
@@ -114,10 +118,20 @@ public:
 
   void SetDebugName(const std::string_view& name) override;
 
+  ALWAYS_INLINE u64 GetDescriptorFence() const { return m_descriptor_fence; }
+  ALWAYS_INLINE void SetDescriptorFence(u64 counter) { m_descriptor_fence = counter; }
+
+  ALWAYS_INLINE u32 GetDescriptorIdx() const { return m_descriptor_idx; }
+  ALWAYS_INLINE void setDescriptorIdx(u32 idx) { m_descriptor_idx = idx; }
+
 private:
   Deko3DTextureBuffer(Format format, u32 size_in_elements, std::unique_ptr<Deko3DStreamBuffer> buffer,
                       const dk::ImageLayout& layout);
 
   std::unique_ptr<Deko3DStreamBuffer> m_buffer;
   dk::Image m_image;
+
+  // Fence counter for which the descriptor index is valid
+  u64 m_descriptor_fence = std::numeric_limits<u64>::max();
+  u32 m_descriptor_idx;
 };

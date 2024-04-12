@@ -18,14 +18,17 @@ std::unique_ptr<Deko3DTexture> Deko3DTexture::Create(u32 width, u32 height, u32 
     dk_image_type = samples > 1 ? DkImageType_2DMS : DkImageType_2D;
 
   static constexpr std::array<DkImageFormat, static_cast<u32>(Format::MaxCount)> dk_image_format_mapping{
-    {DkImageFormat_None,         DkImageFormat_RGBA8_Unorm,  DkImageFormat_BGRA8_Unorm,  DkImageFormat_RGB565_Unorm,
-     DkImageFormat_RGB5A1_Unorm, DkImageFormat_R8_Unorm,     DkImageFormat_Z16,          DkImageFormat_R16_Unorm,
+    {DkImageFormat_None,         DkImageFormat_RGBA8_Unorm,  DkImageFormat_BGRA8_Unorm,  DkImageFormat_BGR565_Unorm,
+     DkImageFormat_BGR5A1_Unorm, DkImageFormat_R8_Unorm,     DkImageFormat_Z16,          DkImageFormat_R16_Unorm,
      DkImageFormat_R16_Sint,     DkImageFormat_R16_Uint,     DkImageFormat_R16_Float,    DkImageFormat_R32_Sint,
      DkImageFormat_R32_Uint,     DkImageFormat_R32_Float,    DkImageFormat_RG8_Unorm,    DkImageFormat_RG16_Unorm,
      DkImageFormat_RG16_Float,   DkImageFormat_RG32_Float,   DkImageFormat_RGBA16_Unorm, DkImageFormat_RGBA16_Float,
      DkImageFormat_RGBA32_Float, DkImageFormat_RGB10A2_Unorm}};
 
   Deko3DDevice& dev = Deko3DDevice::GetInstance();
+
+  Log_TracePrintf("Creating texture %ux%u levels=%u levels=%u samples=%u type=%u format=%u flags=%u", width, height,
+                  layers, levels, samples, type, format, flags);
 
   dk::ImageLayout layout;
   dk::ImageLayoutMaker{dev.GetDevice()}
@@ -66,11 +69,15 @@ Deko3DTexture::Deko3DTexture(u32 width, u32 height, u32 layers, u32 levels, u32 
 {
   auto& textureHeap = Deko3DDevice::GetInstance().GetTextureHeap();
   m_image.initialize(layout, textureHeap.GetMemBlock(), m_memory.offset);
+
+  dk::ImageView view{m_image};
+  m_descriptor.initialize(view);
 }
 
 Deko3DTexture::~Deko3DTexture()
 {
-  Destroy(true);
+  if (m_memory.size)
+    Destroy(true);
 }
 
 void Deko3DTexture::SetDebugName(const std::string_view& name)
@@ -87,6 +94,8 @@ void Deko3DTexture::Destroy(bool defer)
     dev.DeferedFree(dev.GetTextureHeap(), m_memory);
   else
     dev.GetTextureHeap().Free(m_memory);
+
+  m_memory = {};
 }
 
 bool Deko3DTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer, u32 level)
@@ -212,6 +221,33 @@ void Deko3DTexture::Unmap()
 bool Deko3DDevice::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
                                    u32 out_data_stride)
 {
+  Deko3DTexture* T = static_cast<Deko3DTexture*>(texture);
+  dk::CmdBuf cmdbuf = GetCurrentCommandBuffer();
+
+  CommitClear(cmdbuf, T);
+
+  const u32 pitch = Common::AlignUp(width * T->GetPixelSize(), DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
+  const u32 size = pitch * height;
+
+  if (m_download_buffer.size < size)
+  {
+    m_download_buffer = m_general_heap.Alloc(size, DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
+  }
+
+  s_stats.num_downloads++;
+
+  dk::ImageView src_view{T->GetImage()};
+  if (texture->GetFormat() == GPUTexture::Format::D16)
+    src_view.setFormat(DkImageFormat_R16_Uint);
+
+  cmdbuf.copyImageToBuffer(src_view, DkImageRect{x, y, 0, width, height, 1},
+                           DkCopyBuf{m_general_heap.GPUPointer(m_download_buffer), pitch, 0});
+  cmdbuf.barrier(DkBarrier_Primitives, DkInvalidateFlags_L2Cache);
+
+  SubmitCommandBuffer(true);
+
+  StringUtil::StrideMemCpy(out_data, out_data_stride, m_general_heap.CPUPointer<void>(m_download_buffer), pitch,
+                           width * T->GetPixelSize(), height);
   return false;
 }
 
@@ -325,7 +361,7 @@ void Deko3DTexture::UpdateFromBuffer(dk::CmdBuf cmdbuf, u32 x, u32 y, u32 width,
   dk::ImageView dstView{m_image};
   dstView.setMipLevels(level);
 
-  cmdbuf.copyBufferToImage({buffer, pitch, 0}, dstView, {x, y, layer, width, height, 1});
+  cmdbuf.copyBufferToImage(DkCopyBuf{buffer, pitch, 0}, dstView, DkImageRect{x, y, layer, width, height, 1});
 }
 
 // Texture buffers
@@ -333,6 +369,7 @@ void Deko3DTexture::UpdateFromBuffer(dk::CmdBuf cmdbuf, u32 x, u32 y, u32 width,
 std::unique_ptr<GPUTextureBuffer> Deko3DDevice::CreateTextureBuffer(GPUTextureBuffer::Format format,
                                                                     u32 size_in_elements)
 {
+  printf("creating texture buffer\n");
   Deko3DDevice& dev = Deko3DDevice::GetInstance();
   const u32 buffer_size = GPUTextureBuffer::GetElementSize(format) * size_in_elements;
 
@@ -355,7 +392,7 @@ std::unique_ptr<GPUTextureBuffer> Deko3DDevice::CreateTextureBuffer(GPUTextureBu
 
 Deko3DTextureBuffer::Deko3DTextureBuffer(Format format, u32 size_in_elements,
                                          std::unique_ptr<Deko3DStreamBuffer> buffer, const dk::ImageLayout& layout)
-  : GPUTextureBuffer(format, size_in_elements), m_buffer(std::move(m_buffer))
+  : GPUTextureBuffer(format, size_in_elements), m_buffer(std::move(buffer))
 {
   m_image.initialize(layout, Deko3DDevice::GetInstance().GetGeneralHeap().GetMemBlock(), m_buffer->GetBuffer().offset);
 }
@@ -386,6 +423,10 @@ void* Deko3DTextureBuffer::Map(u32 required_elements)
 
 void Deko3DTextureBuffer::Unmap(u32 used_elements)
 {
+  const u32 size = GetElementSize(m_format) * used_elements;
+  GPUDevice::GetStatistics().buffer_streamed += size;
+  GPUDevice::GetStatistics().num_uploads++;
+  m_buffer->CommitMemory(size);
 }
 
 std::unique_ptr<GPUSampler> Deko3DDevice::CreateSampler(const GPUSampler::Config& config)
@@ -453,8 +494,6 @@ void Deko3DDevice::CommitClear(dk::CmdBuf command_buffer, Deko3DTexture* tex)
   tex->SetState(GPUTexture::State::Dirty);
   tex->SetBarrierCounter(m_barrier_counter);
 
-  Common::Rectangle<s32> restore_rect = m_last_scissor;
-
   dk::ImageView view{tex->GetImage()};
   if (tex->IsDepthStencil())
   {
@@ -474,6 +513,7 @@ void Deko3DDevice::CommitClear(dk::CmdBuf command_buffer, Deko3DTexture* tex)
 
   if (tex->GetState() == GPUTexture::State::Cleared)
   {
+    Common::Rectangle<s32> restore_rect = m_last_scissor;
     SetScissor(0, 0, tex->GetWidth(), tex->GetHeight());
 
     if (tex->IsDepthStencil())
@@ -484,14 +524,18 @@ void Deko3DDevice::CommitClear(dk::CmdBuf command_buffer, Deko3DTexture* tex)
     else
     {
       GPUPipeline::BlendState blend_state = m_last_blend_state;
+      u32 restore_write_mask = blend_state.write_mask;
       blend_state.write_mask = 0xF;
       ApplyBlendState(blend_state);
 
       const auto color = tex->GetUNormClearColor();
       command_buffer.clearColor(0, DkColorMask_RGBA, color[0], color[1], color[2], color[3]);
 
-      ApplyBlendState(m_last_blend_state);
+      blend_state.write_mask = restore_write_mask;
+      ApplyBlendState(blend_state);
     }
+
+    SetScissor(restore_rect.left, restore_rect.top, restore_rect.GetWidth(), restore_rect.GetHeight());
   }
   else // tex->GetState() == GPUTexture::State::Invalidated
   {
@@ -503,12 +547,6 @@ void Deko3DDevice::CommitClear(dk::CmdBuf command_buffer, Deko3DTexture* tex)
     {
       command_buffer.discardColor(0);
     }
-  }
-
-  if (m_last_scissor != restore_rect)
-  {
-    m_last_scissor = restore_rect;
-    UpdateScissor();
   }
 
   SetRenderTargets(restore_rts.data(), restore_rt_num, restore_depth_rt);
@@ -545,18 +583,17 @@ void Deko3DDevice::CommitRTClearInFB(Deko3DTexture* tex, u32 idx)
       else
       {
         GPUPipeline::BlendState blend_state = m_last_blend_state;
+        u32 restore_write_mask = blend_state.write_mask;
         blend_state.write_mask = 0xF;
         ApplyBlendState(blend_state);
 
         command_buffer.clearColor(idx, DkColorMask_RGBA, color[0], color[1], color[2], color[3]);
-        ApplyBlendState(m_last_blend_state);
+
+        blend_state.write_mask = restore_write_mask;
+        ApplyBlendState(blend_state);
       }
 
-      if (m_last_scissor != restore_rect)
-      {
-        m_last_scissor = restore_rect;
-        UpdateScissor();
-      }
+      SetScissor(restore_rect.left, restore_rect.top, restore_rect.GetWidth(), restore_rect.GetHeight());
 
       tex->SetState(GPUTexture::State::Dirty);
     }

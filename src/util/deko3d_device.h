@@ -8,11 +8,10 @@
 #include "gpu_shader_cache.h"
 
 #include "deko3d_memory_heap.h"
+#include "deko3d_pipeline.h"
 #include "deko3d_stream_buffer.h"
 #include "deko3d_swap_chain.h"
-#include "deko3d_pipeline.h"
 #include "deko3d_texture.h"
-#include "deko3d_swap_chain.h"
 
 #include "common/rectangle.h"
 
@@ -130,6 +129,7 @@ public:
   void AddCommandBufferMemory(dk::CmdBuf cmdbuf, size_t min_size);
 
   void UnbindTexture(Deko3DTexture* tex);
+
 protected:
   bool CreateDevice(const std::string_view& adapter, bool threaded_presentation,
                     std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
@@ -164,7 +164,6 @@ private:
   void CreateNullTexture();
 
   void PrepareTextures();
-
 
   enum : u32
   {
@@ -206,7 +205,6 @@ private:
 
   Deko3DMemoryHeap m_general_heap, m_texture_heap, m_shader_heap;
 
-
   std::unique_ptr<Deko3DStreamBuffer> m_texture_upload_buffer;
 
   Deko3DPipeline* m_current_pipeline = nullptr;
@@ -226,11 +224,18 @@ private:
   std::array<Deko3DTexture*, MAX_TEXTURE_SAMPLERS> m_current_textures = {};
   std::array<Deko3DSampler*, MAX_TEXTURE_SAMPLERS> m_current_samplers = {};
 
-  bool m_textures_dirty = false;
+  Deko3DTextureBuffer* m_current_texture_buffer;
+
+  Deko3DMemoryHeap::Allocation m_download_buffer = {};
+
+  u32 m_textures_dirty = 0;
 
   u32 m_num_current_render_targets = 0;
   std::array<Deko3DTexture*, MAX_RENDER_TARGETS> m_current_render_targets = {};
   Deko3DTexture* m_current_depth_target = nullptr;
 
   std::unique_ptr<Deko3DTexture> m_null_texture;
+
+  u8* push_data[1024];
+  u32 push_size = 0;
 };
