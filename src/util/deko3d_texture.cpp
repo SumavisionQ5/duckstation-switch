@@ -218,39 +218,6 @@ void Deko3DTexture::Unmap()
   m_map_level = 0;
 }
 
-bool Deko3DDevice::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                                   u32 out_data_stride)
-{
-  Deko3DTexture* T = static_cast<Deko3DTexture*>(texture);
-  dk::CmdBuf cmdbuf = GetCurrentCommandBuffer();
-
-  CommitClear(cmdbuf, T);
-
-  const u32 pitch = Common::AlignUp(width * T->GetPixelSize(), DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
-  const u32 size = pitch * height;
-
-  if (m_download_buffer.size < size)
-  {
-    m_download_buffer = m_general_heap.Alloc(size, DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
-  }
-
-  s_stats.num_downloads++;
-
-  dk::ImageView src_view{T->GetImage()};
-  if (texture->GetFormat() == GPUTexture::Format::D16)
-    src_view.setFormat(DkImageFormat_R16_Uint);
-
-  cmdbuf.copyImageToBuffer(src_view, DkImageRect{x, y, 0, width, height, 1},
-                           DkCopyBuf{m_general_heap.GPUPointer(m_download_buffer), pitch, 0});
-  cmdbuf.barrier(DkBarrier_Primitives, DkInvalidateFlags_L2Cache);
-
-  SubmitCommandBuffer(true);
-
-  StringUtil::StrideMemCpy(out_data, out_data_stride, m_general_heap.CPUPointer<void>(m_download_buffer), pitch,
-                           width * T->GetPixelSize(), height);
-  return false;
-}
-
 void Deko3DDevice::CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level,
                                      GPUTexture* src, u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width,
                                      u32 height)
@@ -605,4 +572,103 @@ void Deko3DDevice::CommitRTClearInFB(Deko3DTexture* tex, u32 idx)
       UnreachableCode();
       break;
   }
+}
+
+Deko3DDownloadTexture::~Deko3DDownloadTexture()
+{
+  Deko3DDevice::GetInstance().DeferedFree(Deko3DDevice::GetInstance().GetGeneralHeap(), m_buffer);
+}
+
+std::unique_ptr<Deko3DDownloadTexture> Deko3DDownloadTexture::Create(u32 width, u32 height, GPUTexture::Format format,
+                                                                     void* memory, size_t memory_size, u32 memory_pitch)
+{
+  DebugAssertMsg(!memory, "Importing buffer for download textures not supported on deko3D.");
+
+  Deko3DDevice& dev = Deko3DDevice::GetInstance();
+
+  u32 map_pitch = Common::AlignUpPow2(GPUTexture::CalcUploadPitch(format, width), DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
+  u32 buffer_size = map_pitch * height;
+
+  Deko3DMemoryHeap::Allocation buffer = dev.GetGeneralHeap().Alloc(buffer_size, DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
+
+  return std::unique_ptr<Deko3DDownloadTexture>(new Deko3DDownloadTexture(
+    width, height, format, false, buffer, dev.GetGeneralHeap().CPUPointer<u8>(buffer), map_pitch));
+}
+
+Deko3DDownloadTexture::Deko3DDownloadTexture(u32 width, u32 height, GPUTexture::Format format, bool is_imported,
+                                             Deko3DMemoryHeap::Allocation buffer, const u8* map_ptr, u32 map_pitch)
+  : GPUDownloadTexture(width, height, format, is_imported), m_buffer(buffer)
+{
+  m_map_pointer = map_ptr;
+  m_current_pitch = map_pitch;
+}
+
+void Deko3DDownloadTexture::CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width,
+                                            u32 height, u32 src_layer, u32 src_level, bool use_transfer_pitch)
+{
+  Deko3DTexture* T = static_cast<Deko3DTexture*>(src);
+  Deko3DDevice& dev = Deko3DDevice::GetInstance();
+  dk::CmdBuf cmdbuf = dev.GetCurrentCommandBuffer();
+
+  dev.CommitClear(cmdbuf, T);
+
+  dev.GetStatistics().num_downloads++;
+
+  dk::ImageView src_view{T->GetImage()};
+  if (T->GetFormat() == GPUTexture::Format::D16)
+    src_view.setFormat(DkImageFormat_R16_Uint);
+
+  cmdbuf.copyImageToBuffer(src_view, DkImageRect{src_x, src_y, 0, width, height, 1},
+                           DkCopyBuf{dev.GetGeneralHeap().GPUPointer(m_buffer) + dst_y * m_current_pitch +
+                                       dst_x * GPUTexture::GetPixelSize(m_format),
+                                     m_current_pitch, 0});
+  cmdbuf.barrier(DkBarrier_Primitives, DkInvalidateFlags_L2Cache);
+
+  m_copy_fence_counter = dev.GetCurrentFenceCounter();
+  m_needs_flush = true;
+}
+
+bool Deko3DDownloadTexture::Map(u32 x, u32 y, u32 width, u32 height)
+{
+  // the buffer is persistently mapped
+  return true;
+}
+
+void Deko3DDownloadTexture::Unmap()
+{
+  // persistently mapped too
+}
+
+void Deko3DDownloadTexture::Flush()
+{
+  if (!m_needs_flush)
+    return;
+
+  Deko3DDevice& dev = Deko3DDevice::GetInstance();
+  if (dev.GetCompletedFenceCounter() >= m_copy_fence_counter)
+    return;
+
+  // Need to execute command buffer.
+  if (dev.GetCurrentFenceCounter() == m_copy_fence_counter)
+    dev.SubmitCommandBuffer(true);
+  else
+    dev.WaitForFenceCounter(m_copy_fence_counter);
+}
+
+void Deko3DDownloadTexture::SetDebugName(std::string_view name)
+{
+  // nop
+}
+
+std::unique_ptr<GPUDownloadTexture> Deko3DDevice::CreateDownloadTexture(u32 width, u32 height,
+                                                                        GPUTexture::Format format)
+{
+  return Deko3DDownloadTexture::Create(width, height, format, nullptr, 0, 0);
+}
+
+std::unique_ptr<GPUDownloadTexture> Deko3DDevice::CreateDownloadTexture(u32 width, u32 height,
+                                                                        GPUTexture::Format format, void* memory,
+                                                                        size_t memory_size, u32 memory_stride)
+{
+  return Deko3DDownloadTexture::Create(width, height, format, memory, memory_size, memory_stride);
 }

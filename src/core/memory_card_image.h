@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "common/types.h"
+
 class Error;
 
 namespace MemoryCardImage {

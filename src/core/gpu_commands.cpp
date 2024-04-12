@@ -8,6 +8,9 @@
 #include "interrupt_controller.h"
 #include "system.h"
 #include "texture_replacements.h"
+
+#include <utility>
+
 Log_SetChannel(GPU);
 
 #define CHECK_COMMAND_SIZE(num_words)                                                                                  \

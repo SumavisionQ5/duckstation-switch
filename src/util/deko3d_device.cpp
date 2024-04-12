@@ -172,6 +172,9 @@ bool Deko3DDevice::CreateDevice(const std::string_view& adapter, bool threaded_p
   m_features.geometry_shaders = true;
   m_features.partial_msaa_resolve = true;
   m_features.shader_cache = true;
+  m_features.explicit_present = false;
+  m_features.memory_import = false;
+  m_features.feedback_loops = false;
 
   m_max_texture_size = 4096; // ????
   m_max_multisamples = 8;
@@ -555,7 +558,8 @@ void Deko3DDevice::UnmapUniformBuffer(u32 size)
   cmdbuf.bindUniformBuffer(DkStage_Fragment, 1, gpu_addr, size);
 }
 
-void Deko3DDevice::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds)
+void Deko3DDevice::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                                    GPUPipeline::RenderPassFlag render_pass_flags)
 {
   bool changed = (m_num_current_render_targets != num_rts || m_current_depth_target != ds);
   bool needs_ds_clear = (ds && ds->IsClearedOrInvalidated());
@@ -654,8 +658,8 @@ void Deko3DDevice::CreateNullTexture()
 void Deko3DDevice::SetViewport(s32 x, s32 y, s32 width, s32 height)
 {
   const Common::Rectangle<s32> rc = Common::Rectangle<s32>::FromExtents(x, y, width, height);
-  //if (m_last_viewport == rc)
-  //   return;
+  // if (m_last_viewport == rc)
+  //    return;
 
   m_last_viewport = rc;
 
@@ -665,8 +669,8 @@ void Deko3DDevice::SetViewport(s32 x, s32 y, s32 width, s32 height)
 void Deko3DDevice::SetScissor(s32 x, s32 y, s32 width, s32 height)
 {
   const Common::Rectangle<s32> rc = Common::Rectangle<s32>::FromExtents(x, y, width, height);
-  //if (m_last_scissor == rc)
-  //   return;
+  // if (m_last_scissor == rc)
+  //    return;
 
   m_last_scissor = rc;
   UpdateScissor();
@@ -782,7 +786,7 @@ void Deko3DDevice::PrepareTextures()
           m_barrier_counter++;
         }
 
-        //if (texture->GetDescriptorFence() != GetCurrentFenceCounter())
+        // if (texture->GetDescriptorFence() != GetCurrentFenceCounter())
         {
           u32 descriptor_idx = frame_resources.next_image_descriptor++;
           AssertMsg(descriptor_idx < MAX_COMBINED_IMAGE_SAMPLER_DESCRIPTORS_PER_FRAME, "Ran out of image descriptors");
@@ -792,7 +796,7 @@ void Deko3DDevice::PrepareTextures()
         }
 
         Deko3DSampler* sampler = m_current_samplers[i];
-        //if (sampler->GetDescriptorFence() != GetCurrentFenceCounter())
+        // if (sampler->GetDescriptorFence() != GetCurrentFenceCounter())
         {
           u32 descriptor_idx = frame_resources.next_sampler_descriptor++;
           AssertMsg(descriptor_idx < MAX_COMBINED_IMAGE_SAMPLER_DESCRIPTORS_PER_FRAME,
@@ -829,8 +833,9 @@ void Deko3DDevice::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
   GetCurrentCommandBuffer().drawIndexed(m_current_pipeline->GetTopology(), index_count, 1, base_index, base_vertex, 0);
 }
 
-void Deko3DDevice::SetVSync(bool enabled)
+void Deko3DDevice::DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type)
 {
+  Panic("miauz");
 }
 
 bool Deko3DDevice::BeginPresent(bool skip_present)
@@ -847,12 +852,16 @@ bool Deko3DDevice::BeginPresent(bool skip_present)
   return true;
 }
 
-void Deko3DDevice::EndPresent()
+void Deko3DDevice::EndPresent(bool explicit_submit)
 {
   dk::CmdBuf cmdbuf = GetCurrentCommandBuffer();
   SubmitCommandBuffer(m_swap_chain.get());
   MoveToNextCommandBuffer();
   TrimTexturePool();
+}
+
+void Deko3DDevice::SubmitPresent()
+{
 }
 
 bool Deko3DDevice::SetGPUTimingEnabled(bool enabled)

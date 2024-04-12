@@ -1828,7 +1828,9 @@ static std::string LoadPathFromSettings(SettingsInterface& si, const std::string
     value = def;
   if (!Path::IsAbsolute(value))
     value = Path::Combine(root, value);
+  printf("%s\n", value.c_str());
   value = Path::RealPath(value);
+  printf("%s\n", value.c_str());
   return value;
 }
 

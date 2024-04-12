@@ -355,7 +355,7 @@ void FreeVirtmem(void* addr)
   Log_ErrorPrintf("Trying to free unknown virtmem reservation %p", addr);
 }
 
-void* MemMap::CreateSharedMemory(const char* name, size_t size)
+void* MemMap::CreateSharedMemory(const char* name, size_t size, Error* error)
 {
   virtmemLock();
   void* heapMemory = aligned_alloc(0x1000, size);

@@ -477,6 +477,14 @@ void Host::CommitBaseSettingChanges()
   NoGUIHost::SaveSettings();
 }
 
+void Host::RequestExitApplication(bool allow_confirm)
+{
+}
+
+void Host::RequestExitBigPicture()
+{
+}
+
 void NoGUIHost::SaveSettings()
 {
   auto lock = Host::GetSettingsLock();
@@ -498,7 +506,14 @@ void NoGUIHost::SetBatchMode(bool enabled)
 
 void NoGUIHost::StartSystem(SystemBootParameters params)
 {
-  Host::RunOnCPUThread([params = std::move(params)]() { System::BootSystem(std::move(params)); });
+  Host::RunOnCPUThread([params = std::move(params)]() {
+    Error error;
+    if (!System::BootSystem(std::move(params), &error))
+    {
+      Host::ReportErrorAsync(TRANSLATE_SV("System", "Error"),
+                             fmt::format(TRANSLATE_FS("System", "Failed to boot system: {}"), error.GetDescription()));
+    }
+  });
 }
 
 void NoGUIHost::ProcessPlatformWindowResize(s32 width, s32 height, float scale)
@@ -737,8 +752,8 @@ void NoGUIHost::CPUThreadMainLoop()
 
     Host::PumpMessagesOnCPUThread();
     System::Internal::IdlePollUpdate();
-    System::PresentDisplay(false);
-    if (!g_gpu_device->IsVSyncActive())
+    System::PresentDisplay(false, false);
+    if (!g_gpu_device->IsVSyncEnabled())
       g_gpu_device->ThrottlePresentation();
   }
 }
@@ -1429,7 +1444,8 @@ int main(int argc, char* argv[])
   if (appletGetAppletType() != AppletType_Application)
   {
     ErrorApplicationConfig errcfg;
-    errorApplicationCreate(&errcfg,
+    errorApplicationCreate(
+      &errcfg,
       "duckstation requires to be run in application mode. It does not work in applet (\"Album\") mode!"
       "See details for more information.",
       "The hbmenu needs to be started with title override. By default this is"

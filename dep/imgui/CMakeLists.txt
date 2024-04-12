@@ -20,3 +20,8 @@ add_library(imgui ${SRCS})
 target_include_directories(imgui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(imgui INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(imgui PUBLIC Freetype::Freetype)
+
+if (NINTENDO_SWITCH)
+  # portlibs freetype seems to depend on bz2/needs it to be explicitly linked
+  target_link_libraries(imgui PUBLIC bz2)
+endif()

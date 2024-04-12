@@ -135,3 +135,30 @@ private:
   u64 m_descriptor_fence = std::numeric_limits<u64>::max();
   u32 m_descriptor_idx;
 };
+
+
+class Deko3DDownloadTexture final : public GPUDownloadTexture
+{
+public:
+  ~Deko3DDownloadTexture() override;
+
+  static std::unique_ptr<Deko3DDownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format, void* memory,
+                                                       size_t memory_size, u32 memory_pitch);
+
+  void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
+                       u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
+
+  bool Map(u32 x, u32 y, u32 width, u32 height) override;
+  void Unmap() override;
+
+  void Flush() override;
+
+  void SetDebugName(std::string_view name) override;
+
+private:
+  Deko3DDownloadTexture(u32 width, u32 height, GPUTexture::Format format, bool is_imported, Deko3DMemoryHeap::Allocation buffer,
+                        const u8* map_ptr, u32 map_pitch);
+
+  Deko3DMemoryHeap::Allocation m_buffer;
+  u64 m_copy_fence_counter;
+};

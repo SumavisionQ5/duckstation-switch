@@ -10,8 +10,6 @@ add_library(common
   crash_handler.cpp
   crash_handler.h
   dimensional_array.h
-  dynamic_library.cpp
-  dynamic_library.h
   error.cpp
   error.h
   fastjmp.cpp
@@ -56,6 +54,13 @@ add_library(common
   timer.h
   types.h
 )
+
+if (NOT NINTENDO_SWITCH)
+  target_sources(common PRIVATE
+    dynamic_library.cpp
+    dynamic_library.h
+  )
+endif()
 
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")

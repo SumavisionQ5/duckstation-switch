@@ -300,6 +300,23 @@ bool Path::IsAbsolute(const std::string_view& path)
 
 std::string Path::RealPath(const std::string_view& path)
 {
+#ifdef __SWITCH__
+  // Symlinks don't exist on Switch, so our life is easy
+
+  std::string realpath;
+  if (!IsAbsolute(path))
+    realpath = Path::Combine(FileSystem::GetWorkingDirectory(), path);
+  else
+    realpath = path;
+
+  if (realpath[0] == '/')
+  {
+    std::string prefixedpath{"sdmc:"};
+    prefixedpath += realpath;
+    realpath = std::move(prefixedpath);
+  }
+
+#else
   // Resolve non-absolute paths first.
   std::vector<std::string_view> components;
   if (!IsAbsolute(path))
@@ -467,6 +484,7 @@ std::string Path::RealPath(const std::string_view& path)
       }
     }
   }
+#endif
 #endif
 
   // Get rid of any current/parent directory components before returning.
@@ -2220,6 +2238,7 @@ bool FileSystem::CreateDirectory(const char* path, bool recursive, Error* error)
   if (pathLength == 0)
     return false;
 
+  printf("mkdiring path %s\n", path);
   // try just flat-out, might work if there's no other segments that have to be made
   if (mkdir(path, 0777) == 0)
     return true;
@@ -2309,6 +2328,7 @@ bool FileSystem::RenamePath(const char* old_path, const char* new_path, Error* e
   {
     Error::SetStringView(error, "Path is empty.");
     return false;
+  }
 
 #ifdef __SWITCH__
   // technically makes tempfile + rename unsafe
