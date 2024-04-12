@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "metal_device.h"
-#include "spirv_compiler.h"
 
 #include "common/align.h"
 #include "common/assert.h"
@@ -15,6 +14,10 @@
 // TODO FIXME...
 #define FMT_EXCEPTIONS 0
 #include "fmt/format.h"
+
+#include "shaderc/shaderc.hpp"
+#include "spirv-cross/spirv_cross.hpp"
+#include "spirv-cross/spirv_msl.hpp"
 
 #include <array>
 #include <pthread.h>
@@ -56,7 +59,7 @@ static constexpr std::array<MTLPixelFormat, static_cast<u32>(GPUTexture::Format:
   MTLPixelFormatBGR10A2Unorm, // RGB10A2
 };
 
-static unsigned s_next_bad_shader_id = 1;
+static std::unique_ptr<shaderc::Compiler> s_shaderc_compiler;
 
 static NSString* StringViewToNSString(const std::string_view& str)
 {
@@ -124,10 +127,12 @@ bool MetalDevice::GetHostRefreshRate(float* refresh_rate)
   return GPUDevice::GetHostRefreshRate(refresh_rate);
 }
 
-void MetalDevice::SetVSync(bool enabled)
+void MetalDevice::SetVSyncEnabled(bool enabled)
 {
-  m_vsync_enabled = enabled;
+  if (m_vsync_enabled == enabled)
+    return;
 
+  m_vsync_enabled = enabled;
   if (m_layer != nil)
     [m_layer setDisplaySyncEnabled:enabled];
 }
@@ -217,6 +222,13 @@ void MetalDevice::SetFeatures(FeatureMask disabled_features)
     m_max_texture_size = 8192;
   }
 
+  // Framebuffer fetch requires MSL 2.3 and an Apple GPU family.
+  const bool supports_fbfetch = [m_device supportsFamily:MTLGPUFamilyApple1];
+
+  // If fbfetch is disabled, barriers aren't supported on Apple GPUs.
+  const bool supports_barriers =
+    ([m_device supportsFamily:MTLGPUFamilyMac1] && ![m_device supportsFamily:MTLGPUFamilyApple3]);
+
   m_max_multisamples = 0;
   for (u32 multisamples = 1; multisamples < 16; multisamples *= 2)
   {
@@ -226,14 +238,17 @@ void MetalDevice::SetFeatures(FeatureMask disabled_features)
   }
 
   m_features.dual_source_blend = !(disabled_features & FEATURE_MASK_DUAL_SOURCE_BLEND);
-  m_features.framebuffer_fetch = !(disabled_features & FEATURE_MASK_FRAMEBUFFER_FETCH) && false; // TODO
+  m_features.framebuffer_fetch = !(disabled_features & FEATURE_MASK_FRAMEBUFFER_FETCH) && supports_fbfetch;
   m_features.per_sample_shading = true;
   m_features.noperspective_interpolation = true;
   m_features.texture_copy_to_self = !(disabled_features & FEATURE_MASK_TEXTURE_COPY_TO_SELF);
   m_features.supports_texture_buffers = !(disabled_features & FEATURE_MASK_TEXTURE_BUFFERS);
   m_features.texture_buffers_emulated_with_ssbo = true;
+  m_features.feedback_loops = (m_features.framebuffer_fetch || supports_barriers);
   m_features.geometry_shaders = false;
   m_features.partial_msaa_resolve = false;
+  m_features.memory_import = true;
+  m_features.explicit_present = false;
   m_features.shader_cache = true;
   m_features.pipeline_cache = false;
   m_features.prefer_unused_textures = true;
@@ -326,12 +341,24 @@ void MetalDevice::DestroyDevice()
     [it.second release];
   m_cleanup_objects.clear();
 
+  for (auto& it : m_depth_states)
+  {
+    if (it.second != nil)
+      [it.second release];
+  }
+  m_depth_states.clear();
   for (auto& it : m_resolve_pipelines)
   {
     if (it.second != nil)
       [it.second release];
   }
   m_resolve_pipelines.clear();
+  for (auto& it : m_clear_pipelines)
+  {
+    if (it.second != nil)
+      [it.second release];
+  }
+  m_clear_pipelines.clear();
   if (m_shaders != nil)
   {
     [m_shaders release];
@@ -499,24 +526,10 @@ bool MetalDevice::CreateBuffers()
 
 void MetalDevice::DestroyBuffers()
 {
-  if (m_download_buffer != nil)
-  {
-    [m_download_buffer release];
-    m_download_buffer = nil;
-    m_download_buffer_size = 0;
-  }
-
   m_texture_upload_buffer.Destroy();
   m_uniform_buffer.Destroy();
   m_vertex_buffer.Destroy();
   m_index_buffer.Destroy();
-
-  for (auto& it : m_depth_states)
-  {
-    if (it.second != nil)
-      [it.second release];
-  }
-  m_depth_states.clear();
 }
 
 bool MetalDevice::IsRenderTargetBound(const GPUTexture* tex) const
@@ -616,18 +629,8 @@ std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromMSL(GPUShaderStage stage
     {
       LogNSError(error, "Failed to compile %s shader", GPUShader::GetStageName(stage));
 
-      auto fp = FileSystem::OpenManagedCFile(
-        Path::Combine(EmuFolders::DataRoot, fmt::format("bad_shader_{}.txt", s_next_bad_shader_id++)).c_str(), "wb");
-      if (fp)
-      {
-        std::fwrite(source.data(), source.size(), 1, fp.get());
-        std::fprintf(fp.get(), "\n\nCompile %s failed: %u\n", GPUShader::GetStageName(stage),
-                     static_cast<u32>(error.code));
-
-        const char* utf_error = [error.description UTF8String];
-        std::fwrite(utf_error, std::strlen(utf_error), 1, fp.get());
-      }
-
+      const char* utf_error = [error.description UTF8String];
+      DumpBadShader(source, fmt::format("Error {}: {}", static_cast<u32>(error.code), utf_error ? utf_error : ""));
       return {};
     }
 
@@ -652,42 +655,103 @@ std::unique_ptr<GPUShader> MetalDevice::CreateShaderFromSource(GPUShaderStage st
                                                                const char* entry_point,
                                                                DynamicHeapArray<u8>* out_binary /* = nullptr */)
 {
-  const u32 options = (m_debug_device ? SPIRVCompiler::DebugInfo : 0) | SPIRVCompiler::VulkanRules;
   static constexpr bool dump_shaders = false;
 
-  if (std::strcmp(entry_point, "main") != 0)
+  static constexpr const std::array<shaderc_shader_kind, static_cast<size_t>(GPUShaderStage::MaxCount)> stage_kinds = {{
+    shaderc_glsl_vertex_shader,
+    shaderc_glsl_fragment_shader,
+    shaderc_glsl_geometry_shader,
+    shaderc_glsl_compute_shader,
+  }};
+
+  // TODO: NOT thread safe, yet.
+  if (!s_shaderc_compiler)
+    s_shaderc_compiler = std::make_unique<shaderc::Compiler>();
+
+  shaderc::CompileOptions spv_options;
+  spv_options.SetSourceLanguage(shaderc_source_language_glsl);
+  spv_options.SetTargetEnvironment(shaderc_target_env_vulkan, 0);
+
+  if (m_debug_device)
   {
-    Log_ErrorPrintf("Entry point must be 'main', but got '%s' instead.", entry_point);
-    return {};
+    spv_options.SetOptimizationLevel(shaderc_optimization_level_zero);
+    spv_options.SetGenerateDebugInfo();
+  }
+  else
+  {
+    spv_options.SetOptimizationLevel(shaderc_optimization_level_performance);
   }
 
-  std::optional<SPIRVCompiler::SPIRVCodeVector> spirv = SPIRVCompiler::CompileShader(stage, source, options);
-  if (!spirv.has_value())
+  const shaderc::SpvCompilationResult result = s_shaderc_compiler->CompileGlslToSpv(
+    source.data(), source.length(), stage_kinds[static_cast<size_t>(stage)], "source", entry_point, spv_options);
+  if (result.GetCompilationStatus() != shaderc_compilation_status_success)
   {
-    Log_ErrorPrintf("Failed to compile shader to SPIR-V.");
+    const std::string errors = result.GetErrorMessage();
+    DumpBadShader(source, errors);
+    Log_ErrorFmt("Failed to compile shader to SPIR-V:\n{}", errors);
     return {};
   }
+  else if (result.GetNumWarnings() > 0)
+  {
+    Log_WarningFmt("Shader compiled with warnings:\n{}", result.GetErrorMessage());
+  }
 
-  std::optional<std::string> msl = SPIRVCompiler::CompileSPIRVToMSL(stage, spirv.value());
-  if (!msl.has_value())
+  spirv_cross::CompilerMSL compiler(result.cbegin(), std::distance(result.cbegin(), result.cend()));
+  spirv_cross::CompilerMSL::Options msl_options = compiler.get_msl_options();
+  msl_options.pad_fragment_output_components = true;
+  msl_options.use_framebuffer_fetch_subpasses = m_features.framebuffer_fetch;
+  if (m_features.framebuffer_fetch)
+    msl_options.set_msl_version(2, 3);
+
+  if (stage == GPUShaderStage::Fragment)
+  {
+    for (u32 i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
+    {
+      spirv_cross::MSLResourceBinding rb;
+      rb.stage = spv::ExecutionModelFragment;
+      rb.desc_set = 1;
+      rb.binding = i;
+      rb.count = 1;
+      rb.msl_texture = i;
+      rb.msl_sampler = i;
+      rb.msl_buffer = i;
+      compiler.add_msl_resource_binding(rb);
+    }
+
+    if (!m_features.framebuffer_fetch)
+    {
+      spirv_cross::MSLResourceBinding rb;
+      rb.stage = spv::ExecutionModelFragment;
+      rb.desc_set = 2;
+      rb.binding = 0;
+      rb.msl_texture = MAX_TEXTURE_SAMPLERS;
+      compiler.add_msl_resource_binding(rb);
+    }
+  }
+
+  compiler.set_msl_options(msl_options);
+
+  const std::string msl = compiler.compile();
+  if (msl.empty())
   {
     Log_ErrorPrintf("Failed to compile SPIR-V to MSL.");
     return {};
   }
   if constexpr (dump_shaders)
   {
-    DumpShader(s_next_bad_shader_id, "_input", source);
-    DumpShader(s_next_bad_shader_id, "_msl", msl.value());
-    s_next_bad_shader_id++;
+    static unsigned s_next_id = 0;
+    ++s_next_id;
+    DumpShader(s_next_id, "_input", source);
+    DumpShader(s_next_id, "_msl", msl);
   }
 
   if (out_binary)
   {
-    out_binary->resize(msl->size());
-    std::memcpy(out_binary->data(), msl->data(), msl->size());
+    out_binary->resize(msl.size());
+    std::memcpy(out_binary->data(), msl.data(), msl.size());
   }
 
-  return CreateShaderFromMSL(stage, msl.value(), "main0");
+  return CreateShaderFromMSL(stage, msl, "main0");
 }
 
 MetalPipeline::MetalPipeline(id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth, MTLCullMode cull_mode,
@@ -759,17 +823,17 @@ std::unique_ptr<GPUPipeline> MetalDevice::CreatePipeline(const GPUPipeline::Grap
     static constexpr u32 MAX_COMPONENTS = 4;
     static constexpr const MTLVertexFormat
       format_mapping[static_cast<u8>(GPUPipeline::VertexAttribute::Type::MaxCount)][MAX_COMPONENTS] = {
-        {MTLVertexFormatFloat, MTLVertexFormatFloat2, MTLVertexFormatFloat3, MTLVertexFormatFloat4},     // Float
-        {MTLVertexFormatUChar, MTLVertexFormatUChar2, MTLVertexFormatUChar3, MTLVertexFormatUChar4},     // UInt8
-        {MTLVertexFormatChar, MTLVertexFormatChar2, MTLVertexFormatChar3, MTLVertexFormatChar4},         // SInt8
+        {MTLVertexFormatFloat, MTLVertexFormatFloat2, MTLVertexFormatFloat3, MTLVertexFormatFloat4}, // Float
+        {MTLVertexFormatUChar, MTLVertexFormatUChar2, MTLVertexFormatUChar3, MTLVertexFormatUChar4}, // UInt8
+        {MTLVertexFormatChar, MTLVertexFormatChar2, MTLVertexFormatChar3, MTLVertexFormatChar4},     // SInt8
         {MTLVertexFormatUCharNormalized, MTLVertexFormatUChar2Normalized, MTLVertexFormatUChar3Normalized,
          MTLVertexFormatUChar4Normalized},                                                               // UNorm8
         {MTLVertexFormatUShort, MTLVertexFormatUShort2, MTLVertexFormatUShort3, MTLVertexFormatUShort4}, // UInt16
         {MTLVertexFormatShort, MTLVertexFormatShort2, MTLVertexFormatShort3, MTLVertexFormatShort4},     // SInt16
         {MTLVertexFormatUShortNormalized, MTLVertexFormatUShort2Normalized, MTLVertexFormatUShort3Normalized,
-         MTLVertexFormatUShort4Normalized},                                                              // UNorm16
-        {MTLVertexFormatUInt, MTLVertexFormatUInt2, MTLVertexFormatUInt3, MTLVertexFormatUInt4},         // UInt32
-        {MTLVertexFormatInt, MTLVertexFormatInt2, MTLVertexFormatInt3, MTLVertexFormatInt4},             // SInt32
+         MTLVertexFormatUShort4Normalized},                                                      // UNorm16
+        {MTLVertexFormatUInt, MTLVertexFormatUInt2, MTLVertexFormatUInt3, MTLVertexFormatUInt4}, // UInt32
+        {MTLVertexFormatInt, MTLVertexFormatInt2, MTLVertexFormatInt3, MTLVertexFormatInt4},     // SInt32
       };
 
     static constexpr std::array<MTLCullMode, static_cast<u32>(GPUPipeline::CullMode::MaxCount)> cull_mapping = {{
@@ -811,7 +875,23 @@ std::unique_ptr<GPUPipeline> MetalDevice::CreatePipeline(const GPUPipeline::Grap
     {
       if (config.color_formats[i] == GPUTexture::Format::Unknown)
         break;
-      desc.colorAttachments[0].pixelFormat = s_pixel_format_mapping[static_cast<u8>(config.color_formats[i])];
+
+      MTLRenderPipelineColorAttachmentDescriptor* ca = desc.colorAttachments[0];
+      ca.pixelFormat = s_pixel_format_mapping[static_cast<u8>(config.color_formats[i])];
+      ca.writeMask = (config.blend.write_r ? MTLColorWriteMaskRed : MTLColorWriteMaskNone) |
+                     (config.blend.write_g ? MTLColorWriteMaskGreen : MTLColorWriteMaskNone) |
+                     (config.blend.write_b ? MTLColorWriteMaskBlue : MTLColorWriteMaskNone) |
+                     (config.blend.write_a ? MTLColorWriteMaskAlpha : MTLColorWriteMaskNone);
+      ca.blendingEnabled = config.blend.enable;
+      if (config.blend.enable)
+      {
+        ca.sourceRGBBlendFactor = blend_mapping[static_cast<u8>(config.blend.src_blend.GetValue())];
+        ca.destinationRGBBlendFactor = blend_mapping[static_cast<u8>(config.blend.dst_blend.GetValue())];
+        ca.rgbBlendOperation = op_mapping[static_cast<u8>(config.blend.blend_op.GetValue())];
+        ca.sourceAlphaBlendFactor = blend_mapping[static_cast<u8>(config.blend.src_alpha_blend.GetValue())];
+        ca.destinationAlphaBlendFactor = blend_mapping[static_cast<u8>(config.blend.dst_alpha_blend.GetValue())];
+        ca.alphaBlendOperation = op_mapping[static_cast<u8>(config.blend.alpha_blend_op.GetValue())];
+      }
     }
     desc.depthAttachmentPixelFormat = s_pixel_format_mapping[static_cast<u8>(config.depth_format)];
 
@@ -848,13 +928,6 @@ std::unique_ptr<GPUPipeline> MetalDevice::CreatePipeline(const GPUPipeline::Grap
     if (depth == nil)
       return {};
 
-    // Blending state
-    MTLRenderPipelineColorAttachmentDescriptor* ca = desc.colorAttachments[0];
-    ca.writeMask = (config.blend.write_r ? MTLColorWriteMaskRed : MTLColorWriteMaskNone) |
-                   (config.blend.write_g ? MTLColorWriteMaskGreen : MTLColorWriteMaskNone) |
-                   (config.blend.write_b ? MTLColorWriteMaskBlue : MTLColorWriteMaskNone) |
-                   (config.blend.write_a ? MTLColorWriteMaskAlpha : MTLColorWriteMaskNone);
-
     // General
     const MTLPrimitiveType primitive = primitives[static_cast<u8>(config.primitive)];
     desc.rasterSampleCount = config.samples;
@@ -866,17 +939,6 @@ std::unique_ptr<GPUPipeline> MetalDevice::CreatePipeline(const GPUPipeline::Grap
       desc.vertexBuffers[1].mutability = MTLMutabilityImmutable;
     if (config.layout == GPUPipeline::Layout::SingleTextureBufferAndPushConstants)
       desc.fragmentBuffers[1].mutability = MTLMutabilityImmutable;
-
-    ca.blendingEnabled = config.blend.enable;
-    if (config.blend.enable)
-    {
-      ca.sourceRGBBlendFactor = blend_mapping[static_cast<u8>(config.blend.src_blend.GetValue())];
-      ca.destinationRGBBlendFactor = blend_mapping[static_cast<u8>(config.blend.dst_blend.GetValue())];
-      ca.rgbBlendOperation = op_mapping[static_cast<u8>(config.blend.blend_op.GetValue())];
-      ca.sourceAlphaBlendFactor = blend_mapping[static_cast<u8>(config.blend.src_alpha_blend.GetValue())];
-      ca.destinationAlphaBlendFactor = blend_mapping[static_cast<u8>(config.blend.dst_alpha_blend.GetValue())];
-      ca.alphaBlendOperation = op_mapping[static_cast<u8>(config.blend.alpha_blend_op.GetValue())];
-    }
 
     NSError* error = nullptr;
     id<MTLRenderPipelineState> pipeline = [m_device newRenderPipelineStateWithDescriptor:desc error:&error];
@@ -1132,6 +1194,166 @@ std::unique_ptr<GPUTexture> MetalDevice::CreateTexture(u32 width, u32 height, u3
   }
 }
 
+MetalDownloadTexture::MetalDownloadTexture(u32 width, u32 height, GPUTexture::Format format, u8* import_buffer,
+                                           size_t buffer_offset, id<MTLBuffer> buffer, const u8* map_ptr, u32 map_pitch)
+  : GPUDownloadTexture(width, height, format, (import_buffer != nullptr)), m_buffer_offset(buffer_offset),
+    m_buffer(buffer)
+{
+  m_map_pointer = map_ptr;
+  m_current_pitch = map_pitch;
+}
+
+MetalDownloadTexture::~MetalDownloadTexture()
+{
+  [m_buffer release];
+}
+
+std::unique_ptr<MetalDownloadTexture> MetalDownloadTexture::Create(u32 width, u32 height, GPUTexture::Format format,
+                                                                   void* memory, size_t memory_size, u32 memory_stride)
+{
+  @autoreleasepool
+  {
+    MetalDevice& dev = MetalDevice::GetInstance();
+    id<MTLBuffer> buffer = nil;
+    size_t memory_offset = 0;
+    const u8* map_ptr = nullptr;
+    u32 map_pitch = 0;
+    u32 buffer_size = 0;
+
+    constexpr MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache;
+
+    // not importing memory?
+    if (!memory)
+    {
+      map_pitch = Common::AlignUpPow2(GPUTexture::CalcUploadPitch(format, width), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
+      buffer_size = height * map_pitch;
+      buffer = [[dev.m_device newBufferWithLength:buffer_size options:options] retain];
+      if (buffer == nil)
+      {
+        Log_ErrorFmt("Failed to create {} byte buffer", buffer_size);
+        return {};
+      }
+
+      map_ptr = static_cast<u8*>([buffer contents]);
+    }
+    else
+    {
+      map_pitch = memory_stride;
+      buffer_size = height * map_pitch;
+      Assert(buffer_size <= memory_size);
+
+      // Importing memory, we need to page align the buffer.
+      void* page_aligned_memory =
+        reinterpret_cast<void*>(Common::AlignDownPow2(reinterpret_cast<uintptr_t>(memory), HOST_PAGE_SIZE));
+      const size_t page_offset = static_cast<size_t>(static_cast<u8*>(memory) - static_cast<u8*>(page_aligned_memory));
+      const size_t page_aligned_size = Common::AlignUpPow2(page_offset + memory_size, HOST_PAGE_SIZE);
+      Log_DevFmt("Trying to import {} bytes of memory at {} for download texture", page_aligned_memory,
+                 page_aligned_size);
+
+      buffer = [[dev.m_device newBufferWithBytesNoCopy:page_aligned_memory
+                                                length:page_aligned_size
+                                               options:options
+                                           deallocator:nil] retain];
+      if (buffer == nil)
+      {
+        Log_ErrorFmt("Failed to import {} byte buffer", page_aligned_size);
+        return {};
+      }
+
+      map_ptr = static_cast<u8*>(memory);
+    }
+
+    return std::unique_ptr<MetalDownloadTexture>(new MetalDownloadTexture(
+      width, height, format, static_cast<u8*>(memory), memory_offset, buffer, map_ptr, map_pitch));
+  }
+}
+
+void MetalDownloadTexture::CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width,
+                                           u32 height, u32 src_layer, u32 src_level, bool use_transfer_pitch)
+{
+  MetalTexture* const mtlTex = static_cast<MetalTexture*>(src);
+  MetalDevice& dev = MetalDevice::GetInstance();
+
+  DebugAssert(mtlTex->GetFormat() == m_format);
+  DebugAssert(src_level < mtlTex->GetLevels());
+  DebugAssert((src_x + width) <= mtlTex->GetMipWidth(src_level) && (src_y + height) <= mtlTex->GetMipHeight(src_level));
+  DebugAssert((dst_x + width) <= m_width && (dst_y + height) <= m_height);
+  DebugAssert((dst_x == 0 && dst_y == 0) || !use_transfer_pitch);
+  DebugAssert(!m_is_imported || !use_transfer_pitch);
+
+  u32 copy_offset, copy_size, copy_rows;
+  if (!m_is_imported)
+    m_current_pitch = GetTransferPitch(use_transfer_pitch ? width : m_width, TEXTURE_UPLOAD_PITCH_ALIGNMENT);
+  GetTransferSize(dst_x, dst_y, width, height, m_current_pitch, &copy_offset, &copy_size, &copy_rows);
+
+  dev.GetStatistics().num_downloads++;
+
+  dev.CommitClear(mtlTex);
+
+  id<MTLBlitCommandEncoder> encoder = dev.GetBlitEncoder(true);
+  [encoder copyFromTexture:mtlTex->GetMTLTexture()
+                 sourceSlice:src_layer
+                 sourceLevel:src_level
+                sourceOrigin:MTLOriginMake(src_x, src_y, 0)
+                  sourceSize:MTLSizeMake(width, height, 1)
+                    toBuffer:m_buffer
+           destinationOffset:m_buffer_offset + copy_offset
+      destinationBytesPerRow:m_current_pitch
+    destinationBytesPerImage:0];
+
+  m_copy_fence_counter = dev.m_current_fence_counter;
+  m_needs_flush = true;
+}
+
+bool MetalDownloadTexture::Map(u32 x, u32 y, u32 width, u32 height)
+{
+  // Always mapped.
+  return true;
+}
+
+void MetalDownloadTexture::Unmap()
+{
+  // Always mapped.
+}
+
+void MetalDownloadTexture::Flush()
+{
+  if (!m_needs_flush)
+    return;
+
+  m_needs_flush = false;
+
+  MetalDevice& dev = MetalDevice::GetInstance();
+  if (dev.m_completed_fence_counter >= m_copy_fence_counter)
+    return;
+
+  // Need to execute command buffer.
+  if (dev.GetCurrentFenceCounter() == m_copy_fence_counter)
+    dev.SubmitCommandBuffer(true);
+  else
+    dev.WaitForFenceCounter(m_copy_fence_counter);
+}
+
+void MetalDownloadTexture::SetDebugName(std::string_view name)
+{
+  @autoreleasepool
+  {
+    [m_buffer setLabel:StringViewToNSString(name)];
+  }
+}
+
+std::unique_ptr<GPUDownloadTexture> MetalDevice::CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format)
+{
+  return MetalDownloadTexture::Create(width, height, format, nullptr, 0, 0);
+}
+
+std::unique_ptr<GPUDownloadTexture> MetalDevice::CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
+                                                                       void* memory, size_t memory_size,
+                                                                       u32 memory_stride)
+{
+  return MetalDownloadTexture::Create(width, height, format, memory, memory_size, memory_stride);
+}
+
 MetalSampler::MetalSampler(id<MTLSamplerState> ss) : m_ss(ss)
 {
 }
@@ -1216,71 +1438,6 @@ std::unique_ptr<GPUSampler> MetalDevice::CreateSampler(const GPUSampler::Config&
 
     return std::unique_ptr<GPUSampler>(new MetalSampler([ss retain]));
   }
-}
-
-bool MetalDevice::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                                  u32 out_data_stride)
-{
-  constexpr u32 src_layer = 0;
-  constexpr u32 src_level = 0;
-
-  const u32 copy_size = width * texture->GetPixelSize();
-  const u32 pitch = Common::AlignUpPow2(copy_size, TEXTURE_UPLOAD_PITCH_ALIGNMENT);
-  const u32 required_size = pitch * height;
-  if (!CheckDownloadBufferSize(required_size))
-    return false;
-
-  MetalTexture* T = static_cast<MetalTexture*>(texture);
-  CommitClear(T);
-
-  s_stats.num_downloads++;
-
-  @autoreleasepool
-  {
-    id<MTLBlitCommandEncoder> encoder = GetBlitEncoder(true);
-
-    [encoder copyFromTexture:T->GetMTLTexture()
-                   sourceSlice:src_layer
-                   sourceLevel:src_level
-                  sourceOrigin:MTLOriginMake(x, y, 0)
-                    sourceSize:MTLSizeMake(width, height, 1)
-                      toBuffer:m_download_buffer
-             destinationOffset:0
-        destinationBytesPerRow:pitch
-      destinationBytesPerImage:0];
-
-    SubmitCommandBuffer(true);
-
-    StringUtil::StrideMemCpy(out_data, out_data_stride, [m_download_buffer contents], pitch, copy_size, height);
-  }
-
-  return true;
-}
-
-bool MetalDevice::CheckDownloadBufferSize(u32 required_size)
-{
-  if (m_download_buffer_size >= required_size)
-    return true;
-
-  @autoreleasepool
-  {
-    // We don't need to defer releasing this one, it's not going to be used.
-    if (m_download_buffer != nil)
-      [m_download_buffer release];
-
-    constexpr MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache;
-    m_download_buffer = [[m_device newBufferWithLength:required_size options:options] retain];
-    if (m_download_buffer == nil)
-    {
-      Log_ErrorPrintf("Failed to create %u byte download buffer", required_size);
-      m_download_buffer_size = 0;
-      return false;
-    }
-
-    m_download_buffer_size = required_size;
-  }
-
-  return true;
 }
 
 bool MetalDevice::SupportsTextureFormat(GPUTexture::Format format) const
@@ -1431,7 +1588,43 @@ void MetalDevice::ClearDepth(GPUTexture* t, float d)
 {
   GPUDevice::ClearDepth(t, d);
   if (InRenderPass() && m_current_depth_target == t)
-    EndRenderPass();
+  {
+    const ClearPipelineConfig config = GetCurrentClearPipelineConfig();
+    id<MTLRenderPipelineState> pipeline = GetClearDepthPipeline(config);
+    id<MTLDepthStencilState> depth = GetDepthState(GPUPipeline::DepthState::GetAlwaysWriteState());
+
+    const Common::Rectangle<s32> rect(0, 0, t->GetWidth(), t->GetHeight());
+    const bool set_vp = (m_current_viewport != rect);
+    const bool set_scissor = (m_current_scissor != rect);
+    if (set_vp)
+    {
+      [m_render_encoder setViewport:(MTLViewport){0.0, 0.0, static_cast<double>(t->GetWidth()),
+                                                  static_cast<double>(t->GetHeight()), 0.0, 1.0}];
+    }
+    if (set_scissor)
+      [m_render_encoder setScissorRect:(MTLScissorRect){0u, 0u, t->GetWidth(), t->GetHeight()}];
+
+    [m_render_encoder setRenderPipelineState:pipeline];
+    if (m_current_cull_mode != MTLCullModeNone)
+      [m_render_encoder setCullMode:MTLCullModeNone];
+    if (depth != m_current_depth_state)
+      [m_render_encoder setDepthStencilState:depth];
+    [m_render_encoder setVertexBytes:&d length:sizeof(d) atIndex:0];
+    [m_render_encoder drawPrimitives:m_current_pipeline->GetPrimitive() vertexStart:0 vertexCount:3];
+    s_stats.num_draws++;
+
+    [m_render_encoder setVertexBuffer:m_uniform_buffer.GetBuffer() offset:m_current_uniform_buffer_position atIndex:0];
+    if (m_current_pipeline)
+      [m_render_encoder setRenderPipelineState:m_current_pipeline->GetPipelineState()];
+    if (m_current_cull_mode != MTLCullModeNone)
+      [m_render_encoder setCullMode:m_current_cull_mode];
+    if (depth != m_current_depth_state)
+      [m_render_encoder setDepthStencilState:m_current_depth_state];
+    if (set_vp)
+      SetViewportInRenderEncoder();
+    if (set_scissor)
+      SetScissorInRenderEncoder();
+  }
 }
 
 void MetalDevice::InvalidateRenderTarget(GPUTexture* t)
@@ -1478,6 +1671,51 @@ void MetalDevice::CommitClear(MetalTexture* tex)
       [encoder endEncoding];
     }
   }
+}
+
+MetalDevice::ClearPipelineConfig MetalDevice::GetCurrentClearPipelineConfig() const
+{
+  ClearPipelineConfig config = {};
+  for (u32 i = 0; i < m_num_current_render_targets; i++)
+    config.color_formats[i] = m_current_render_targets[i]->GetFormat();
+
+  config.depth_format = m_current_depth_target ? m_current_depth_target->GetFormat() : GPUTexture::Format::Unknown;
+  config.samples =
+    m_current_depth_target ? m_current_depth_target->GetSamples() : m_current_render_targets[0]->GetSamples();
+  return config;
+}
+
+id<MTLRenderPipelineState> MetalDevice::GetClearDepthPipeline(const ClearPipelineConfig& config)
+{
+  const auto iter = std::find_if(m_clear_pipelines.begin(), m_clear_pipelines.end(),
+                                 [&config](const auto& it) { return (it.first == config); });
+  if (iter != m_clear_pipelines.end())
+    return iter->second;
+
+  MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor new] autorelease];
+  desc.vertexFunction = [GetFunctionFromLibrary(m_shaders, @"depthClearVertex") autorelease];
+  desc.fragmentFunction = [GetFunctionFromLibrary(m_shaders, @"depthClearFragment") autorelease];
+
+  for (u32 i = 0; i < MAX_RENDER_TARGETS; i++)
+  {
+    if (config.color_formats[i] == GPUTexture::Format::Unknown)
+      break;
+    desc.colorAttachments[i].pixelFormat = s_pixel_format_mapping[static_cast<u8>(config.color_formats[i])];
+    desc.colorAttachments[i].writeMask = MTLColorWriteMaskNone;
+  }
+  desc.depthAttachmentPixelFormat = s_pixel_format_mapping[static_cast<u8>(config.depth_format)];
+  desc.rasterizationEnabled = TRUE;
+  desc.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+  desc.rasterSampleCount = config.samples;
+  desc.vertexBuffers[0].mutability = MTLMutabilityImmutable;
+
+  NSError* error = nullptr;
+  id<MTLRenderPipelineState> pipeline = [m_device newRenderPipelineStateWithDescriptor:desc error:&error];
+  if (pipeline == nil)
+    LogNSError(error, "Failed to create clear render pipeline state");
+
+  m_clear_pipelines.emplace_back(config, pipeline);
+  return pipeline;
 }
 
 MetalTextureBuffer::MetalTextureBuffer(Format format, u32 size_in_elements) : GPUTextureBuffer(format, size_in_elements)
@@ -1627,9 +1865,12 @@ void MetalDevice::UnmapUniformBuffer(u32 size)
   }
 }
 
-void MetalDevice::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds)
+void MetalDevice::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                                   GPUPipeline::RenderPassFlag feedback_loop)
 {
-  bool changed = (m_num_current_render_targets != num_rts || m_current_depth_target != ds);
+  bool changed = (m_num_current_render_targets != num_rts || m_current_depth_target != ds ||
+                  (!m_features.framebuffer_fetch && ((feedback_loop & GPUPipeline::ColorFeedbackLoop) !=
+                                                     (m_current_feedback_loop & GPUPipeline::ColorFeedbackLoop))));
   bool needs_ds_clear = (ds && ds->IsClearedOrInvalidated());
   bool needs_rt_clear = false;
 
@@ -1643,7 +1884,8 @@ void MetalDevice::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTextu
   }
   for (u32 i = num_rts; i < m_num_current_render_targets; i++)
     m_current_render_targets[i] = nullptr;
-  m_num_current_render_targets = num_rts;
+  m_num_current_render_targets = static_cast<u8>(num_rts);
+  m_current_feedback_loop = feedback_loop;
 
   if (changed || needs_rt_clear || needs_ds_clear)
   {
@@ -1749,7 +1991,7 @@ void MetalDevice::UnbindTexture(MetalTexture* tex)
       if (m_current_render_targets[i] == tex)
       {
         Log_WarningPrint("Unbinding current RT");
-        SetRenderTargets(nullptr, 0, m_current_depth_target);
+        SetRenderTargets(nullptr, 0, m_current_depth_target, GPUPipeline::NoRenderPassFlags); // TODO: Wrong
         break;
       }
     }
@@ -1759,7 +2001,7 @@ void MetalDevice::UnbindTexture(MetalTexture* tex)
     if (m_current_depth_target == tex)
     {
       Log_WarningPrint("Unbinding current DS");
-      SetRenderTargets(nullptr, 0, nullptr);
+      SetRenderTargets(nullptr, 0, nullptr, GPUPipeline::NoRenderPassFlags);
     }
   }
 }
@@ -1941,6 +2183,13 @@ void MetalDevice::SetInitialEncoderState()
   [m_render_encoder setFragmentSamplerStates:m_current_samplers.data() withRange:NSMakeRange(0, MAX_TEXTURE_SAMPLERS)];
   if (m_current_ssbo)
     [m_render_encoder setFragmentBuffer:m_current_ssbo offset:0 atIndex:1];
+
+  if (!m_features.framebuffer_fetch && (m_current_feedback_loop & GPUPipeline::ColorFeedbackLoop))
+  {
+    DebugAssert(m_current_render_targets[0]);
+    [m_render_encoder setFragmentTexture:m_current_render_targets[0]->GetMTLTexture() atIndex:MAX_TEXTURE_SAMPLERS];
+  }
+
   SetViewportInRenderEncoder();
   SetScissorInRenderEncoder();
 }
@@ -1998,6 +2247,122 @@ void MetalDevice::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
                             instanceCount:1
                                baseVertex:base_vertex
                              baseInstance:0];
+}
+
+void MetalDevice::DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type)
+{
+  // Shouldn't be using this with framebuffer fetch.
+  DebugAssert(!m_features.framebuffer_fetch);
+
+  const bool skip_first_barrier = !InRenderPass();
+  PreDrawCheck();
+
+  // TODO: The first barrier is unnecessary if we're starting the render pass.
+
+  u32 index_offset = base_index * sizeof(u16);
+
+  switch (type)
+  {
+    case GPUDevice::DrawBarrier::None:
+    {
+      s_stats.num_draws++;
+
+      [m_render_encoder drawIndexedPrimitives:m_current_pipeline->GetPrimitive()
+                                   indexCount:index_count
+                                    indexType:MTLIndexTypeUInt16
+                                  indexBuffer:m_index_buffer.GetBuffer()
+                            indexBufferOffset:index_offset
+                                instanceCount:1
+                                   baseVertex:base_vertex
+                                 baseInstance:0];
+    }
+    break;
+
+    case GPUDevice::DrawBarrier::One:
+    {
+      DebugAssert(m_num_current_render_targets == 1);
+      s_stats.num_draws++;
+
+      if (!skip_first_barrier)
+      {
+        s_stats.num_barriers++;
+        [m_render_encoder memoryBarrierWithScope:MTLBarrierScopeRenderTargets
+                                     afterStages:MTLRenderStageFragment
+                                    beforeStages:MTLRenderStageFragment];
+      }
+
+      [m_render_encoder drawIndexedPrimitives:m_current_pipeline->GetPrimitive()
+                                   indexCount:index_count
+                                    indexType:MTLIndexTypeUInt16
+                                  indexBuffer:m_index_buffer.GetBuffer()
+                            indexBufferOffset:index_offset
+                                instanceCount:1
+                                   baseVertex:base_vertex
+                                 baseInstance:0];
+    }
+    break;
+
+    case GPUDevice::DrawBarrier::Full:
+    {
+      DebugAssert(m_num_current_render_targets == 1);
+
+      static constexpr const u8 vertices_per_primitive[][2] = {
+        {1, 1}, // MTLPrimitiveTypePoint
+        {2, 2}, // MTLPrimitiveTypeLine
+        {2, 1}, // MTLPrimitiveTypeLineStrip
+        {3, 3}, // MTLPrimitiveTypeTriangle
+        {3, 1}, // MTLPrimitiveTypeTriangleStrip
+      };
+
+      const u32 first_step =
+        vertices_per_primitive[static_cast<size_t>(m_current_pipeline->GetPrimitive())][0] * sizeof(u16);
+      const u32 index_step =
+        vertices_per_primitive[static_cast<size_t>(m_current_pipeline->GetPrimitive())][1] * sizeof(u16);
+      const u32 end_offset = (base_index + index_count) * sizeof(u16);
+
+      // first primitive
+      if (!skip_first_barrier)
+      {
+        s_stats.num_barriers++;
+        [m_render_encoder memoryBarrierWithScope:MTLBarrierScopeRenderTargets
+                                     afterStages:MTLRenderStageFragment
+                                    beforeStages:MTLRenderStageFragment];
+      }
+      s_stats.num_draws++;
+      [m_render_encoder drawIndexedPrimitives:m_current_pipeline->GetPrimitive()
+                                   indexCount:index_count
+                                    indexType:MTLIndexTypeUInt16
+                                  indexBuffer:m_index_buffer.GetBuffer()
+                            indexBufferOffset:index_offset
+                                instanceCount:1
+                                   baseVertex:base_vertex
+                                 baseInstance:0];
+
+      index_offset += first_step;
+
+      // remaining primitices
+      for (; index_offset < end_offset; index_offset += index_step)
+      {
+        s_stats.num_barriers++;
+        s_stats.num_draws++;
+
+        [m_render_encoder memoryBarrierWithScope:MTLBarrierScopeRenderTargets
+                                     afterStages:MTLRenderStageFragment
+                                    beforeStages:MTLRenderStageFragment];
+        [m_render_encoder drawIndexedPrimitives:m_current_pipeline->GetPrimitive()
+                                     indexCount:index_count
+                                      indexType:MTLIndexTypeUInt16
+                                    indexBuffer:m_index_buffer.GetBuffer()
+                              indexBufferOffset:index_offset
+                                  instanceCount:1
+                                     baseVertex:base_vertex
+                                   baseInstance:0];
+      }
+    }
+    break;
+
+      DefaultCaseIsUnreachable();
+  }
 }
 
 id<MTLBlitCommandEncoder> MetalDevice::GetBlitEncoder(bool is_inline)
@@ -2058,6 +2423,7 @@ bool MetalDevice::BeginPresent(bool skip_present)
     s_stats.num_render_passes++;
     std::memset(m_current_render_targets.data(), 0, sizeof(m_current_render_targets));
     m_num_current_render_targets = 0;
+    m_current_feedback_loop = GPUPipeline::NoRenderPassFlags;
     m_current_depth_target = nullptr;
     m_current_pipeline = nullptr;
     m_current_depth_state = nil;
@@ -2066,8 +2432,11 @@ bool MetalDevice::BeginPresent(bool skip_present)
   }
 }
 
-void MetalDevice::EndPresent()
+void MetalDevice::EndPresent(bool explicit_present)
 {
+  DebugAssert(!explicit_present);
+
+  // TODO: Explicit present
   DebugAssert(m_num_current_render_targets == 0 && !m_current_depth_target);
   EndAnyEncoding();
 
@@ -2076,6 +2445,11 @@ void MetalDevice::EndPresent()
   m_layer_drawable = nil;
   SubmitCommandBuffer();
   TrimTexturePool();
+}
+
+void MetalDevice::SubmitPresent()
+{
+  Panic("Not supported by this API.");
 }
 
 void MetalDevice::CreateCommandBuffer()

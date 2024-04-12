@@ -1,13 +1,18 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "memorycardeditorwindow.h"
+#include "qtutils.h"
+
+#include "core/host.h"
+#include "core/settings.h"
+
+#include "common/assert.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/path.h"
 #include "common/string_util.h"
-#include "core/host.h"
-#include "core/settings.h"
-#include "qtutils.h"
+
 #include <QtCore/QFileInfo>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QMessageBox>
@@ -420,16 +425,23 @@ void MemoryCardEditorWindow::doCopyFile()
     return;
   }
 
+  Error error;
   std::vector<u8> buffer;
-  if (!MemoryCardImage::ReadFile(src->data, *fi, &buffer))
+  if (!MemoryCardImage::ReadFile(src->data, *fi, &buffer, &error))
   {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to read file %1").arg(QString::fromStdString(fi->filename)));
+    QMessageBox::critical(this, tr("Error"),
+                          tr("Failed to read file %1:\n%2")
+                            .arg(QString::fromStdString(fi->filename))
+                            .arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
-  if (!MemoryCardImage::WriteFile(&dst->data, fi->filename, buffer))
+  if (!MemoryCardImage::WriteFile(&dst->data, fi->filename, buffer, &error))
   {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to write file %1").arg(QString::fromStdString(fi->filename)));
+    QMessageBox::critical(this, tr("Error"),
+                          tr("Failed to write file %1:\n%2")
+                            .arg(QString::fromStdString(fi->filename))
+                            .arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
@@ -493,11 +505,13 @@ void MemoryCardEditorWindow::doExportSaveFile()
   if (!fi)
     return;
 
-  if (!MemoryCardImage::ExportSave(&card->data, *fi, filename.toStdString().c_str()))
+  Error error;
+  if (!MemoryCardImage::ExportSave(&card->data, *fi, filename.toStdString().c_str(), &error))
   {
-    QMessageBox::critical(
-      this, tr("Error"),
-      tr("Failed to export save file %1. Check the log for more details.").arg(QString::fromStdString(fi->filename)));
+    QMessageBox::critical(this, tr("Error"),
+                          tr("Failed to export save file %1:\n%2")
+                            .arg(QString::fromStdString(fi->filename))
+                            .arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 }
@@ -506,15 +520,19 @@ void MemoryCardEditorWindow::importCard(Card* card)
 {
   promptForSave(card);
 
-  QString filename =
-    QFileDialog::getOpenFileName(this, tr("Select Import File"), QString(), tr(MEMORY_CARD_IMPORT_FILTER));
+  QString filename = QDir::toNativeSeparators(
+    QFileDialog::getOpenFileName(this, tr("Select Import File"), QString(), tr(MEMORY_CARD_IMPORT_FILTER)));
   if (filename.isEmpty())
     return;
 
+  Error error;
   std::unique_ptr<MemoryCardImage::DataArray> temp = std::make_unique<MemoryCardImage::DataArray>();
-  if (!MemoryCardImage::ImportCard(temp.get(), filename.toStdString().c_str()))
+  if (!MemoryCardImage::ImportCard(temp.get(), filename.toStdString().c_str(), &error))
   {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to import memory card. The log may contain more information."));
+    QMessageBox::critical(this, tr("Error"),
+                          tr("Failed to import memory card from %1:\n%2")
+                            .arg(QFileInfo(filename).fileName())
+                            .arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
@@ -552,17 +570,19 @@ void MemoryCardEditorWindow::formatCard(Card* card)
 
 void MemoryCardEditorWindow::importSaveFile(Card* card)
 {
-  QString filename =
-    QFileDialog::getOpenFileName(this, tr("Select Import Save File"), QString(), tr(SINGLE_SAVEFILE_FILTER));
+  QString filename = QDir::toNativeSeparators(
+    QFileDialog::getOpenFileName(this, tr("Select Save File"), QString(), tr(SINGLE_SAVEFILE_FILTER)));
 
   if (filename.isEmpty())
     return;
 
-  if (!MemoryCardImage::ImportSave(&card->data, filename.toStdString().c_str()))
+  Error error;
+  if (!MemoryCardImage::ImportSave(&card->data, filename.toStdString().c_str(), &error))
   {
     QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to import save. Check if there is enough room on the memory card or if an "
-                             "existing save with the same name already exists."));
+                          tr("Failed to import save from %1:\n%2")
+                            .arg(QFileInfo(filename).fileName())
+                            .arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 

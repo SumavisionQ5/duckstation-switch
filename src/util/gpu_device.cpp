@@ -220,27 +220,34 @@ GPUDevice::~GPUDevice() = default;
 
 RenderAPI GPUDevice::GetPreferredAPI()
 {
+  static RenderAPI preferred_renderer = RenderAPI::None;
+  if (preferred_renderer == RenderAPI::None) [[unlikely]]
+  {
 #if defined(_WIN32) && !defined(_M_ARM64)
-  // Perfer DX11 on Windows, except ARM64, where QCom has slow DX11 drivers.
-  return RenderAPI::D3D11;
+    // Perfer DX11 on Windows, except ARM64, where QCom has slow DX11 drivers.
+    preferred_renderer = RenderAPI::D3D11;
 #elif defined(_WIN32) && defined(_M_ARM64)
-  return RenderAPI::D3D12;
+    preferred_renderer = RenderAPI::D3D12;
 #elif defined(__APPLE__)
-  // Prefer Metal on MacOS.
-  return RenderAPI::Metal;
+    // Prefer Metal on MacOS.
+    preferred_renderer = RenderAPI::Metal;
 #elif defined(ENABLE_OPENGL) && defined(ENABLE_VULKAN)
-  // On Linux, if we have both GL and Vulkan, prefer VK if the driver isn't software.
-  return VulkanDevice::IsSuitableDefaultRenderer() ? RenderAPI::Vulkan : RenderAPI::OpenGL;
+    // On Linux, if we have both GL and Vulkan, prefer VK if the driver isn't software.
+    preferred_renderer = VulkanDevice::IsSuitableDefaultRenderer() ? RenderAPI::Vulkan : RenderAPI::OpenGL;
 #elif defined(ENABLE_OPENGL)
-  return RenderAPI::OpenGL;
+    preferred_renderer = RenderAPI::OpenGL;
 #elif defined(ENABLE_VULKAN)
-  return RenderAPI::Vulkan;
+    preferred_renderer = RenderAPI::Vulkan;
 #elif defined(__SWITCH__)
   return RenderAPI::Deko3D;
 #else
-  // Uhhh, what?
-  return RenderAPI::None;
+    // Uhhh, what?
+    Log_ErrorPrint("Somehow don't have any renderers available...");
+    preferred_renderer = RenderAPI::None;
 #endif
+  }
+
+  return preferred_renderer;
 }
 
 const char* GPUDevice::RenderAPIToString(RenderAPI api)
@@ -496,6 +503,7 @@ bool GPUDevice::CreateResources()
   plconfig.SetTargetFormats(HasSurface() ? m_window_info.surface_format : GPUTexture::Format::RGBA8);
   plconfig.samples = 1;
   plconfig.per_sample_shading = false;
+  plconfig.render_pass_flags = GPUPipeline::NoRenderPassFlags;
   plconfig.vertex_shader = imgui_vs.get();
   plconfig.geometry_shader = nullptr;
   plconfig.fragment_shader = imgui_fs.get();
@@ -589,6 +597,11 @@ void GPUDevice::RenderImGui()
   }
 }
 
+void GPUDevice::SetVSyncEnabled(bool enabled)
+{
+  m_vsync_enabled = enabled;
+}
+
 void GPUDevice::UploadVertexBuffer(const void* vertices, u32 vertex_size, u32 vertex_count, u32* base_vertex)
 {
   void* map;
@@ -614,9 +627,9 @@ void GPUDevice::UploadUniformBuffer(const void* data, u32 data_size)
   UnmapUniformBuffer(data_size);
 }
 
-void GPUDevice::SetRenderTarget(GPUTexture* rt, GPUTexture* ds /*= nullptr*/)
+void GPUDevice::SetRenderTarget(GPUTexture* rt, GPUTexture* ds, GPUPipeline::RenderPassFlag render_pass_flags)
 {
-  SetRenderTargets(rt ? &rt : nullptr, rt ? 1 : 0, ds);
+  SetRenderTargets(rt ? &rt : nullptr, rt ? 1 : 0, ds, render_pass_flags);
 }
 
 void GPUDevice::SetViewportAndScissor(s32 x, s32 y, s32 width, s32 height)
@@ -732,6 +745,22 @@ std::string GPUDevice::GetFullscreenModeString(u32 width, u32 height, float refr
 std::string GPUDevice::GetShaderDumpPath(const std::string_view& name)
 {
   return Path::Combine(EmuFolders::Dumps, name);
+}
+
+void GPUDevice::DumpBadShader(std::string_view code, std::string_view errors)
+{
+  static u32 next_bad_shader_id = 0;
+
+  const std::string filename = GetShaderDumpPath(fmt::format("bad_shader_{}.txt", ++next_bad_shader_id));
+  auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "wb");
+  if (fp)
+  {
+    if (!code.empty())
+      std::fwrite(code.data(), code.size(), 1, fp.get());
+    std::fputs("\n\n**** ERRORS ****\n", fp.get());
+    if (!errors.empty())
+      std::fwrite(errors.data(), errors.size(), 1, fp.get());
+  }
 }
 
 std::array<float, 4> GPUDevice::RGBA8ToFloat(u32 rgba)
@@ -957,6 +986,46 @@ void GPUDevice::TrimTexturePool()
 void GPUDevice::SetDisplayMaxFPS(float max_fps)
 {
   m_display_frame_interval = (max_fps > 0.0f) ? (1.0f / max_fps) : 0.0f;
+}
+
+bool GPUDevice::ResizeTexture(std::unique_ptr<GPUTexture>* tex, u32 new_width, u32 new_height, GPUTexture::Type type,
+                              GPUTexture::Format format, bool preserve /* = true */)
+{
+  GPUTexture* old_tex = tex->get();
+  DebugAssert(!old_tex || (old_tex->GetLayers() == 1 && old_tex->GetLevels() == 1 && old_tex->GetSamples() == 1));
+  std::unique_ptr<GPUTexture> new_tex = FetchTexture(new_width, new_height, 1, 1, 1, type, format);
+  if (!new_tex) [[unlikely]]
+  {
+    Log_ErrorFmt("Failed to create new {}x{} texture", new_width, new_height);
+    return false;
+  }
+
+  if (old_tex)
+  {
+    if (old_tex->GetState() == GPUTexture::State::Cleared)
+    {
+      if (type == GPUTexture::Type::RenderTarget)
+        ClearRenderTarget(new_tex.get(), old_tex->GetClearColor());
+    }
+    else if (old_tex->GetState() == GPUTexture::State::Dirty)
+    {
+      const u32 copy_width = std::min(new_width, old_tex->GetWidth());
+      const u32 copy_height = std::min(new_height, old_tex->GetHeight());
+      if (type == GPUTexture::Type::RenderTarget)
+        ClearRenderTarget(new_tex.get(), 0);
+      CopyTextureRegion(new_tex.get(), 0, 0, 0, 0, old_tex, 0, 0, 0, 0, copy_width, copy_height);
+    }
+  }
+  else if (preserve)
+  {
+    // If we're expecting data to be there, make sure to clear it.
+    if (type == GPUTexture::Type::RenderTarget)
+      ClearRenderTarget(new_tex.get(), 0);
+  }
+
+  RecycleTexture(std::move(*tex));
+  *tex = std::move(new_tex);
+  return true;
 }
 
 bool GPUDevice::ShouldSkipDisplayingFrame()

@@ -30,6 +30,7 @@ class D3D12Pipeline;
 class D3D12SwapChain;
 class D3D12Texture;
 class D3D12TextureBuffer;
+class D3D12DownloadTexture;
 
 namespace D3D12MA {
 class Allocator;
@@ -39,6 +40,7 @@ class D3D12Device final : public GPUDevice
 {
 public:
   friend D3D12Texture;
+  friend D3D12DownloadTexture;
 
   template<typename T>
   using ComPtr = Microsoft::WRL::ComPtr<T>;
@@ -74,8 +76,11 @@ public:
   std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
   std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
 
-  bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                       u32 out_data_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
+                                                            void* memory, size_t memory_size,
+                                                            u32 memory_stride) override;
+
   bool SupportsTextureFormat(GPUTexture::Format format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
@@ -102,7 +107,8 @@ public:
   void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
-  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds) override;
+  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                        GPUPipeline::RenderPassFlag feedback_loop = GPUPipeline::NoRenderPassFlags) override;
   void SetPipeline(GPUPipeline* pipeline) override;
   void SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* sampler) override;
   void SetTextureBuffer(u32 slot, GPUTextureBuffer* buffer) override;
@@ -110,14 +116,14 @@ public:
   void SetScissor(s32 x, s32 y, s32 width, s32 height) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
+  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
-  void SetVSync(bool enabled) override;
-
   bool BeginPresent(bool skip_present) override;
-  void EndPresent() override;
+  void EndPresent(bool explicit_present) override;
+  void SubmitPresent() override;
 
   // Global state accessors
   ALWAYS_INLINE static D3D12Device& GetInstance() { return *static_cast<D3D12Device*>(g_gpu_device.get()); }
@@ -244,9 +250,6 @@ private:
 
   bool IsRenderTargetBound(const GPUTexture* tex) const;
 
-  bool CheckDownloadBufferSize(u32 required_size);
-  void DestroyDownloadBuffer();
-
   /// Set dirty flags on everything to force re-bind at next draw time.
   void InvalidateCachedState();
   void SetVertexBuffer(ID3D12GraphicsCommandList4* cmdlist);
@@ -320,10 +323,6 @@ private:
 
   SamplerMap m_sampler_map;
   ComPtr<ID3D12PipelineLibrary> m_pipeline_library;
-
-  ComPtr<D3D12MA::Allocation> m_download_buffer_allocation;
-  ComPtr<ID3D12Resource> m_download_buffer;
-  u32 m_download_buffer_size = 0;
 
   // Which bindings/state has to be updated before the next draw.
   u32 m_dirty_flags = ALL_DIRTY_STATE;

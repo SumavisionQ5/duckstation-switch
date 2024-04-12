@@ -32,6 +32,8 @@ add_library(util
   host.h
   http_downloader.cpp
   http_downloader.h
+  image.cpp
+  image.h
   imgui_fullscreen.cpp
   imgui_fullscreen.h
   imgui_manager.cpp
@@ -74,7 +76,7 @@ target_precompile_headers(util PRIVATE "pch.h")
 target_include_directories(util PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(util PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(util PUBLIC common simpleini imgui)
-target_link_libraries(util PRIVATE stb libchdr ZLIB::ZLIB soundtouch xxhash Zstd::Zstd reshadefx)
+target_link_libraries(util PRIVATE libchdr JPEG::JPEG PNG::PNG WebP::libwebp ZLIB::ZLIB soundtouch xxhash Zstd::Zstd reshadefx)
 
 if(ENABLE_CUBEB)
   target_sources(util PRIVATE
@@ -95,8 +97,8 @@ endif()
 
 if(ENABLE_OPENGL)
   target_sources(util PRIVATE
-    gl/context.cpp
-    gl/context.h
+    opengl_context.cpp
+    opengl_context.h
     opengl_device.cpp
     opengl_device.h
     opengl_loader.h
@@ -112,34 +114,29 @@ if(ENABLE_OPENGL)
 
   if(WIN32)
     target_sources(util PRIVATE
-      gl/context_wgl.cpp
-      gl/context_wgl.h
+      opengl_context_wgl.cpp
+      opengl_context_wgl.h
     )
     target_link_libraries(util PRIVATE "opengl32.lib")
   endif()
 
   if(LINUX OR FREEBSD OR ANDROID)
     target_sources(util PRIVATE
-      gl/context_egl.cpp
-      gl/context_egl.h
+      opengl_context_egl.cpp
+      opengl_context_egl.h
     )
     target_compile_definitions(util PRIVATE "-DENABLE_EGL=1")
 
     if(ENABLE_X11)
       target_sources(util PRIVATE
-        gl/context_egl_x11.cpp
-        gl/context_egl_x11.h
+        opengl_context_egl_x11.cpp
+        opengl_context_egl_x11.h
       )
-
-      # We set EGL_NO_X11 because otherwise X comes in with its macros and breaks
-      # a bunch of files from compiling, if we include the EGL headers. This just
-      # makes the data types opaque, we can still use it with X11 if needed.
-      target_compile_definitions(util PRIVATE "-DEGL_NO_X11=1")
     endif()
     if(ENABLE_WAYLAND)
       target_sources(util PRIVATE
-        gl/context_egl_wayland.cpp
-        gl/context_egl_wayland.h
+        opengl_context_egl_wayland.cpp
+        opengl_context_egl_wayland.h
       )
     endif()
     if(ANDROID)
@@ -149,21 +146,10 @@ if(ENABLE_OPENGL)
 
   if(APPLE)
     target_sources(util PRIVATE
-      gl/context_agl.mm
-      gl/context_agl.h
+      opengl_context_agl.mm
+      opengl_context_agl.h
     )
-    set_source_files_properties(gl/context_agl.mm PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
-  endif()
-endif()
-
-if(ENABLE_VULKAN OR APPLE)
-  target_sources(util PRIVATE
-    spirv_compiler.cpp
-    spirv_compiler.h
-  )
-  target_link_libraries(util PRIVATE glslang)
-  if(APPLE)
-    target_link_libraries(util PRIVATE spirv-cross)
+    set_source_files_properties(opengl_context_agl.mm PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
   endif()
 endif()
 
@@ -190,8 +176,13 @@ if(ENABLE_VULKAN)
   target_link_libraries(util PUBLIC vulkan-headers)
 endif()
 
+if(ENABLE_VULKAN OR APPLE)
+  target_link_libraries(util PUBLIC Shaderc::shaderc_shared)
+endif()
+
 if(ENABLE_SDL2)
-  target_sources(util PRIVATE 
+  target_sources(util PRIVATE
+    sdl_audio_stream.cpp
     sdl_input_source.cpp
     sdl_input_source.h
   )
@@ -271,7 +262,7 @@ elseif(APPLE)
   find_library(IOK_LIBRARY IOKit REQUIRED)
   find_library(METAL_LIBRARY Metal)
   find_library(QUARTZCORE_LIBRARY QuartzCore)
-  target_link_libraries(util PRIVATE ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOK_LIBRARY})
+  target_link_libraries(util PRIVATE ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOK_LIBRARY} spirv-cross)
   set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
 elseif(NOT ANDROID AND NOT NINTENDO_SWITCH)
   target_sources(util PRIVATE
@@ -281,6 +272,10 @@ elseif(NOT ANDROID AND NOT NINTENDO_SWITCH)
   pkg_check_modules(DBUS REQUIRED dbus-1)
   target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
   target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
+
+  if(LINUX)
+    target_link_libraries(util PRIVATE UDEV::UDEV)
+  endif()
 elseif(NINTENDO_SWITCH)
   target_sources(util PRIVATE
     platform_misc_switch.cpp

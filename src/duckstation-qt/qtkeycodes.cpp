@@ -180,7 +180,7 @@ static constexpr KeyCodeName s_qt_key_names[] = {{Qt::Key_Escape, "Escape", ICON
                                                  {Qt::Key_twosuperior, "twosuperior", nullptr},
                                                  {Qt::Key_threesuperior, "threesuperior", nullptr},
                                                  {Qt::Key_acute, "acute", nullptr},
-                                                 {Qt::Key_mu, "mu", nullptr},
+                                                 {Qt::Key_micro, "micro", nullptr},
                                                  {Qt::Key_paragraph, "paragraph", nullptr},
                                                  {Qt::Key_periodcentered, "periodcentered", nullptr},
                                                  {Qt::Key_cedilla, "cedilla", nullptr},
@@ -517,5 +517,22 @@ const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
 
 u32 QtUtils::KeyEventToCode(const QKeyEvent* ev)
 {
-  return static_cast<u32>(ev->key()) | (static_cast<u32>(ev->modifiers()) & static_cast<u32>(Qt::KeypadModifier));
+  int key = ev->key();
+  Qt::KeyboardModifiers modifiers = ev->modifiers();
+
+#ifdef __APPLE__
+  // On macOS, Qt applies the Keypad modifier regardless of whether the arrow keys, or numpad was pressed.
+  // The only way to differentiate between the keypad and the arrow keys is by the text.
+  // Hopefully some keyboard layouts don't change the numpad positioning...
+  if (modifiers & Qt::KeypadModifier && key >= Qt::Key_Insert && key <= Qt::Key_PageDown)
+  {
+    if (ev->text().isEmpty())
+    {
+      // Drop the modifier, because it's probably not actually a numpad push.
+      modifiers &= ~Qt::KeypadModifier;
+    }
+  }
+#endif
+
+  return static_cast<u32>(key) | (static_cast<u32>(modifiers) & static_cast<u32>(Qt::KeypadModifier));
 }

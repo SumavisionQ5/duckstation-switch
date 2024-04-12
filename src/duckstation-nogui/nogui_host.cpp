@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "nogui_host.h"
@@ -30,6 +30,7 @@
 #include "common/assert.h"
 #include "common/byte_stream.h"
 #include "common/crash_handler.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
@@ -339,6 +340,12 @@ void NoGUIHost::SetDefaultSettings(SettingsInterface& si, bool system, bool cont
   }
 
   g_nogui_window->SetDefaultConfig(si);
+}
+
+void Host::ReportFatalError(const std::string_view& title, const std::string_view& message)
+{
+  Log_ErrorPrintf("ReportFatalError: %.*s", static_cast<int>(message.size()), message.data());
+  abort();
 }
 
 void Host::ReportErrorAsync(const std::string_view& title, const std::string_view& message)
@@ -684,7 +691,11 @@ void NoGUIHost::CPUThreadEntryPoint()
   Threading::SetNameOfCurrentThread("CPU Thread");
 
   // input source setup must happen on emu thread
-  System::Internal::ProcessStartup();
+  if (!System::Internal::ProcessStartup())
+  {
+    g_nogui_window->QuitMessageLoop();
+    return;
+  }
 
   // start the fullscreen UI and get it going
   if (Host::CreateGPUDevice(Settings::GetRenderAPIForRenderer(g_settings.gpu_renderer)) && FullscreenUI::Initialize())
@@ -727,7 +738,7 @@ void NoGUIHost::CPUThreadMainLoop()
     Host::PumpMessagesOnCPUThread();
     System::Internal::IdlePollUpdate();
     System::PresentDisplay(false);
-    if (!g_gpu_device->IsVsyncEnabled())
+    if (!g_gpu_device->IsVSyncActive())
       g_gpu_device->ThrottlePresentation();
   }
 }
@@ -873,15 +884,22 @@ std::unique_ptr<NoGUIPlatform> NoGUIHost::CreatePlatform()
 {
   std::unique_ptr<NoGUIPlatform> ret;
 
+  const char* platform = std::getenv("DUCKSTATION_NOGUI_PLATFORM");
+#ifdef ENABLE_SDL2
+  if (platform && StringUtil::Strcasecmp(platform, "sdl") == 0)
+    ret = NoGUIPlatform::CreateSDLPlatform();
+#endif
+
 #if defined(_WIN32)
-  ret = NoGUIPlatform::CreateWin32Platform();
+  if (!ret)
+    ret = NoGUIPlatform::CreateWin32Platform();
 #elif defined(__APPLE__)
-  ret = NoGUIPlatform::CreateCocoaPlatform();
+  if (!ret)
+    ret = NoGUIPlatform::CreateCocoaPlatform();
 #elif defined(__SWITCH__)
   ret = NoGUIPlatform::CreateSwitchPlatform();
 #else
   // linux
-  const char* platform = std::getenv("DUCKSTATION_NOGUI_PLATFORM");
 #ifdef NOGUI_PLATFORM_WAYLAND
   if (!ret && (!platform || StringUtil::Strcasecmp(platform, "wayland") == 0) && std::getenv("WAYLAND_DISPLAY"))
     ret = NoGUIPlatform::CreateWaylandPlatform();

@@ -11,6 +11,7 @@
 #include "common/bitfield.h"
 #include "common/fifo_queue.h"
 #include "common/rectangle.h"
+#include "common/types.h"
 
 #include <algorithm>
 #include <array>
@@ -60,6 +61,7 @@ public:
     DOT_TIMER_INDEX = 0,
     HBLANK_TIMER_INDEX = 1,
     MAX_RESOLUTION_SCALE = 32,
+    DEINTERLACE_BUFFER_COUNT = 4,
   };
 
   enum : u16
@@ -200,15 +202,15 @@ public:
   Common::Rectangle<s32> CalculateDrawRect(s32 window_width, s32 window_height, bool apply_aspect_ratio = true) const;
 
   /// Helper function to save current display texture to PNG.
-  bool WriteDisplayTextureToFile(std::string filename, bool full_resolution = true, bool apply_aspect_ratio = true,
-                                 bool compress_on_thread = false);
+  bool WriteDisplayTextureToFile(std::string filename, bool compress_on_thread = false);
 
   /// Renders the display, optionally with postprocessing to the specified image.
   bool RenderScreenshotToBuffer(u32 width, u32 height, const Common::Rectangle<s32>& draw_rect, bool postfx,
                                 std::vector<u32>* out_pixels, u32* out_stride, GPUTexture::Format* out_format);
 
   /// Helper function to save screenshot to PNG.
-  bool RenderScreenshotToFile(std::string filename, bool internal_resolution = false, bool compress_on_thread = false);
+  bool RenderScreenshotToFile(std::string filename, DisplayScreenshotMode mode, u8 quality, bool compress_on_thread,
+                              bool show_osd_message);
 
   /// Draws the current display texture, with any post-processing.
   bool PresentDisplay();
@@ -238,6 +240,7 @@ protected:
                              bool remove_alpha);
 
   void SoftReset();
+  void ClearDisplay();
 
   // Sets dots per scanline
   void UpdateCRTCConfig();
@@ -304,6 +307,7 @@ protected:
   void WriteGP1(u32 value);
   void EndCommand();
   void ExecuteCommands();
+  void TryExecuteCommands();
   void HandleGetGPUInfoCommand(u32 value);
 
   // Rendering in the backend
@@ -312,7 +316,6 @@ protected:
   virtual void UpdateVRAM(u32 x, u32 y, u32 width, u32 height, const void* data, bool set_mask, bool check_mask);
   virtual void CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 width, u32 height);
   virtual void DispatchRenderCommand();
-  virtual void ClearDisplay();
   virtual void UpdateDisplay();
   virtual void DrawRendererStats();
 
@@ -358,9 +361,6 @@ protected:
 
   std::unique_ptr<TimingEvent> m_crtc_tick_event;
   std::unique_ptr<TimingEvent> m_command_tick_event;
-
-  // Pointer to VRAM, used for reads/writes. In the hardware backends, this is the shadow buffer.
-  u16* m_vram_ptr = nullptr;
 
   union GPUSTAT
   {
@@ -543,8 +543,7 @@ protected:
   u32 m_GPUREAD_latch = 0;
 
   /// True if currently executing/syncing.
-  bool m_syncing = false;
-  bool m_fifo_pushed = false;
+  bool m_executing_commands = false;
 
   struct VRAMTransfer
   {
@@ -580,6 +579,12 @@ protected:
 
   bool RenderDisplay(GPUTexture* target, const Common::Rectangle<s32>& draw_rect, bool postfx);
 
+  bool Deinterlace(GPUTexture* src, u32 x, u32 y, u32 width, u32 height, u32 field, u32 line_skip);
+  bool DeinterlaceExtractField(u32 dst_bufidx, GPUTexture* src, u32 x, u32 y, u32 width, u32 height, u32 line_skip);
+  bool DeinterlaceSetTargetSize(u32 width, u32 height, bool preserve);
+  void DestroyDeinterlaceTextures();
+  bool ApplyChromaSmoothing(GPUTexture* src, u32 x, u32 y, u32 width, u32 height);
+
   s32 m_display_width = 0;
   s32 m_display_height = 0;
   s32 m_display_active_left = 0;
@@ -587,6 +592,15 @@ protected:
   s32 m_display_active_width = 0;
   s32 m_display_active_height = 0;
   float m_display_aspect_ratio = 1.0f;
+
+  u32 m_current_deinterlace_buffer = 0;
+  std::unique_ptr<GPUPipeline> m_deinterlace_pipeline;
+  std::unique_ptr<GPUPipeline> m_deinterlace_extract_pipeline;
+  std::array<std::unique_ptr<GPUTexture>, DEINTERLACE_BUFFER_COUNT> m_deinterlace_buffers;
+  std::unique_ptr<GPUTexture> m_deinterlace_texture;
+
+  std::unique_ptr<GPUPipeline> m_chroma_smoothing_pipeline;
+  std::unique_ptr<GPUTexture> m_chroma_smoothing_texture;
 
   std::unique_ptr<GPUPipeline> m_display_pipeline;
   GPUTexture* m_display_texture = nullptr;
@@ -611,6 +625,7 @@ protected:
   {
     size_t host_buffer_streamed;
     u32 host_num_draws;
+    u32 host_num_barriers;
     u32 host_num_render_passes;
     u32 host_num_copies;
     u32 host_num_downloads;
@@ -621,7 +636,7 @@ protected:
   Stats m_stats = {};
 
 private:
-  bool CompileDisplayPipeline();
+  bool CompileDisplayPipelines(bool display, bool deinterlace, bool chroma_smoothing);
 
   using GP0CommandHandler = bool (GPU::*)();
   using GP0CommandHandlerTable = std::array<GP0CommandHandler, 256>;
@@ -651,3 +666,4 @@ private:
 };
 
 extern std::unique_ptr<GPU> g_gpu;
+extern u16 g_vram[VRAM_SIZE / sizeof(u16)];

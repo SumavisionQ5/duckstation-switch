@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>.
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>.
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "setupwizarddialog.h"
 #include "controllersettingwidgetbinder.h"
-#include "generalsettingswidget.h"
+#include "interfacesettingswidget.h"
 #include "mainwindow.h"
 #include "qthost.h"
 #include "qtutils.h"
@@ -181,9 +181,9 @@ void SetupWizardDialog::setupUi()
 
 void SetupWizardDialog::setupLanguagePage()
 {
-  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.theme, "UI", "Theme", GeneralSettingsWidget::THEME_NAMES,
-                                               GeneralSettingsWidget::THEME_VALUES,
-                                               GeneralSettingsWidget::DEFAULT_THEME_NAME, "InterfaceSettingsWidget");
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.theme, "UI", "Theme", InterfaceSettingsWidget::THEME_NAMES,
+                                               InterfaceSettingsWidget::THEME_VALUES,
+                                               InterfaceSettingsWidget::DEFAULT_THEME_NAME, "InterfaceSettingsWidget");
   connect(m_ui.theme, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SetupWizardDialog::themeChanged);
 
   for (const auto& [language, code] : Host::GetAvailableLanguageList())
@@ -328,7 +328,7 @@ void SetupWizardDialog::addPathToTable(const std::string& path, bool recursive)
   m_ui.searchDirectoryList->setCellWidget(row, 1, cb);
   cb->setChecked(recursive);
 
-  connect(cb, &QCheckBox::stateChanged, [item](int state) {
+  connect(cb, &QCheckBox::checkStateChanged, [item](Qt::CheckState state) {
     const std::string path(item->text().toStdString());
     if (state == Qt::Checked)
     {

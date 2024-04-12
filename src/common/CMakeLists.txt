@@ -10,6 +10,8 @@ add_library(common
   crash_handler.cpp
   crash_handler.h
   dimensional_array.h
+  dynamic_library.cpp
+  dynamic_library.h
   error.cpp
   error.h
   fastjmp.cpp
@@ -17,8 +19,6 @@ add_library(common
   fifo_queue.h
   file_system.cpp
   file_system.h
-  image.cpp
-  image.h
   intrin.h
   hash_combine.h
   heap_array.h
@@ -33,7 +33,6 @@ add_library(common
   md5_digest.h
   memory_settings_interface.cpp
   memory_settings_interface.h
-  minizip_helpers.cpp
   minizip_helpers.h
   path.h
   perf_scope.cpp
@@ -62,7 +61,6 @@ target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 target_link_libraries(common PUBLIC fmt Threads::Threads fast_float)
-target_link_libraries(common PRIVATE stb ZLIB::ZLIB minizip)
 if (NOT NINTENDO_SWITCH)
   target_link_libraries(common PRIVATE "${CMAKE_DL_LIBS}")
 endif()
@@ -112,7 +110,12 @@ if(ANDROID)
   target_link_libraries(common PRIVATE log)
 endif()
 
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+if(LINUX)
   # We need -lrt for shm_unlink
   target_link_libraries(common PRIVATE rt)
+endif()
+
+# If the host size was detected, we need to set it as a macro.
+if(HOST_PAGE_SIZE)
+  target_compile_definitions(common PUBLIC "-DOVERRIDE_HOST_PAGE_SIZE=${HOST_PAGE_SIZE}")
 endif()

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "bus.h"
@@ -24,6 +24,7 @@
 
 #include "common/align.h"
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/intrin.h"
 #include "common/log.h"
 #include "common/memmap.h"
@@ -163,22 +164,31 @@ static constexpr size_t TOTAL_SIZE = LUT_OFFSET + LUT_SIZE;
 
 #define FIXUP_HALFWORD_OFFSET(size, offset) ((size >= MemoryAccessSize::HalfWord) ? (offset) : ((offset) & ~1u))
 #define FIXUP_HALFWORD_READ_VALUE(size, offset, value)                                                                 \
-  ((size >= MemoryAccessSize::HalfWord) ? (value) : ((value) >> (((offset)&u32(1)) * 8u)))
+  ((size >= MemoryAccessSize::HalfWord) ? (value) : ((value) >> (((offset) & u32(1)) * 8u)))
 #define FIXUP_HALFWORD_WRITE_VALUE(size, offset, value)                                                                \
-  ((size >= MemoryAccessSize::HalfWord) ? (value) : ((value) << (((offset)&u32(1)) * 8u)))
+  ((size >= MemoryAccessSize::HalfWord) ? (value) : ((value) << (((offset) & u32(1)) * 8u)))
 
 #define FIXUP_WORD_OFFSET(size, offset) ((size == MemoryAccessSize::Word) ? (offset) : ((offset) & ~3u))
 #define FIXUP_WORD_READ_VALUE(size, offset, value)                                                                     \
-  ((size == MemoryAccessSize::Word) ? (value) : ((value) >> (((offset)&3u) * 8)))
+  ((size == MemoryAccessSize::Word) ? (value) : ((value) >> (((offset) & 3u) * 8)))
 #define FIXUP_WORD_WRITE_VALUE(size, offset, value)                                                                    \
-  ((size == MemoryAccessSize::Word) ? (value) : ((value) << (((offset)&3u) * 8)))
+  ((size == MemoryAccessSize::Word) ? (value) : ((value) << (((offset) & 3u) * 8)))
 
 bool Bus::AllocateMemory()
 {
-  s_shmem_handle = MemMap::CreateSharedMemory(MemMap::GetFileMappingName("duckstation").c_str(), MemoryMap::TOTAL_SIZE);
+  Error error;
+  s_shmem_handle =
+    MemMap::CreateSharedMemory(MemMap::GetFileMappingName("duckstation").c_str(), MemoryMap::TOTAL_SIZE, &error);
   if (!s_shmem_handle)
   {
-    Host::ReportErrorAsync("Error", "Failed to allocate memory");
+#ifndef __linux__
+    error.AddSuffix("\nYou may need to close some programs to free up additional memory.");
+#else
+    error.AddSuffix(
+      "\nYou may need to close some programs to free up additional memory, or increase the size of /dev/shm.");
+#endif
+
+    Host::ReportFatalError("Memory Allocation Failed", error.GetDescription());
     return false;
   }
 
@@ -188,7 +198,7 @@ bool Bus::AllocateMemory()
                                                                MemoryMap::RAM_SIZE, PageProtect::ReadWrite));
   if (!g_ram || !g_unprotected_ram)
   {
-    Host::ReportErrorAsync("Error", "Failed to map memory for RAM");
+    Host::ReportFatalError("Memory Allocation Failed", "Failed to map memory for RAM");
     ReleaseMemory();
     return false;
   }
@@ -199,7 +209,7 @@ bool Bus::AllocateMemory()
                                                     MemoryMap::BIOS_SIZE, PageProtect::ReadWrite));
   if (!g_bios)
   {
-    Host::ReportErrorAsync("Error", "Failed to map memory for BIOS");
+    Host::ReportFatalError("Memory Allocation Failed", "Failed to map memory for BIOS");
     ReleaseMemory();
     return false;
   }
@@ -210,7 +220,7 @@ bool Bus::AllocateMemory()
                                                                   MemoryMap::LUT_SIZE, PageProtect::ReadWrite));
   if (!g_memory_handlers)
   {
-    Host::ReportErrorAsync("Error", "Failed to map memory for LUTs");
+    Host::ReportFatalError("Memory Allocation Failed", "Failed to map memory for LUTs");
     ReleaseMemory();
     return false;
   }
@@ -223,7 +233,7 @@ bool Bus::AllocateMemory()
   if (!s_fastmem_arena.Create(FASTMEM_ARENA_SIZE))
   {
     // TODO: maybe make this non-fatal?
-    Host::ReportErrorAsync("Error", "Failed to create fastmem arena");
+    Host::ReportFatalError("Memory Allocation Failed", "Failed to create fastmem arena");
     ReleaseMemory();
     return false;
   }
@@ -1632,6 +1642,9 @@ void Bus::SetHandlers()
                       read_handler<MemoryAccessSize::HalfWord>, read_handler<MemoryAccessSize::Word>,                  \
                       write_handler<MemoryAccessSize::Byte>, write_handler<MemoryAccessSize::HalfWord>,                \
                       write_handler<MemoryAccessSize::Word>)
+#define SETUC(start, size, read_handler, write_handler)                                                                \
+  SET(g_memory_handlers, start, size, read_handler, write_handler);                                                    \
+  SET(g_memory_handlers_isc, start, size, read_handler, write_handler)
 
   static constexpr u32 KUSEG = 0;
   static constexpr u32 KSEG0 = 0x80000000U;
@@ -1639,6 +1652,7 @@ void Bus::SetHandlers()
   static constexpr u32 KSEG2 = 0xC0000000U;
 
   // KUSEG - Cached
+  // Cache isolated appears to affect KUSEG+KSEG0.
   SET(g_memory_handlers, KUSEG | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, RAMWriteHandler);
   SET(g_memory_handlers, KUSEG | CPU::SCRATCHPAD_ADDR, 0x1000, ScratchpadReadHandler, ScratchpadWriteHandler);
   SET(g_memory_handlers, KUSEG | BIOS_BASE, BIOS_SIZE, BIOSReadHandler, IgnoreWriteHandler);
@@ -1646,6 +1660,7 @@ void Bus::SetHandlers()
   SET(g_memory_handlers, KUSEG | HW_BASE, HW_SIZE, HardwareReadHandler, HardwareWriteHandler);
   SET(g_memory_handlers, KUSEG | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, EXP2WriteHandler);
   SET(g_memory_handlers, KUSEG | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, EXP3WriteHandler);
+  SET(g_memory_handlers_isc, KUSEG, 0x80000000, ICacheReadHandler, ICacheWriteHandler);
 
   // KSEG0 - Cached
   SET(g_memory_handlers, KSEG0 | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, RAMWriteHandler);
@@ -1655,42 +1670,21 @@ void Bus::SetHandlers()
   SET(g_memory_handlers, KSEG0 | HW_BASE, HW_SIZE, HardwareReadHandler, HardwareWriteHandler);
   SET(g_memory_handlers, KSEG0 | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, EXP2WriteHandler);
   SET(g_memory_handlers, KSEG0 | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, EXP3WriteHandler);
+  SET(g_memory_handlers_isc, KSEG0, 0x20000000, ICacheReadHandler, ICacheWriteHandler);
 
   // KSEG1 - Uncached
-  SET(g_memory_handlers, KSEG1 | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, RAMWriteHandler);
-  SET(g_memory_handlers, KSEG1 | BIOS_BASE, BIOS_SIZE, BIOSReadHandler, IgnoreWriteHandler);
-  SET(g_memory_handlers, KSEG1 | EXP1_BASE, EXP1_SIZE, EXP1ReadHandler, EXP1WriteHandler);
-  SET(g_memory_handlers, KSEG1 | HW_BASE, HW_SIZE, HardwareReadHandler, HardwareWriteHandler);
-  SET(g_memory_handlers, KSEG1 | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, EXP2WriteHandler);
-  SET(g_memory_handlers, KSEG1 | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, EXP3WriteHandler);
+  SETUC(KSEG1 | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, RAMWriteHandler);
+  SETUC(KSEG1 | BIOS_BASE, BIOS_SIZE, BIOSReadHandler, IgnoreWriteHandler);
+  SETUC(KSEG1 | EXP1_BASE, EXP1_SIZE, EXP1ReadHandler, EXP1WriteHandler);
+  SETUC(KSEG1 | HW_BASE, HW_SIZE, HardwareReadHandler, HardwareWriteHandler);
+  SETUC(KSEG1 | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, EXP2WriteHandler);
+  SETUC(KSEG1 | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, EXP3WriteHandler);
 
   // KSEG2 - Uncached - 0xFFFE0130
-  SET(g_memory_handlers, KSEG2 | 0xFFFE0000, 0x1000, CacheControlReadHandler, CacheControlWriteHandler);
-
-  // When cache isolated, only allow writes to cache? Or should we still allow KSEG1?
-  SET(g_memory_handlers_isc, KUSEG | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KUSEG | CPU::SCRATCHPAD_ADDR, 0x1000, ScratchpadReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KUSEG | BIOS_BASE, BIOS_SIZE, BIOSReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KUSEG | EXP1_BASE, EXP1_SIZE, EXP1ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KUSEG | HW_BASE, HW_SIZE, HardwareReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KUSEG | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KUSEG | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | CPU::SCRATCHPAD_ADDR, 0x1000, ScratchpadReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | BIOS_BASE, BIOS_SIZE, BIOSReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | EXP1_BASE, EXP1_SIZE, EXP1ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | HW_BASE, HW_SIZE, HardwareReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG0 | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG1 | RAM_BASE, RAM_MIRROR_SIZE, RAMReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG1 | BIOS_BASE, BIOS_SIZE, BIOSReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG1 | EXP1_BASE, EXP1_SIZE, EXP1ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG1 | HW_BASE, HW_SIZE, HardwareReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG1 | EXP2_BASE, EXP2_SIZE, EXP2ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG1 | EXP3_BASE, EXP3_SIZE, EXP3ReadHandler, ICacheWriteHandler);
-  SET(g_memory_handlers_isc, KSEG2 | 0xFFFE0000, 0x1000, CacheControlReadHandler, CacheControlWriteHandler);
+  SETUC(KSEG2 | 0xFFFE0000, 0x1000, CacheControlReadHandler, CacheControlWriteHandler);
 
 #undef SET
+#undef SETUC
 }
 
 void Bus::ClearHandlers(void** handlers)
