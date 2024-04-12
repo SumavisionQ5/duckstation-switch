@@ -447,31 +447,22 @@ void* MemMap::MapSharedMemory(void* handle, size_t offset, void* baseaddr, size_
 
 void MemMap::UnmapSharedMemory(void* baseaddr, size_t size)
 {
-  virtmemLock();
   for (auto it = Mappings.begin(); it != Mappings.end(); ++it)
   {
     if (it->addr == baseaddr)
     {
-      Result result = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(),
-        reinterpret_cast<u64>(baseaddr),
-        reinterpret_cast<u64>(it->source),
-        size);
-
-      if (!R_SUCCEEDED(result))
+      if (!MemMap::MemProtect(baseaddr, size, PageProtect::NoAccess))
       {
-        Log_ErrorPrintf("svcUnmapProcessCodeMemory failed with code %x", result);
-        virtmemUnlock();
+        Log_ErrorPrintf("Failed to unmap memory mapping");
         return;
       }
 
       Mappings.erase(it);
-      virtmemUnlock();
       return;
     }
   }
 
   Log_ErrorPrintf("Trying to unmap unknown shared memory (baseaddr=%p, size=%zx)", baseaddr, size);
-  virtmemUnlock();
 }
 
 bool MemMap::MemProtect(void* baseaddr, size_t size, PageProtect mode)
