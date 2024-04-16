@@ -199,11 +199,12 @@ protected:
   u32 GetBranchReturnAddress(CompileFlags cf) const;
   bool TrySwapDelaySlot(Reg rs = Reg::zero, Reg rt = Reg::zero, Reg rd = Reg::zero);
   void SetCompilerPC(u32 newpc);
+  void TruncateBlock();
 
   virtual const void* GetCurrentCodePointer() = 0;
 
   virtual void Reset(CodeCache::Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
-                     u32 far_code_space);
+                     u32 far_code_space, ptrdiff_t rw_diff);
   virtual void BeginBlock();
   virtual void GenerateBlockProtectCheck(const u8* ram_ptr, const u8* shadow_ptr, u32 size) = 0;
   virtual void GenerateICacheCheckAndUpdate() = 0;
@@ -374,6 +375,9 @@ protected:
   static u32* GetCop0RegPtr(Cop0Reg reg);
   static u32 GetCop0RegWriteMask(Cop0Reg reg);
 
+  static void MIPSSignedDivide(s32 num, s32 denom, u32* lo, u32* hi);
+  static void MIPSUnsignedDivide(u32 num, u32 denom, u32* lo, u32* hi);
+
   void Compile_mfc0(CompileFlags cf);
   virtual void Compile_mtc0(CompileFlags cf) = 0;
   virtual void Compile_rfe(CompileFlags cf) = 0;
@@ -527,9 +531,9 @@ protected:
 
 void BackpatchLoadStore(void* exception_pc, const CodeCache::LoadstoreBackpatchInfo& info);
 
-u32 CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size, TickCount cycles_to_add,
-                          TickCount cycles_to_remove, u32 gpr_bitmask, u8 address_register, u8 data_register,
-                          MemoryAccessSize size, bool is_signed, bool is_load);
+u32 CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size, ptrdiff_t rw_diff,
+                          TickCount cycles_to_add, TickCount cycles_to_remove, u32 gpr_bitmask, u8 address_register,
+                          u8 data_register, MemoryAccessSize size, bool is_signed, bool is_load);
 
 extern Compiler* g_compiler;
 } // namespace CPU::NewRec

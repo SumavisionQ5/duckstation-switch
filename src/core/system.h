@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -12,6 +12,7 @@
 
 class ByteStream;
 class CDImage;
+class Error;
 class StateWrapper;
 
 class Controller;
@@ -190,6 +191,7 @@ void UpdateOverclock();
 /// direct execution to this executable.
 bool InjectEXEFromBuffer(const void* buffer, u32 buffer_size, bool patch_loader = true);
 
+u32 GetGlobalTickCounter();
 u32 GetFrameNumber();
 u32 GetInternalFrameNumber();
 void IncrementInternalFrameNumber();
@@ -239,14 +241,14 @@ void ApplySettings(bool display_osd_messages);
 /// Reloads game specific settings, and applys any changes present.
 bool ReloadGameSettings(bool display_osd_messages);
 
-bool BootSystem(SystemBootParameters parameters);
+bool BootSystem(SystemBootParameters parameters, Error* error);
 void PauseSystem(bool paused);
 void ResetSystem();
 
 /// Loads state from the specified filename.
-bool LoadState(const char* filename);
-bool SaveState(const char* filename, bool backup_existing_save);
-bool SaveResumeState();
+bool LoadState(const char* filename, Error* error);
+bool SaveState(const char* filename, Error* error, bool backup_existing_save);
+bool SaveResumeState(Error* error);
 
 /// Memory save states - only for internal use.
 struct MemorySaveState
@@ -256,8 +258,8 @@ struct MemorySaveState
 };
 bool SaveMemoryState(MemorySaveState* mss);
 bool LoadMemoryState(const MemorySaveState& mss);
-bool LoadStateFromStream(ByteStream* stream, bool update_display, bool ignore_media = false);
-bool SaveStateToStream(ByteStream* state, u32 screenshot_size = 256, u32 compression_method = 0,
+bool LoadStateFromStream(ByteStream* stream, Error* error, bool update_display, bool ignore_media = false);
+bool SaveStateToStream(ByteStream* state, Error* error, u32 screenshot_size = 256, u32 compression_method = 0,
                        bool ignore_media = false);
 
 /// Runs the VM until the CPU execution is canceled.
@@ -415,15 +417,13 @@ bool StartDumpingAudio(const char* filename = nullptr);
 /// Stops dumping audio to file if it has been started.
 void StopDumpingAudio();
 
-/// Saves a screenshot to the specified file. IF no file name is provided, one will be generated automatically.
-bool SaveScreenshot(const char* filename = nullptr, bool full_resolution = true, bool apply_aspect_ratio = true,
-                    bool compress_on_thread = true);
-
-/// Loads the cheat list from the specified file.
-bool LoadCheatList(const char* filename);
+/// Saves a screenshot to the specified file. If no file name is provided, one will be generated automatically.
+bool SaveScreenshot(const char* filename = nullptr, DisplayScreenshotMode mode = g_settings.display_screenshot_mode,
+                    DisplayScreenshotFormat format = g_settings.display_screenshot_format,
+                    u8 quality = g_settings.display_screenshot_quality, bool compress_on_thread = true);
 
 /// Loads the cheat list for the current game title from the user directory.
-bool LoadCheatListFromGameTitle();
+bool LoadCheatList();
 
 /// Loads the cheat list for the current game code from the built-in code database.
 bool LoadCheatListFromDatabase();
@@ -441,7 +441,7 @@ bool DeleteCheatList();
 void ClearCheatList(bool save_to_file);
 
 /// Enables/disabled the specified cheat code.
-void SetCheatCodeState(u32 index, bool enabled, bool save_to_file);
+void SetCheatCodeState(u32 index, bool enabled);
 
 /// Immediately applies the specified cheat code.
 void ApplyCheatCode(u32 index);
@@ -453,7 +453,7 @@ void ToggleWidescreen();
 bool IsRunningAtNonStandardSpeed();
 
 /// Returns true if vsync should be used.
-bool ShouldUseVSync();
+bool IsVSyncEffectivelyEnabled();
 
 /// Quick switch between software and hardware rendering.
 void ToggleSoftwareRendering();
@@ -466,7 +466,7 @@ void RequestDisplaySize(float scale = 0.0f);
 void HostDisplayResized();
 
 /// Renders the display.
-bool PresentDisplay(bool allow_skip_present);
+bool PresentDisplay(bool allow_skip_present, bool explicit_present);
 void InvalidateDisplay();
 
 //////////////////////////////////////////////////////////////////////////
@@ -485,7 +485,7 @@ void UpdateDiscordPresence(bool update_session_time);
 
 namespace Internal {
 /// Called on process startup.
-void ProcessStartup();
+bool ProcessStartup();
 
 /// Called on process shutdown.
 void ProcessShutdown();

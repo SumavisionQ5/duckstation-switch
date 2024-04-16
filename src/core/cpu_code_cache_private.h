@@ -19,10 +19,6 @@
 #include <unordered_map>
 #include <vector>
 
-#ifdef ENABLE_RECOMPILER
-// #include "cpu_recompiler_types.h"
-#endif
-
 namespace CPU::CodeCache {
 
 enum : u32
@@ -142,6 +138,7 @@ struct alignas(16) Block
   TickCount uncached_fetch_ticks;
   u32 icache_line_count;
 
+  u32 host_code_size;
   u32 compile_frame;
   u8 compile_count;
 
@@ -258,8 +255,8 @@ void AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, u32 guest
                       bool is_load);
 bool HasPreviouslyFaultedOnPC(u32 guest_pc);
 
-u32 EmitASMFunctions(void* code, u32 code_size);
-u32 EmitJump(void* code, const void* dst, bool flush_icache);
+u32 EmitASMFunctions(void* code, u32 code_size, ptrdiff_t rw_diff);
+u32 EmitJump(void* code, const void* dst, ptrdiff_t rw_diff, bool flush_icache);
 
 void DisassembleAndLogHostCode(const void* start, u32 size);
 u32 GetHostInstructionCount(const void* start, u32 size);

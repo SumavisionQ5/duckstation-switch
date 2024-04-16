@@ -31,7 +31,7 @@ CPU::NewRec::Compiler::Compiler() = default;
 CPU::NewRec::Compiler::~Compiler() = default;
 
 void CPU::NewRec::Compiler::Reset(CodeCache::Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
-                                  u32 far_code_space)
+                                  u32 far_code_space, ptrdiff_t rw_diff)
 {
   m_block = block;
   m_compiler_pc = block->pc;
@@ -101,7 +101,7 @@ const void* CPU::NewRec::Compiler::CompileBlock(CodeCache::Block* block, u32* ho
 {
   JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
   Reset(block, buffer.GetFreeCodePointer(), buffer.GetFreeCodeSpace(), buffer.GetFreeFarCodePointer(),
-        buffer.GetFreeFarCodeSpace());
+        buffer.GetFreeFarCodeSpace(), buffer.GetRWDiff());
 
   Log_DebugPrintf("Block range: %08X -> %08X", block->pc, block->pc + block->size * 4);
 
@@ -616,8 +616,8 @@ u32 CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
         }
       }
 
-      Log_DebugPrintf("Freeing register %s in host register %s for allocation", GetHostRegName(lowest),
-                      GetRegName(ra.reg));
+      Log_DebugPrintf("Freeing register %s in host register %s for allocation", GetRegName(ra.reg),
+                      GetHostRegName(lowest));
     }
     break;
     case HR_TYPE_LOAD_DELAY_VALUE:
@@ -628,8 +628,8 @@ u32 CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
     break;
     case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
     {
-      Log_DebugPrintf("Freeing next load delay register %s in host register %s due for allocation",
-                      GetHostRegName(lowest), GetRegName(ra.reg));
+      Log_DebugPrintf("Freeing next load delay register %s in host register %s due for allocation", GetRegName(ra.reg),
+                      GetHostRegName(lowest));
     }
     break;
     default:
@@ -875,6 +875,7 @@ void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
 void CPU::NewRec::Compiler::FreeHostReg(u32 reg)
 {
   DebugAssert(IsHostRegAllocated(reg));
+  Log_DebugPrintf("Freeing host register %s", GetHostRegName(reg));
   FlushHostReg(reg);
   ClearHostReg(reg);
 }
@@ -1240,8 +1241,7 @@ void CPU::NewRec::Compiler::CompileInstruction()
         case InstructionFunct::nor: CompileTemplate(&Compiler::Compile_nor_const, &Compiler::Compile_nor, PGXPFN(CPU_NOR), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); SpecExec_nor(); break;
         case InstructionFunct::slt: CompileTemplate(&Compiler::Compile_slt_const, &Compiler::Compile_slt, PGXPFN(CPU_SLT), TF_WRITES_D | TF_READS_T | TF_READS_S); SpecExec_slt(); break;
         case InstructionFunct::sltu: CompileTemplate(&Compiler::Compile_sltu_const, &Compiler::Compile_sltu, PGXPFN(CPU_SLTU), TF_WRITES_D | TF_READS_T | TF_READS_S); SpecExec_sltu(); break;
-
-      default: Panic("fixme funct"); break;
+        default: Compile_Fallback(); InvalidateSpeculativeValues(); TruncateBlock(); break;
       }
     }
     break;
@@ -1323,7 +1323,18 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::lwc2: CompileLoadStoreTemplate(&Compiler::Compile_lwc2, MemoryAccessSize::Word, false, false, TF_GTE_STALL | TF_READS_S | TF_LOAD_DELAY); break;
     case InstructionOp::swc2: CompileLoadStoreTemplate(&Compiler::Compile_swc2, MemoryAccessSize::Word, true, false, TF_GTE_STALL | TF_READS_S); SpecExec_swc2(); break;
 
-    default: Panic("Fixme"); break;
+      // swc0/lwc0/cop1/cop3 are essentially no-ops
+    case InstructionOp::cop1:
+    case InstructionOp::cop3:
+    case InstructionOp::lwc0:
+    case InstructionOp::lwc1:
+    case InstructionOp::lwc3:
+    case InstructionOp::swc0:
+    case InstructionOp::swc1:
+    case InstructionOp::swc3:
+      break;
+
+    default: Compile_Fallback(); InvalidateSpeculativeValues(); TruncateBlock(); break;
       // clang-format on
 
 #undef PGXPFN
@@ -1696,10 +1707,15 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(void (Compiler::*func)(Comp
       Log_WarningFmt("Instruction {:08X} speculatively writes to {:08X} inside block {:08X}-{:08X}. Truncating block.",
                      m_current_instruction_pc, phys_spec_addr, m_block->pc,
                      m_block->pc + (m_block->size * sizeof(Instruction)));
-      m_block->size = ((m_current_instruction_pc - m_block->pc) / sizeof(Instruction)) + 1;
-      iinfo->is_last_instruction = true;
+      TruncateBlock();
     }
   }
+}
+
+void CPU::NewRec::Compiler::TruncateBlock()
+{
+  m_block->size = ((m_current_instruction_pc - m_block->pc) / sizeof(Instruction)) + 1;
+  iinfo->is_last_instruction = true;
 }
 
 void CPU::NewRec::Compiler::FlushForLoadStore(const std::optional<VirtualMemoryAddress>& address, bool store,
@@ -1998,6 +2014,42 @@ void CPU::NewRec::Compiler::Compile_multu_const(CompileFlags cf)
   SetConstantReg(Reg::lo, static_cast<u32>(res));
 }
 
+void CPU::NewRec::Compiler::MIPSSignedDivide(s32 num, s32 denom, u32* lo, u32* hi)
+{
+  if (denom == 0)
+  {
+    // divide by zero
+    *lo = (num >= 0) ? UINT32_C(0xFFFFFFFF) : UINT32_C(1);
+    *hi = static_cast<u32>(num);
+  }
+  else if (static_cast<u32>(num) == UINT32_C(0x80000000) && denom == -1)
+  {
+    // unrepresentable
+    *lo = UINT32_C(0x80000000);
+    *hi = 0;
+  }
+  else
+  {
+    *lo = static_cast<u32>(num / denom);
+    *hi = static_cast<u32>(num % denom);
+  }
+}
+
+void CPU::NewRec::Compiler::MIPSUnsignedDivide(u32 num, u32 denom, u32* lo, u32* hi)
+{
+  if (denom == 0)
+  {
+    // divide by zero
+    *lo = UINT32_C(0xFFFFFFFF);
+    *hi = static_cast<u32>(num);
+  }
+  else
+  {
+    *lo = num / denom;
+    *hi = num % denom;
+  }
+}
+
 void CPU::NewRec::Compiler::Compile_div_const(CompileFlags cf)
 {
   DebugAssert(HasConstantReg(cf.MipsS()) && HasConstantReg(cf.MipsT()));
@@ -2005,24 +2057,8 @@ void CPU::NewRec::Compiler::Compile_div_const(CompileFlags cf)
   const s32 num = GetConstantRegS32(cf.MipsS());
   const s32 denom = GetConstantRegS32(cf.MipsT());
 
-  s32 lo, hi;
-  if (denom == 0)
-  {
-    // divide by zero
-    lo = (num >= 0) ? UINT32_C(0xFFFFFFFF) : UINT32_C(1);
-    hi = static_cast<u32>(num);
-  }
-  else if (static_cast<u32>(num) == UINT32_C(0x80000000) && denom == -1)
-  {
-    // unrepresentable
-    lo = UINT32_C(0x80000000);
-    hi = 0;
-  }
-  else
-  {
-    lo = num / denom;
-    hi = num % denom;
-  }
+  u32 lo, hi;
+  MIPSSignedDivide(num, denom, &lo, &hi);
 
   SetConstantReg(Reg::hi, hi);
   SetConstantReg(Reg::lo, lo);
@@ -2036,18 +2072,7 @@ void CPU::NewRec::Compiler::Compile_divu_const(CompileFlags cf)
   const u32 denom = GetConstantRegU32(cf.MipsT());
 
   u32 lo, hi;
-
-  if (denom == 0)
-  {
-    // divide by zero
-    lo = UINT32_C(0xFFFFFFFF);
-    hi = static_cast<u32>(num);
-  }
-  else
-  {
-    lo = num / denom;
-    hi = num % denom;
-  }
+  MIPSUnsignedDivide(num, denom, &lo, &hi);
 
   SetConstantReg(Reg::hi, hi);
   SetConstantReg(Reg::lo, lo);
@@ -2316,9 +2341,10 @@ void CPU::NewRec::BackpatchLoadStore(void* exception_pc, const CodeCache::Loadst
 
   JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
   void* thunk_address = buffer.GetFreeFarCodePointer();
-  const u32 thunk_size = CompileLoadStoreThunk(
-    thunk_address, buffer.GetFreeFarCodeSpace(), exception_pc, info.code_size, cycles_to_add, cycles_to_remove,
-    info.gpr_bitmask, info.address_register, info.data_register, info.AccessSize(), info.is_signed, info.is_load);
+  const u32 thunk_size =
+    CompileLoadStoreThunk(thunk_address, buffer.GetFreeFarCodeSpace(), exception_pc, info.code_size, buffer.GetRWDiff(), cycles_to_add,
+                          cycles_to_remove, info.gpr_bitmask, info.address_register, info.data_register,
+                          info.AccessSize(), info.is_signed, info.is_load);
 
 #if 0
   Log_DebugPrintf("**Backpatch Thunk**");
@@ -2326,7 +2352,7 @@ void CPU::NewRec::BackpatchLoadStore(void* exception_pc, const CodeCache::Loadst
 #endif
 
   // backpatch to a jump to the slowmem handler
-  CodeCache::EmitJump(exception_pc, thunk_address, true);
+  CodeCache::EmitJump(exception_pc, thunk_address, buffer.GetRWDiff(), true);
 
   buffer.CommitFarCode(thunk_size);
 }
@@ -2505,30 +2531,73 @@ void CPU::NewRec::Compiler::SpecExec_srav()
 
 void CPU::NewRec::Compiler::SpecExec_mult()
 {
-  // TODO
-  SpecInvalidateReg(Reg::hi);
-  SpecInvalidateReg(Reg::lo);
+  const SpecValue rs = SpecReadReg(inst->r.rs);
+  const SpecValue rt = SpecReadReg(inst->r.rt);
+  if (rs.has_value() && rt.has_value())
+  {
+    const u64 result =
+      static_cast<u64>(static_cast<s64>(SignExtend64(rs.value())) * static_cast<s64>(SignExtend64(rt.value())));
+    SpecWriteReg(Reg::hi, Truncate32(result >> 32));
+    SpecWriteReg(Reg::lo, Truncate32(result));
+  }
+  else
+  {
+    SpecInvalidateReg(Reg::hi);
+    SpecInvalidateReg(Reg::lo);
+  }
 }
 
 void CPU::NewRec::Compiler::SpecExec_multu()
 {
-  // TODO
-  SpecInvalidateReg(Reg::hi);
-  SpecInvalidateReg(Reg::lo);
+  const SpecValue rs = SpecReadReg(inst->r.rs);
+  const SpecValue rt = SpecReadReg(inst->r.rt);
+  if (rs.has_value() && rt.has_value())
+  {
+    const u64 result = ZeroExtend64(rs.value()) * SignExtend64(rt.value());
+    SpecWriteReg(Reg::hi, Truncate32(result >> 32));
+    SpecWriteReg(Reg::lo, Truncate32(result));
+  }
+  else
+  {
+    SpecInvalidateReg(Reg::hi);
+    SpecInvalidateReg(Reg::lo);
+  }
 }
 
 void CPU::NewRec::Compiler::SpecExec_div()
 {
-  // TODO
-  SpecInvalidateReg(Reg::hi);
-  SpecInvalidateReg(Reg::lo);
+  const SpecValue rs = SpecReadReg(inst->r.rs);
+  const SpecValue rt = SpecReadReg(inst->r.rt);
+  if (rs.has_value() && rt.has_value())
+  {
+    u32 lo, hi;
+    MIPSSignedDivide(static_cast<s32>(rs.value()), static_cast<s32>(rt.value()), &lo, &hi);
+    SpecWriteReg(Reg::hi, hi);
+    SpecWriteReg(Reg::lo, lo);
+  }
+  else
+  {
+    SpecInvalidateReg(Reg::hi);
+    SpecInvalidateReg(Reg::lo);
+  }
 }
 
 void CPU::NewRec::Compiler::SpecExec_divu()
 {
-  // TODO
-  SpecInvalidateReg(Reg::hi);
-  SpecInvalidateReg(Reg::lo);
+  const SpecValue rs = SpecReadReg(inst->r.rs);
+  const SpecValue rt = SpecReadReg(inst->r.rt);
+  if (rs.has_value() && rt.has_value())
+  {
+    u32 lo, hi;
+    MIPSUnsignedDivide(rs.value(), rt.value(), &lo, &hi);
+    SpecWriteReg(Reg::hi, hi);
+    SpecWriteReg(Reg::lo, lo);
+  }
+  else
+  {
+    SpecInvalidateReg(Reg::hi);
+    SpecInvalidateReg(Reg::lo);
+  }
 }
 
 void CPU::NewRec::Compiler::SpecExec_add()

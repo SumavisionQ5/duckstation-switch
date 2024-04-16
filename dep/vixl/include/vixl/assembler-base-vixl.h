@@ -40,8 +40,8 @@ class AssemblerBase {
   AssemblerBase() : allow_assembler_(false) {}
   explicit AssemblerBase(size_t capacity)
       : buffer_(capacity), allow_assembler_(false) {}
-  AssemblerBase(byte* buffer, size_t capacity)
-      : buffer_(buffer, capacity), allow_assembler_(false) {}
+  AssemblerBase(byte* buffer, ptrdiff_t rw_diff, size_t capacity)
+      : buffer_(buffer, rw_diff, capacity), allow_assembler_(false) {}
 
   virtual ~AssemblerBase() {}
 

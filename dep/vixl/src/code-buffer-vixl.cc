@@ -66,8 +66,9 @@ CodeBuffer::CodeBuffer(size_t capacity)
 }
 
 
-CodeBuffer::CodeBuffer(byte* buffer, size_t capacity)
+CodeBuffer::CodeBuffer(byte* buffer, ptrdiff_t rw_diff, size_t capacity)
     : buffer_(reinterpret_cast<byte*>(buffer)),
+      rw_diff_(rw_diff),
       managed_(false),
       cursor_(reinterpret_cast<byte*>(buffer)),
       dirty_(false),
@@ -156,8 +157,9 @@ void CodeBuffer::Reset() {
   SetClean();
 }
 
-void CodeBuffer::Reset(byte* buffer, size_t capacity, bool managed) {
+void CodeBuffer::Reset(byte* buffer, ptrdiff_t rw_diff, size_t capacity, bool managed) {
   buffer_ = buffer;
+  rw_diff_ = rw_diff;
   cursor_ = buffer;
   capacity_ = capacity;
   managed_ = managed;

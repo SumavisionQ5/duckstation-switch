@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
 
-#include "gl/context.h"
 #include "gpu_device.h"
 #include "gpu_framebuffer_manager.h"
 #include "gpu_shader_cache.h"
+#include "opengl_context.h"
 #include "opengl_loader.h"
 #include "opengl_pipeline.h"
 #include "opengl_texture.h"
@@ -20,9 +20,13 @@
 class OpenGLPipeline;
 class OpenGLStreamBuffer;
 class OpenGLTexture;
+class OpenGLDownloadTexture;
 
 class OpenGLDevice final : public GPUDevice
 {
+  friend OpenGLTexture;
+  friend OpenGLDownloadTexture;
+
 public:
   OpenGLDevice();
   ~OpenGLDevice();
@@ -34,6 +38,7 @@ public:
   }
   ALWAYS_INLINE static bool IsGLES() { return GetInstance().m_gl_context->IsGLES(); }
   static void BindUpdateTextureUnit();
+  static bool ShouldUsePBOsForDownloads();
 
   RenderAPI GetRenderAPI() const override;
 
@@ -53,8 +58,11 @@ public:
   std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
   std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
 
-  bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                       u32 out_data_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
+                                                            void* memory, size_t memory_size,
+                                                            u32 memory_stride) override;
+
   bool SupportsTextureFormat(GPUTexture::Format format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
@@ -81,7 +89,8 @@ public:
   void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
-  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds) override;
+  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                        GPUPipeline::RenderPassFlag feedback_loop = GPUPipeline::NoRenderPassFlags) override;
   void SetPipeline(GPUPipeline* pipeline) override;
   void SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* sampler) override;
   void SetTextureBuffer(u32 slot, GPUTextureBuffer* buffer) override;
@@ -89,11 +98,13 @@ public:
   void SetScissor(s32 x, s32 y, s32 width, s32 height) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
+  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
 
-  void SetVSync(bool enabled) override;
+  void SetVSyncEnabled(bool enabled) override;
 
   bool BeginPresent(bool skip_present) override;
-  void EndPresent() override;
+  void EndPresent(bool explicit_present) override;
+  void SubmitPresent() override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
@@ -137,8 +148,8 @@ private:
   static constexpr u32 UNIFORM_BUFFER_SIZE = 2 * 1024 * 1024;
   static constexpr u32 TEXTURE_STREAM_BUFFER_SIZE = 16 * 1024 * 1024;
 
-  bool CheckFeatures(bool* buggy_pbo, FeatureMask disabled_features);
-  bool CreateBuffers(bool buggy_pbo);
+  bool CheckFeatures(FeatureMask disabled_features);
+  bool CreateBuffers();
   void DestroyBuffers();
 
   void SetSwapInterval();
@@ -168,7 +179,7 @@ private:
 
   void SetVertexBufferOffsets(u32 base_vertex);
 
-  std::unique_ptr<GL::Context> m_gl_context;
+  std::unique_ptr<OpenGLContext> m_gl_context;
 
   std::unique_ptr<OpenGLStreamBuffer> m_vertex_buffer;
   std::unique_ptr<OpenGLStreamBuffer> m_index_buffer;
@@ -215,4 +226,7 @@ private:
   std::string m_pipeline_disk_cache_filename;
   u32 m_pipeline_disk_cache_data_end = 0;
   bool m_pipeline_disk_cache_changed = false;
+
+  bool m_disable_pbo = false;
+  bool m_disable_async_download = false;
 };

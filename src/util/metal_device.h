@@ -137,6 +137,34 @@ private:
   u8 m_map_level = 0;
 };
 
+class MetalDownloadTexture final : public GPUDownloadTexture
+{
+public:
+  ~MetalDownloadTexture() override;
+
+  static std::unique_ptr<MetalDownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format, void* memory,
+                                                      size_t memory_size, u32 memory_stride);
+
+  void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
+                       u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
+
+  bool Map(u32 x, u32 y, u32 width, u32 height) override;
+  void Unmap() override;
+
+  void Flush() override;
+
+  void SetDebugName(std::string_view name) override;
+
+private:
+  MetalDownloadTexture(u32 width, u32 height, GPUTexture::Format format, u8* import_buffer, size_t buffer_offset,
+                       id<MTLBuffer> buffer, const u8* map_ptr, u32 map_pitch);
+
+  size_t m_buffer_offset = 0;
+  id<MTLBuffer> m_buffer = nil;
+
+  u64 m_copy_fence_counter = 0;
+};
+
 class MetalTextureBuffer final : public GPUTextureBuffer
 {
 public:
@@ -160,6 +188,7 @@ private:
 class MetalDevice final : public GPUDevice
 {
   friend MetalTexture;
+  friend MetalDownloadTexture;
 
 public:
   ALWAYS_INLINE static MetalDevice& GetInstance() { return *static_cast<MetalDevice*>(g_gpu_device.get()); }
@@ -188,8 +217,11 @@ public:
   std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
   std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
 
-  bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                       u32 out_data_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
+                                                            void* memory, size_t memory_size,
+                                                            u32 memory_stride) override;
+
   bool SupportsTextureFormat(GPUTexture::Format format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
@@ -217,7 +249,8 @@ public:
   void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
-  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds) override;
+  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                        GPUPipeline::RenderPassFlag feedback_loop) override;
   void SetPipeline(GPUPipeline* pipeline) override;
   void SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* sampler) override;
   void SetTextureBuffer(u32 slot, GPUTextureBuffer* buffer) override;
@@ -225,16 +258,18 @@ public:
   void SetScissor(s32 x, s32 y, s32 width, s32 height) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
+  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
 
   bool GetHostRefreshRate(float* refresh_rate) override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
-  void SetVSync(bool enabled) override;
+  void SetVSyncEnabled(bool enabled) override;
 
   bool BeginPresent(bool skip_present) override;
-  void EndPresent() override;
+  void EndPresent(bool explicit_submit) override;
+  void SubmitPresent() override;
 
   void WaitForFenceCounter(u64 counter);
 
@@ -271,6 +306,19 @@ private:
 
   using DepthStateMap = std::unordered_map<u8, id<MTLDepthStencilState>>;
 
+  struct ClearPipelineConfig
+  {
+    GPUTexture::Format color_formats[MAX_RENDER_TARGETS];
+    GPUTexture::Format depth_format;
+    u8 samples;
+    u8 pad[2];
+
+    bool operator==(const ClearPipelineConfig& c) const { return (std::memcmp(this, &c, sizeof(*this)) == 0); }
+    bool operator!=(const ClearPipelineConfig& c) const { return (std::memcmp(this, &c, sizeof(*this)) != 0); }
+    bool operator<(const ClearPipelineConfig& c) const { return (std::memcmp(this, &c, sizeof(*this)) < 0); }
+  };
+  static_assert(sizeof(ClearPipelineConfig) == 8);
+
   ALWAYS_INLINE NSView* GetWindowView() const { return (__bridge NSView*)m_window_info.window_handle; }
 
   void SetFeatures(FeatureMask disabled_features);
@@ -278,6 +326,8 @@ private:
 
   id<MTLFunction> GetFunctionFromLibrary(id<MTLLibrary> library, NSString* name);
   id<MTLComputePipelineState> CreateComputePipeline(id<MTLFunction> function, NSString* name);
+  ClearPipelineConfig GetCurrentClearPipelineConfig() const;
+  id<MTLRenderPipelineState> GetClearDepthPipeline(const ClearPipelineConfig& config);
 
   std::unique_ptr<GPUShader> CreateShaderFromMSL(GPUShaderStage stage, const std::string_view& source,
                                                  const std::string_view& entry_point);
@@ -302,8 +352,6 @@ private:
   void SetViewportInRenderEncoder();
   void SetScissorInRenderEncoder();
 
-  bool CheckDownloadBufferSize(u32 required_size);
-
   bool CreateLayer();
   void DestroyLayer();
   void RenderBlankFrame();
@@ -327,9 +375,6 @@ private:
 
   DepthStateMap m_depth_states;
 
-  id<MTLBuffer> m_download_buffer = nil;
-  u32 m_download_buffer_size = 0;
-
   MetalStreamBuffer m_vertex_buffer;
   MetalStreamBuffer m_index_buffer;
   MetalStreamBuffer m_uniform_buffer;
@@ -338,6 +383,7 @@ private:
   id<MTLLibrary> m_shaders = nil;
   std::vector<std::pair<std::pair<GPUTexture::Format, GPUTexture::Format>, id<MTLComputePipelineState>>>
     m_resolve_pipelines;
+  std::vector<std::pair<ClearPipelineConfig, id<MTLRenderPipelineState>>> m_clear_pipelines;
 
   id<MTLCommandBuffer> m_upload_cmdbuf = nil;
   id<MTLBlitCommandEncoder> m_upload_encoder = nil;
@@ -346,8 +392,9 @@ private:
   id<MTLCommandBuffer> m_render_cmdbuf = nil;
   id<MTLRenderCommandEncoder> m_render_encoder = nil;
 
+  u8 m_num_current_render_targets = 0;
+  GPUPipeline::RenderPassFlag m_current_feedback_loop = GPUPipeline::NoRenderPassFlags;
   std::array<MetalTexture*, MAX_RENDER_TARGETS> m_current_render_targets = {};
-  u32 m_num_current_render_targets = 0;
   MetalTexture* m_current_depth_target = nullptr;
 
   MetalPipeline* m_current_pipeline = nullptr;

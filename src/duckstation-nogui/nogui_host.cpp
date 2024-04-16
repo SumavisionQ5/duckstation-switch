@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "nogui_host.h"
@@ -30,6 +30,7 @@
 #include "common/assert.h"
 #include "common/byte_stream.h"
 #include "common/crash_handler.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
@@ -154,6 +155,10 @@ static std::thread s_async_op_thread;
 static AsyncOpProgressCallback* s_async_op_progress = nullptr;
 } // namespace NoGUIHost
 
+#ifdef __SWITCH__
+std::string switch_program_path;
+#endif
+
 //////////////////////////////////////////////////////////////////////////
 // Initialization/Shutdown
 //////////////////////////////////////////////////////////////////////////
@@ -200,8 +205,14 @@ void NoGUIHost::SetAppRoot()
 void NoGUIHost::SetResourcesDirectory()
 {
 #ifndef __APPLE__NOT_USED // Not using bundles yet.
+
+#if defined(__SWITCH__) && defined(NDEBUG)
+  EmuFolders::Resources = "romfs:/resources";
+#else
   // On Windows/Linux, these are in the binary directory.
   EmuFolders::Resources = Path::Combine(EmuFolders::AppRoot, "resources");
+#endif
+
 #else
   // On macOS, this is in the bundle resources directory.
   EmuFolders::Resources = Path::Canonicalize(Path::Combine(EmuFolders::AppRoot, "../Resources"));
@@ -329,6 +340,12 @@ void NoGUIHost::SetDefaultSettings(SettingsInterface& si, bool system, bool cont
   }
 
   g_nogui_window->SetDefaultConfig(si);
+}
+
+void Host::ReportFatalError(const std::string_view& title, const std::string_view& message)
+{
+  Log_ErrorPrintf("ReportFatalError: %.*s", static_cast<int>(message.size()), message.data());
+  abort();
 }
 
 void Host::ReportErrorAsync(const std::string_view& title, const std::string_view& message)
@@ -460,6 +477,14 @@ void Host::CommitBaseSettingChanges()
   NoGUIHost::SaveSettings();
 }
 
+void Host::RequestExitApplication(bool allow_confirm)
+{
+}
+
+void Host::RequestExitBigPicture()
+{
+}
+
 void NoGUIHost::SaveSettings()
 {
   auto lock = Host::GetSettingsLock();
@@ -481,7 +506,14 @@ void NoGUIHost::SetBatchMode(bool enabled)
 
 void NoGUIHost::StartSystem(SystemBootParameters params)
 {
-  Host::RunOnCPUThread([params = std::move(params)]() { System::BootSystem(std::move(params)); });
+  Host::RunOnCPUThread([params = std::move(params)]() {
+    Error error;
+    if (!System::BootSystem(std::move(params), &error))
+    {
+      Host::ReportErrorAsync(TRANSLATE_SV("System", "Error"),
+                             fmt::format(TRANSLATE_FS("System", "Failed to boot system: {}"), error.GetDescription()));
+    }
+  });
 }
 
 void NoGUIHost::ProcessPlatformWindowResize(s32 width, s32 height, float scale)
@@ -674,7 +706,11 @@ void NoGUIHost::CPUThreadEntryPoint()
   Threading::SetNameOfCurrentThread("CPU Thread");
 
   // input source setup must happen on emu thread
-  System::Internal::ProcessStartup();
+  if (!System::Internal::ProcessStartup())
+  {
+    g_nogui_window->QuitMessageLoop();
+    return;
+  }
 
   // start the fullscreen UI and get it going
   if (Host::CreateGPUDevice(Settings::GetRenderAPIForRenderer(g_settings.gpu_renderer)) && FullscreenUI::Initialize())
@@ -716,8 +752,8 @@ void NoGUIHost::CPUThreadMainLoop()
 
     Host::PumpMessagesOnCPUThread();
     System::Internal::IdlePollUpdate();
-    System::PresentDisplay(false);
-    if (!g_gpu_device->IsVsyncEnabled())
+    System::PresentDisplay(false, false);
+    if (!g_gpu_device->IsVSyncEnabled())
       g_gpu_device->ThrottlePresentation();
   }
 }
@@ -863,15 +899,22 @@ std::unique_ptr<NoGUIPlatform> NoGUIHost::CreatePlatform()
 {
   std::unique_ptr<NoGUIPlatform> ret;
 
+  const char* platform = std::getenv("DUCKSTATION_NOGUI_PLATFORM");
+#ifdef ENABLE_SDL2
+  if (platform && StringUtil::Strcasecmp(platform, "sdl") == 0)
+    ret = NoGUIPlatform::CreateSDLPlatform();
+#endif
+
 #if defined(_WIN32)
-  ret = NoGUIPlatform::CreateWin32Platform();
+  if (!ret)
+    ret = NoGUIPlatform::CreateWin32Platform();
 #elif defined(__APPLE__)
-  ret = NoGUIPlatform::CreateCocoaPlatform();
+  if (!ret)
+    ret = NoGUIPlatform::CreateCocoaPlatform();
 #elif defined(__SWITCH__)
   ret = NoGUIPlatform::CreateSwitchPlatform();
 #else
   // linux
-  const char* platform = std::getenv("DUCKSTATION_NOGUI_PLATFORM");
 #ifdef NOGUI_PLATFORM_WAYLAND
   if (!ret && (!platform || StringUtil::Strcasecmp(platform, "wayland") == 0) && std::getenv("WAYLAND_DISPLAY"))
     ret = NoGUIPlatform::CreateWaylandPlatform();
@@ -1396,12 +1439,36 @@ void NoGUIHost::AsyncOpProgressCallback::SetCancelled()
 int main(int argc, char* argv[])
 {
 #ifdef __SWITCH__
+  // the earlier we do this the lesser the chance
+  // things crash and burn due to applet mode
+  if (appletGetAppletType() != AppletType_Application)
+  {
+    ErrorApplicationConfig errcfg;
+    errorApplicationCreate(
+      &errcfg,
+      "duckstation requires to be run in application mode. It does not work in applet (\"Album\") mode!"
+      "See details for more information.",
+      "The hbmenu needs to be started with title override. By default this is"
+      "accomplished by pressing R while starting any application from the homemenu\n\n"
+
+      "With Atmosphere's override_config.ini config file this behaviour can be customised.");
+    errorApplicationShow(&errcfg);
+
+    return 0;
+  }
+
+  switch_program_path = argv[0];
+
   socketInitializeDefault();
   int nxlinkStdioHandle = nxlinkStdio();
 
+  // slight hack, but passing arguments with a dash does
+  // not seem to work via nxlink so we cannot enable
+  // early logging via command line
   if (nxlinkStdioHandle != -1)
     NoGUIHost::InitializeEarlyConsole();
 #endif
+
   CrashHandler::Install();
 
   g_nogui_window = NoGUIHost::CreatePlatform();

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -11,6 +11,7 @@
 #include <QtCore/QMetaType>
 #include <QtCore/QString>
 #include <QtGui/QIcon>
+#include <QtWidgets/QWidget>
 #include <functional>
 #include <initializer_list>
 #include <optional>
@@ -46,6 +47,25 @@ QFrame* CreateHorizontalLine(QWidget* parent);
 /// Returns the greatest parent of a widget, i.e. its dialog/window.
 QWidget* GetRootWidget(QWidget* widget, bool stop_at_window_or_dialog = true);
 
+/// Shows or raises a window (brings it to the front).
+void ShowOrRaiseWindow(QWidget* window);
+
+/// Closes and deletes a window later, outside of this event pump.
+template<typename T>
+[[maybe_unused]] static void CloseAndDeleteWindow(T*& window)
+{
+  if (!window)
+    return;
+
+  window->close();
+
+  // Some windows delete themselves.
+  if (window)
+    window->deleteLater();
+
+  window = nullptr;
+}
+
 /// Resizes columns of the table view to at the specified widths. A negative width will stretch the column to use the
 /// remaining space.
 void ResizeColumnsForTableView(QTableView* view, const std::initializer_list<int>& widths);
@@ -66,14 +86,6 @@ void OpenURL(QWidget* parent, const QUrl& qurl);
 
 /// Opens a URL string with the default handler.
 void OpenURL(QWidget* parent, const char* url);
-
-/// Fills a combo box with resolution scale options.
-void FillComboBoxWithResolutionScales(QComboBox* cb);
-
-/// Fills a combo box with multisampling options.
-QVariant GetMSAAModeValue(uint multisamples, bool ssaa);
-void DecodeMSAAModeValue(const QVariant& userdata, uint* multisamples, bool* ssaa);
-void FillComboBoxWithMSAAModes(QComboBox* cb);
 
 /// Prompts for an address in hex.
 std::optional<unsigned> PromptForAddress(QWidget* parent, const QString& title, const QString& label, bool code);

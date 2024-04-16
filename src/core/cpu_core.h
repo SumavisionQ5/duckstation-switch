@@ -1,11 +1,14 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/bitfield.h"
+
 #include "cpu_types.h"
 #include "gte_types.h"
 #include "types.h"
+
+#include "common/bitfield.h"
+
 #include <array>
 #include <optional>
 #include <string>
@@ -102,14 +105,14 @@ struct State
   void* fastmem_base = nullptr;
   void** memory_handlers = nullptr;
 
+  PGXP_value pgxp_gpr[static_cast<u8>(Reg::count)] = {};
+  PGXP_value pgxp_cop0[32] = {};
+  PGXP_value pgxp_gte[64] = {};
+
   std::array<u32, ICACHE_LINES> icache_tags = {};
   std::array<u8, ICACHE_SIZE> icache_data = {};
 
   std::array<u8, SCRATCHPAD_SIZE> scratchpad = {};
-
-  PGXP_value pgxp_gpr[static_cast<u8>(Reg::count)];
-  PGXP_value pgxp_cop0[32];
-  PGXP_value pgxp_gte[64];
 
   static constexpr u32 GPRRegisterOffset(u32 index) { return offsetof(State, regs.r) + (sizeof(u32) * index); }
   static constexpr u32 GTERegisterOffset(u32 index) { return offsetof(State, gte_regs.r32) + (sizeof(u32) * index); }
@@ -127,7 +130,6 @@ void ExecutionModeChanged();
 
 /// Executes interpreter loop.
 void Execute();
-void SingleStep();
 
 // Forces an early exit from the CPU dispatcher.
 void ExitExecution();
@@ -174,8 +176,7 @@ bool SafeWriteMemoryHalfWord(VirtualMemoryAddress addr, u16 value);
 bool SafeWriteMemoryWord(VirtualMemoryAddress addr, u32 value);
 
 // External IRQs
-void SetExternalInterrupt(u8 bit);
-void ClearExternalInterrupt(u8 bit);
+void SetIRQRequest(bool state);
 
 void DisassembleAndPrint(u32 addr);
 void DisassembleAndLog(u32 addr);
@@ -189,8 +190,17 @@ bool IsTraceEnabled();
 void StartTrace();
 void StopTrace();
 
+// Breakpoint types - execute => breakpoint, read/write => watchpoints
+enum class BreakpointType : u8
+{
+  Execute,
+  Read,
+  Write,
+  Count
+};
+
 // Breakpoint callback - if the callback returns false, the breakpoint will be removed.
-using BreakpointCallback = bool (*)(VirtualMemoryAddress address);
+using BreakpointCallback = bool (*)(BreakpointType type, VirtualMemoryAddress pc, VirtualMemoryAddress memaddr);
 
 struct Breakpoint
 {
@@ -198,6 +208,7 @@ struct Breakpoint
   BreakpointCallback callback;
   u32 number;
   u32 hit_count;
+  BreakpointType type;
   bool auto_clear;
   bool enabled;
 };
@@ -205,15 +216,17 @@ struct Breakpoint
 using BreakpointList = std::vector<Breakpoint>;
 
 // Breakpoints
+const char* GetBreakpointTypeName(BreakpointType type);
 bool HasAnyBreakpoints();
-bool HasBreakpointAtAddress(VirtualMemoryAddress address);
-BreakpointList GetBreakpointList(bool include_auto_clear = false, bool include_callbacks = false);
-bool AddBreakpoint(VirtualMemoryAddress address, bool auto_clear = false, bool enabled = true);
-bool AddBreakpointWithCallback(VirtualMemoryAddress address, BreakpointCallback callback);
-bool RemoveBreakpoint(VirtualMemoryAddress address);
+bool HasBreakpointAtAddress(BreakpointType type, VirtualMemoryAddress address);
+BreakpointList CopyBreakpointList(bool include_auto_clear = false, bool include_callbacks = false);
+bool AddBreakpoint(BreakpointType type, VirtualMemoryAddress address, bool auto_clear = false, bool enabled = true);
+bool AddBreakpointWithCallback(BreakpointType type, VirtualMemoryAddress address, BreakpointCallback callback);
+bool RemoveBreakpoint(BreakpointType type, VirtualMemoryAddress address);
 void ClearBreakpoints();
 bool AddStepOverBreakpoint();
 bool AddStepOutBreakpoint(u32 max_instructions_to_search = 1000);
+void SetSingleStepFlag();
 
 extern bool TRACE_EXECUTION;
 
@@ -224,7 +237,7 @@ struct DebuggerRegisterListEntry
   u32* value_ptr;
 };
 
-static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 104;
+static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 103;
 extern const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list;
 
 } // namespace CPU

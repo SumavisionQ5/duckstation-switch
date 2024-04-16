@@ -160,8 +160,8 @@ class Instruction {
     return GetInstructionBits();
   }
 
-  void SetInstructionBits(Instr new_instr) {
-    *(reinterpret_cast<Instr*>(this)) = new_instr;
+  void SetInstructionBits(Instr new_instr, ptrdiff_t rw_offset) {
+    *(reinterpret_cast<Instr*>(reinterpret_cast<byte*>(this) + rw_offset)) = new_instr;
   }
 
   int ExtractBit(int pos) const { return (GetInstructionBits() >> pos) & 1; }
@@ -400,9 +400,9 @@ class Instruction {
 
   // Patch a PC-relative offset to refer to 'target'. 'this' may be a branch or
   // a PC-relative addressing instruction.
-  void SetImmPCOffsetTarget(const Instruction* target);
+  void SetImmPCOffsetTarget(const Instruction* target, ptrdiff_t rw_diff);
   // Patch a literal load instruction to load from 'source'.
-  void SetImmLLiteral(const Instruction* source);
+  void SetImmLLiteral(const Instruction* source, ptrdiff_t rw_diff);
 
   // The range of a load literal instruction, expressed as 'instr +- range'.
   // The range is actually the 'positive' range; the branch instruction can
@@ -500,8 +500,8 @@ class Instruction {
   static float Imm8ToFP32(uint32_t imm8);
   static double Imm8ToFP64(uint32_t imm8);
 
-  void SetPCRelImmTarget(const Instruction* target);
-  void SetBranchImmTarget(const Instruction* target);
+  void SetPCRelImmTarget(const Instruction* target, ptrdiff_t rw_diff);
+  void SetBranchImmTarget(const Instruction* target, ptrdiff_t rw_diff);
 };
 
 

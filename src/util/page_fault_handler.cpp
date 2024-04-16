@@ -254,7 +254,9 @@ bool PageFaultHandler(ThreadExceptionDump* ctx)
 
   s_in_exception_handler = true;
 
-  const HandlerResult handled = s_exception_handler_callback(exception_pc, exception_address, is_write);
+  HandlerResult handled = HandlerResult::ExecuteNextHandler;
+  if (s_exception_handler_callback)
+    handled = s_exception_handler_callback(exception_pc, exception_address, is_write);
 
   s_in_exception_handler = false;
 

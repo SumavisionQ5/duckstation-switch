@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -26,6 +26,7 @@
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/easing.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/intrin.h"
 #include "common/log.h"
@@ -206,7 +207,7 @@ void Host::DisplayLoadingScreen(const char* message, int progress_min /*= -1*/, 
   if (g_gpu_device->BeginPresent(false))
   {
     g_gpu_device->RenderImGui();
-    g_gpu_device->EndPresent();
+    g_gpu_device->EndPresent(false);
   }
 
   ImGui::NewFrame();
@@ -556,6 +557,8 @@ void ImGuiManager::DrawEnhancementsOverlay()
   {
     text.append(" WSHack");
   }
+  if (g_settings.gpu_line_detect_mode != GPULineDetectMode::Disabled)
+    text.append_format(" LD={}", Settings::GetLineDetectModeName(g_settings.gpu_line_detect_mode));
   if (g_settings.gpu_pgxp_enable)
   {
     text.append(" PGXP");
@@ -835,19 +838,19 @@ void SaveStateSelectorUI::DestroyTextures()
 
 void SaveStateSelectorUI::RefreshHotkeyLegend()
 {
-  auto format_legend_entry = [](std::string binding, std::string_view caption) {
+  auto format_legend_entry = [](SmallString binding, std::string_view caption) {
     InputManager::PrettifyInputBinding(binding);
     return fmt::format("{} - {}", binding, caption);
   };
 
-  s_load_legend = format_legend_entry(Host::GetStringSettingValue("Hotkeys", "LoadSelectedSaveState"),
-                                      TRANSLATE_STR("SaveStateSelectorUI", "Load"));
-  s_save_legend = format_legend_entry(Host::GetStringSettingValue("Hotkeys", "SaveSelectedSaveState"),
-                                      TRANSLATE_STR("SaveStateSelectorUI", "Save"));
-  s_prev_legend = format_legend_entry(Host::GetStringSettingValue("Hotkeys", "SelectPreviousSaveStateSlot"),
-                                      TRANSLATE_STR("SaveStateSelectorUI", "Select Previous"));
-  s_next_legend = format_legend_entry(Host::GetStringSettingValue("Hotkeys", "SelectNextSaveStateSlot"),
-                                      TRANSLATE_STR("SaveStateSelectorUI", "Select Next"));
+  s_load_legend = format_legend_entry(Host::GetSmallStringSettingValue("Hotkeys", "LoadSelectedSaveState"),
+                                      TRANSLATE_SV("SaveStateSelectorUI", "Load"));
+  s_save_legend = format_legend_entry(Host::GetSmallStringSettingValue("Hotkeys", "SaveSelectedSaveState"),
+                                      TRANSLATE_SV("SaveStateSelectorUI", "Save"));
+  s_prev_legend = format_legend_entry(Host::GetSmallStringSettingValue("Hotkeys", "SelectPreviousSaveStateSlot"),
+                                      TRANSLATE_SV("SaveStateSelectorUI", "Select Previous"));
+  s_next_legend = format_legend_entry(Host::GetSmallStringSettingValue("Hotkeys", "SelectNextSaveStateSlot"),
+                                      TRANSLATE_SV("SaveStateSelectorUI", "Select Next"));
 }
 
 void SaveStateSelectorUI::SelectNextSlot(bool open_selector)
@@ -1112,7 +1115,14 @@ void SaveStateSelectorUI::LoadCurrentSlot()
   {
     if (FileSystem::FileExists(path.c_str()))
     {
-      System::LoadState(path.c_str());
+      Error error;
+      if (!System::LoadState(path.c_str(), &error))
+      {
+        Host::AddKeyedOSDMessage("LoadState",
+                                 fmt::format(TRANSLATE_FS("OSDMessage", "Failed to load state from slot {0}:\n{1}"),
+                                             GetCurrentSlot(), error.GetDescription()),
+                                 Host::OSD_ERROR_DURATION);
+      }
     }
     else
     {
@@ -1131,7 +1141,16 @@ void SaveStateSelectorUI::LoadCurrentSlot()
 void SaveStateSelectorUI::SaveCurrentSlot()
 {
   if (std::string path = GetCurrentSlotPath(); !path.empty())
-    System::SaveState(path.c_str(), g_settings.create_save_state_backups);
+  {
+    Error error;
+    if (!System::SaveState(path.c_str(), &error, g_settings.create_save_state_backups))
+    {
+      Host::AddKeyedOSDMessage("SaveState",
+                               fmt::format(TRANSLATE_FS("OSDMessage", "Failed to save state to slot {0}:\n{1}"),
+                                           GetCurrentSlot(), error.GetDescription()),
+                               Host::OSD_ERROR_DURATION);
+    }
+  }
 
   Close();
 }

@@ -40,6 +40,9 @@ ConsoleSettingsWidget::ConsoleSettingsWidget(SettingsWindow* dialog, QWidget* pa
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.region, "Console", "Region", &Settings::ParseConsoleRegionName,
                                                &Settings::GetConsoleRegionName, Settings::DEFAULT_CONSOLE_REGION);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enable8MBRAM, "Console", "Enable8MBRAM", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.disableAllEnhancements, "Main", "DisableAllEnhancements",
+                                               false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableCheats, "Console", "EnableCheats", false);
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.cpuExecutionMode, "CPU", "ExecutionMode",
                                                &Settings::ParseCPUExecutionMode, &Settings::GetCPUExecutionModeName,
                                                Settings::DEFAULT_CPU_EXECUTION_MODE);
@@ -47,9 +50,9 @@ ConsoleSettingsWidget::ConsoleSettingsWidget(SettingsWindow* dialog, QWidget* pa
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.recompilerICache, "CPU", "RecompilerICache", false);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.cdromReadaheadSectors, "CDROM", "ReadaheadSectors",
                                               Settings::DEFAULT_CDROM_READAHEAD_SECTORS);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.cdromRegionCheck, "CDROM", "RegionCheck", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.cdromLoadImageToRAM, "CDROM", "LoadImageToRAM", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.cdromLoadImagePatches, "CDROM", "LoadImagePatches", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.cdromIgnoreDriveSubcode, "CDROM", "IgnoreHostSubcode", false);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.cdromSeekSpeedup, "CDROM", "SeekSpeedup", 1);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.cdromReadSpeedup, "CDROM", "ReadSpeedup", 1, 1);
 
@@ -72,6 +75,9 @@ ConsoleSettingsWidget::ConsoleSettingsWidget(SettingsWindow* dialog, QWidget* pa
        "to use a larger heap size for "
        "this additional RAM to be usable. Titles which rely on memory mirrors may break, so it should only be used "
        "with compatible mods."));
+  dialog->registerWidgetHelp(m_ui.disableAllEnhancements, tr("Disable All Enhancements"), tr("Unchecked"),
+                             tr("Disables all enhancement options, simulating the system as accurately as possible. "
+                                "Use to quickly determine whether an enhancement is responsible for game bugs."));
   dialog->registerWidgetHelp(
     m_ui.cdromLoadImageToRAM, tr("Preload Image to RAM"), tr("Unchecked"),
     tr("Loads the game image into RAM. Useful for network paths that may become unreliable during gameplay. In some "
@@ -88,8 +94,6 @@ ConsoleSettingsWidget::ConsoleSettingsWidget(SettingsWindow* dialog, QWidget* pa
                              tr("Reduces hitches in emulation by reading/decompressing CD data asynchronously on a "
                                 "worker thread. Higher sector numbers can reduce spikes when streaming FMVs or audio "
                                 "on slower storage or when using compression formats such as CHD."));
-  dialog->registerWidgetHelp(m_ui.cdromRegionCheck, tr("Enable Region Check"), tr("Checked"),
-                             tr("Simulates the region check present in original, unmodified consoles."));
   dialog->registerWidgetHelp(
     m_ui.cdromLoadImageToRAM, tr("Preload Image to RAM"), tr("Unchecked"),
     tr("Loads the game image into RAM. Useful for network paths that may become unreliable during gameplay. In some "
@@ -97,10 +101,14 @@ ConsoleSettingsWidget::ConsoleSettingsWidget(SettingsWindow* dialog, QWidget* pa
   dialog->registerWidgetHelp(m_ui.cdromLoadImagePatches, tr("Apply Image Patches"), tr("Unchecked"),
                              tr("Automatically applies patches to disc images when they are present in the same "
                                 "directory. Currently only PPF patches are supported with this option."));
+  dialog->registerWidgetHelp(
+    m_ui.cdromIgnoreDriveSubcode, tr("Ignore Drive Subcode"), tr("Unchecked"),
+    tr("Ignores the subchannel provided by the drive when using physical discs, instead always generating subchannel "
+       "data. Won't work with libcrypt games, but can improve read reliability on some drives."));
 
   m_ui.cpuClockSpeed->setEnabled(m_dialog->getEffectiveBoolValue("CPU", "OverclockEnable", false));
 
-  connect(m_ui.enableCPUClockSpeedControl, &QCheckBox::stateChanged, this,
+  connect(m_ui.enableCPUClockSpeedControl, &QCheckBox::checkStateChanged, this,
           &ConsoleSettingsWidget::onEnableCPUClockSpeedControlChecked);
   connect(m_ui.cpuClockSpeed, &QSlider::valueChanged, this, &ConsoleSettingsWidget::onCPUClockSpeedValueChanged);
 
@@ -133,6 +141,7 @@ void ConsoleSettingsWidget::onEnableCPUClockSpeedControlChecked(int state)
          "have confirmed the bug also occurs with overclocking disabled.\n\nThis warning will only be shown once.");
 
     QMessageBox mb(QMessageBox::Warning, tr("CPU Overclocking Warning"), message, QMessageBox::NoButton, this);
+    mb.setWindowModality(Qt::WindowModal);
     const QAbstractButton* const yes_button =
       mb.addButton(tr("Yes, I will confirm bugs without overclocking before reporting."), QMessageBox::YesRole);
     mb.addButton(tr("No, take me back to safety."), QMessageBox::NoRole);

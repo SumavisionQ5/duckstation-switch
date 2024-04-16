@@ -16,7 +16,7 @@ public:
 
   static bool UseGLSLBindingLayout();
 
-  std::string GenerateScreenQuadVertexShader();
+  std::string GenerateScreenQuadVertexShader(float z = 0.0f);
   std::string GenerateUVQuadVertexShader();
   std::string GenerateFillFragmentShader();
   std::string GenerateCopyFragmentShader();
@@ -27,6 +27,7 @@ public:
 protected:
   ALWAYS_INLINE bool IsVulkan() const { return (m_render_api == RenderAPI::Vulkan); }
   ALWAYS_INLINE bool IsMetal() const { return (m_render_api == RenderAPI::Metal); }
+  ALWAYS_INLINE bool IsDeko3D() const { return (m_render_api == RenderAPI::Deko3D); }
 
   const char* GetInterpolationQualifier(bool interface_block, bool centroid_interpolation, bool sample_interpolation,
                                         bool is_out) const;
@@ -53,7 +54,7 @@ protected:
                                  const std::initializer_list<std::pair<const char*, const char*>>& additional_inputs,
                                  bool declare_fragcoord = false, u32 num_color_outputs = 1, bool depth_output = false,
                                  bool msaa = false, bool ssaa = false, bool declare_sample_id = false,
-                                 bool noperspective_color = false, bool framebuffer_fetch = false);
+                                 bool noperspective_color = false, bool feedback_loop = false);
 
   RenderAPI m_render_api;
   bool m_glsl;

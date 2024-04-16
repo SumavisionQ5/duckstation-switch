@@ -328,16 +328,16 @@ int Instruction::GetImmBranch() const {
 }
 
 
-void Instruction::SetImmPCOffsetTarget(const Instruction* target) {
+void Instruction::SetImmPCOffsetTarget(const Instruction* target, ptrdiff_t rw_diff) {
   if (IsPCRelAddressing()) {
-    SetPCRelImmTarget(target);
+    SetPCRelImmTarget(target, rw_diff);
   } else {
-    SetBranchImmTarget(target);
+    SetBranchImmTarget(target, rw_diff);
   }
 }
 
 
-void Instruction::SetPCRelImmTarget(const Instruction* target) {
+void Instruction::SetPCRelImmTarget(const Instruction* target, ptrdiff_t rw_diff) {
   ptrdiff_t imm21;
   if ((Mask(PCRelAddressingMask) == ADR)) {
     imm21 = target - this;
@@ -349,11 +349,11 @@ void Instruction::SetPCRelImmTarget(const Instruction* target) {
   }
   Instr imm = Assembler::ImmPCRelAddress(static_cast<int32_t>(imm21));
 
-  SetInstructionBits(Mask(~ImmPCRel_mask) | imm);
+  SetInstructionBits(Mask(~ImmPCRel_mask) | imm, rw_diff);
 }
 
 
-void Instruction::SetBranchImmTarget(const Instruction* target) {
+void Instruction::SetBranchImmTarget(const Instruction* target, ptrdiff_t rw_diff) {
   VIXL_ASSERT(((target - this) & 3) == 0);
   Instr branch_imm = 0;
   uint32_t imm_mask = 0;
@@ -382,17 +382,17 @@ void Instruction::SetBranchImmTarget(const Instruction* target) {
     default:
       VIXL_UNREACHABLE();
   }
-  SetInstructionBits(Mask(~imm_mask) | branch_imm);
+  SetInstructionBits(Mask(~imm_mask) | branch_imm, rw_diff);
 }
 
 
-void Instruction::SetImmLLiteral(const Instruction* source) {
+void Instruction::SetImmLLiteral(const Instruction* source, ptrdiff_t rw_diff) {
   VIXL_ASSERT(IsWordAligned(source));
   ptrdiff_t offset = (source - this) >> kLiteralEntrySizeLog2;
   Instr imm = Assembler::ImmLLiteral(static_cast<int>(offset));
   Instr mask = ImmLLiteral_mask;
 
-  SetInstructionBits(Mask(~mask) | imm);
+  SetInstructionBits(Mask(~mask) | imm, rw_diff);
 }
 
 

@@ -1,10 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "memmap.h"
 #include "align.h"
 #include "assert.h"
+#include "error.h"
 #include "log.h"
+#include "small_string.h"
 #include "string_util.h"
 
 #include "fmt/format.h"
@@ -49,11 +51,15 @@ std::string MemMap::GetFileMappingName(const char* prefix)
   return fmt::format("{}_{}", prefix, pid);
 }
 
-void* MemMap::CreateSharedMemory(const char* name, size_t size)
+void* MemMap::CreateSharedMemory(const char* name, size_t size, Error* error)
 {
-  return static_cast<void*>(CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                                               static_cast<DWORD>(size >> 32), static_cast<DWORD>(size),
-                                               StringUtil::UTF8StringToWideString(name).c_str()));
+  const HANDLE mapping =
+    static_cast<void*>(CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, static_cast<DWORD>(size >> 32),
+                                          static_cast<DWORD>(size), StringUtil::UTF8StringToWideString(name).c_str()));
+  if (!mapping)
+    Error::SetWin32(error, "CreateFileMappingW() failed: ", GetLastError());
+
+  return mapping;
 }
 
 void MemMap::DestroySharedMemory(void* ptr)
@@ -328,7 +334,7 @@ void* ReserveVirtmem(size_t size)
   if (!addr)
     Log_ErrorPrintf("virtmemAddReservation failed");
 
-  Mappings.push_back({addr, reservation});
+  VMemReservations.push_back({addr, reservation});
 
   return addr;
 }
@@ -349,7 +355,7 @@ void FreeVirtmem(void* addr)
   Log_ErrorPrintf("Trying to free unknown virtmem reservation %p", addr);
 }
 
-void* MemMap::CreateSharedMemory(const char* name, size_t size)
+void* MemMap::CreateSharedMemory(const char* name, size_t size, Error* error)
 {
   virtmemLock();
   void* heapMemory = aligned_alloc(0x1000, size);
@@ -370,6 +376,7 @@ void* MemMap::CreateSharedMemory(const char* name, size_t size)
 
   if (!R_SUCCEEDED(result))
   {
+    Log_ErrorPrintf("svcMapProcessCodeMemory failed with code %x", result);
     FreeVirtmem(codeMemMirror);
     virtmemUnlock();
   }
@@ -446,31 +453,22 @@ void* MemMap::MapSharedMemory(void* handle, size_t offset, void* baseaddr, size_
 
 void MemMap::UnmapSharedMemory(void* baseaddr, size_t size)
 {
-  virtmemLock();
   for (auto it = Mappings.begin(); it != Mappings.end(); ++it)
   {
     if (it->addr == baseaddr)
     {
-      Result result = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(),
-        reinterpret_cast<u64>(baseaddr),
-        reinterpret_cast<u64>(it->source),
-        size);
-
-      if (!R_SUCCEEDED(result))
+      if (!MemMap::MemProtect(baseaddr, size, PageProtect::NoAccess))
       {
-        Log_ErrorPrintf("svcUnmapProcessCodeMemory failed with code %x", result);
-        virtmemUnlock();
+        Log_ErrorPrintf("Failed to unmap memory mapping");
         return;
       }
 
       Mappings.erase(it);
-      virtmemUnlock();
       return;
     }
   }
 
   Log_ErrorPrintf("Trying to unmap unknown shared memory (baseaddr=%p, size=%zx)", baseaddr, size);
-  virtmemUnlock();
 }
 
 bool MemMap::MemProtect(void* baseaddr, size_t size, PageProtect mode)
@@ -546,7 +544,7 @@ bool SharedMemoryMappingArea::Create(size_t size)
     Log_ErrorPrintf("failed to create memory area (size=%zx)", size);
 
   virtmemUnlock();
-  return !m_base_ptr;
+  return m_base_ptr;
 }
 
 void SharedMemoryMappingArea::Destroy()
@@ -597,24 +595,33 @@ std::string MemMap::GetFileMappingName(const char* prefix)
 #endif
 }
 
-void* MemMap::CreateSharedMemory(const char* name, size_t size)
+void* MemMap::CreateSharedMemory(const char* name, size_t size, Error* error)
 {
   const int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
   if (fd < 0)
   {
-    Log_ErrorPrintf("shm_open failed: %d\n", errno);
+    Error::SetErrno(error, "shm_open failed: ", errno);
     return nullptr;
   }
 
   // we're not going to be opening this mapping in other processes, so remove the file
   shm_unlink(name);
 
+  // use fallocate() to ensure we don't SIGBUS later on.
+#ifdef __linux__
+  if (fallocate(fd, 0, 0, static_cast<off_t>(size)) < 0)
+  {
+    Error::SetErrno(error, TinyString::from_format("fallocate({}) failed: ", size), errno);
+    return nullptr;
+  }
+#else
   // ensure it's the correct size
   if (ftruncate(fd, static_cast<off_t>(size)) < 0)
   {
-    Log_ErrorPrintf("ftruncate(%zu) failed: %d\n", size, errno);
+    Error::SetErrno(error, TinyString::from_format("ftruncate({}) failed: ", size), errno);
     return nullptr;
   }
+#endif
 
   return reinterpret_cast<void*>(static_cast<intptr_t>(fd));
 }

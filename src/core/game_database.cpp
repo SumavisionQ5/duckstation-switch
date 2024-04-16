@@ -33,7 +33,7 @@ namespace GameDatabase {
 enum : u32
 {
   GAME_DATABASE_CACHE_SIGNATURE = 0x45434C48,
-  GAME_DATABASE_CACHE_VERSION = 6,
+  GAME_DATABASE_CACHE_VERSION = 7,
 };
 
 static Entry* GetMutableEntry(const std::string_view& serial);
@@ -76,6 +76,7 @@ static constexpr const std::array<const char*, static_cast<u32>(GameDatabase::Tr
   "DisablePGXPTextureCorrection",
   "DisablePGXPColorCorrection",
   "DisablePGXPDepthBuffer",
+  "DisablePGXPPreserveProjFP",
   "ForcePGXPVertexCache",
   "ForcePGXPCPUMode",
   "ForceRecompilerMemoryExceptions",
@@ -174,6 +175,31 @@ static std::optional<T> GetOptionalTFromObject(const ryml::ConstNodeRef& object,
         else if constexpr (std::is_integral_v<T>)
           Log_ErrorFmt("Unexpected non-int value in {}", key);
       }
+    }
+    else
+    {
+      Log_ErrorFmt("Unexpected empty value in {}", key);
+    }
+  }
+
+  return ret;
+}
+
+template<typename T>
+static std::optional<T> ParseOptionalTFromObject(const ryml::ConstNodeRef& object, std::string_view key,
+                                                 std::optional<T> (*from_string_function)(const char* str))
+{
+  std::optional<T> ret;
+
+  const ryml::ConstNodeRef member = object.find_child(to_csubstr(key));
+  if (member.valid())
+  {
+    const c4::csubstr val = member.val();
+    if (!val.empty())
+    {
+      ret = from_string_function(TinyString(to_stringview(val)));
+      if (!ret.has_value())
+        Log_ErrorFmt("Unknown value for {}: {}", key, to_stringview(val));
     }
     else
     {
@@ -335,6 +361,8 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     settings.gpu_pgxp_tolerance = gpu_pgxp_tolerance.value();
   if (gpu_pgxp_depth_threshold.has_value())
     settings.SetPGXPDepthClearThreshold(gpu_pgxp_depth_threshold.value());
+  if (gpu_line_detect_mode.has_value())
+    settings.gpu_line_detect_mode = gpu_line_detect_mode.value();
 
   if (HasTrait(Trait::ForceInterpreter))
   {
@@ -508,6 +536,19 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     settings.gpu_pgxp_color_correction = false;
   }
 
+  if (HasTrait(Trait::DisablePGXPPreserveProjFP))
+  {
+    if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_preserve_proj_fp)
+    {
+      Host::AddIconOSDMessage(
+        "gamedb_disable_pgxp_texture", ICON_FA_MAGIC,
+        TRANSLATE_STR("OSDMessage", "PGXP projection precision preservation disabled by compatibility settings."),
+        osd_duration);
+    }
+
+    settings.gpu_pgxp_preserve_proj_fp = false;
+  }
+
   if (HasTrait(Trait::ForcePGXPVertexCache))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_vertex_cache)
@@ -538,6 +579,14 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     }
 
     settings.gpu_pgxp_cpu = true;
+  }
+  else if (settings.UsingPGXPCPUMode())
+  {
+    Host::AddIconOSDMessage(
+      "gamedb_force_pgxp_cpu", ICON_FA_MICROCHIP,
+      TRANSLATE_STR("OSDMessage",
+                    "PGXP CPU mode is enabled, but it is not required for this game. This may cause rendering errors."),
+      osd_duration);
   }
 
   if (HasTrait(Trait::DisablePGXPDepthBuffer))
@@ -713,6 +762,7 @@ bool GameDatabase::LoadFromCache()
         !ReadOptionalFromStream(stream.get(), &entry.gpu_max_run_ahead) ||
         !ReadOptionalFromStream(stream.get(), &entry.gpu_pgxp_tolerance) ||
         !ReadOptionalFromStream(stream.get(), &entry.gpu_pgxp_depth_threshold) ||
+        !ReadOptionalFromStream(stream.get(), &entry.gpu_line_detect_mode) ||
         !stream->ReadSizePrefixedString(&entry.disc_set_name) || !stream->ReadU32(&num_disc_set_serials))
     {
       Log_DevPrintf("Cache entry is corrupted.");
@@ -811,6 +861,7 @@ bool GameDatabase::SaveToCache()
     result = result && WriteOptionalToStream(stream.get(), entry.gpu_max_run_ahead);
     result = result && WriteOptionalToStream(stream.get(), entry.gpu_pgxp_tolerance);
     result = result && WriteOptionalToStream(stream.get(), entry.gpu_pgxp_depth_threshold);
+    result = result && WriteOptionalToStream(stream.get(), entry.gpu_line_detect_mode);
 
     result = result && stream->WriteSizePrefixedString(entry.disc_set_name);
     result = result && stream->WriteU32(static_cast<u32>(entry.disc_set_serials.size()));
@@ -1021,6 +1072,8 @@ bool GameDatabase::ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value)
     entry->gpu_max_run_ahead = GetOptionalTFromObject<u32>(settings, "gpuMaxRunAhead");
     entry->gpu_pgxp_tolerance = GetOptionalTFromObject<float>(settings, "gpuPGXPTolerance");
     entry->gpu_pgxp_depth_threshold = GetOptionalTFromObject<float>(settings, "gpuPGXPDepthThreshold");
+    entry->gpu_line_detect_mode =
+      ParseOptionalTFromObject<GPULineDetectMode>(settings, "gpuLineDetectMode", &Settings::ParseLineDetectModeName);
   }
 
   if (const ryml::ConstNodeRef disc_set = value.find_child("discSet"); disc_set.valid() && disc_set.has_children())

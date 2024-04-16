@@ -31,6 +31,7 @@ static constexpr u32 TRAMPOLINE_AREA_SIZE = 4 * 1024;
 static std::unordered_map<const void*, u32> s_trampoline_targets;
 static u8* s_trampoline_start_ptr = nullptr;
 static u32 s_trampoline_used = 0;
+static ptrdiff_t s_trampoline_rw_diff = 0;
 } // namespace CPU::Recompiler
 
 bool CPU::Recompiler::armIsCallerSavedRegister(u32 id)
@@ -258,7 +259,7 @@ u8* CPU::Recompiler::armGetJumpTrampoline(const void* target)
   }
 
   u8* start = s_trampoline_start_ptr + offset;
-  a64::Assembler armAsm(start, TRAMPOLINE_AREA_SIZE - offset);
+  a64::Assembler armAsm(start, s_trampoline_rw_diff, TRAMPOLINE_AREA_SIZE - offset);
   armMoveAddressToReg(&armAsm, RXSCRATCH, target);
   armAsm.br(RXSCRATCH);
 
@@ -299,7 +300,7 @@ u32 CPU::CodeCache::GetHostInstructionCount(const void* start, u32 size)
   return size / a64::kInstructionSize;
 }
 
-u32 CPU::CodeCache::EmitJump(void* code, const void* dst, bool flush_icache)
+u32 CPU::CodeCache::EmitJump(void* code, const void* dst, ptrdiff_t rw_diff, bool flush_icache)
 {
   using namespace a64;
   using namespace CPU::Recompiler;
@@ -308,21 +309,21 @@ u32 CPU::CodeCache::EmitJump(void* code, const void* dst, bool flush_icache)
   DebugAssert(vixl::IsInt26(disp));
 
   const u32 new_code = B | Assembler::ImmUncondBranch(disp);
-  std::memcpy(code, &new_code, sizeof(new_code));
+  std::memcpy(code + rw_diff, &new_code, sizeof(new_code));
   if (flush_icache)
     JitCodeBuffer::FlushInstructionCache(code, kInstructionSize);
 
   return kInstructionSize;
 }
 
-u32 CPU::CodeCache::EmitASMFunctions(void* code, u32 code_size)
+u32 CPU::CodeCache::EmitASMFunctions(void* code, u32 code_size, ptrdiff_t rw_diff)
 {
   using namespace vixl::aarch64;
   using namespace CPU::Recompiler;
 
 #define PTR(x) a64::MemOperand(RSTATE, (s64)(((u8*)(x)) - ((u8*)&g_state)))
 
-  Assembler actual_asm(static_cast<u8*>(code), code_size);
+  Assembler actual_asm(static_cast<u8*>(code), rw_diff, code_size);
   Assembler* armAsm = &actual_asm;
 
 #ifdef VIXL_DEBUG
@@ -404,6 +405,7 @@ u32 CPU::CodeCache::EmitASMFunctions(void* code, u32 code_size)
   s_trampoline_targets.clear();
   s_trampoline_start_ptr = static_cast<u8*>(code) + armAsm->GetCursorOffset();
   s_trampoline_used = 0;
+  s_trampoline_rw_diff = rw_diff;
 
 #undef PTR
   return static_cast<u32>(armAsm->GetCursorOffset()) + TRAMPOLINE_AREA_SIZE;
@@ -476,12 +478,10 @@ static const a64::XRegister GetFastmemBasePtrReg()
 
 CodeGenerator::CodeGenerator(JitCodeBuffer* code_buffer)
   : m_code_buffer(code_buffer), m_register_cache(*this),
-    m_near_emitter(static_cast<vixl::byte*>(code_buffer->ToRwAddr(code_buffer->GetFreeCodePointer())),
-                   code_buffer->GetFreeCodeSpace(),
-                   a64::PositionDependentCode),
-    m_far_emitter(static_cast<vixl::byte*>(code_buffer->ToRwAddr(code_buffer->GetFreeFarCodePointer())),
-                  code_buffer->GetFreeFarCodeSpace(),
-                  a64::PositionDependentCode),
+    m_near_emitter(static_cast<vixl::byte*>(code_buffer->GetFreeCodePointer()), code_buffer->GetRWDiff(),
+                   code_buffer->GetFreeCodeSpace(), a64::PositionDependentCode),
+    m_far_emitter(static_cast<vixl::byte*>(code_buffer->GetFreeFarCodePointer()), code_buffer->GetRWDiff(),
+                  code_buffer->GetFreeFarCodeSpace(), a64::PositionDependentCode),
     m_emit(&m_near_emitter)
 {
   // remove the temporaries from vixl's list to prevent it from using them.
@@ -2059,7 +2059,8 @@ void CodeGenerator::EmitUpdateFastmemBase()
   m_emit->Ldr(GetFastmemBasePtrReg(), a64::MemOperand(GetCPUPtrReg(), offsetof(State, fastmem_base)));
 }
 
-void CodeGenerator::BackpatchLoadStore(void* host_pc, JitCodeBuffer* code_buffer, const CodeCache::LoadstoreBackpatchInfo& lbi)
+void CodeGenerator::BackpatchLoadStore(void* host_pc, JitCodeBuffer* code_buffer,
+                                       const CodeCache::LoadstoreBackpatchInfo& lbi)
 {
   Log_DevFmt("Backpatching {} (guest PC 0x{:08X}) to slowmem at {}", host_pc, lbi.guest_pc, lbi.thunk_address);
 
@@ -2070,8 +2071,8 @@ void CodeGenerator::BackpatchLoadStore(void* host_pc, JitCodeBuffer* code_buffer
   Assert(a64::Instruction::IsValidImmPCOffset(a64::UncondBranchType, jump_distance >> 2));
 
   // turn it into a jump to the slowmem handler
-  vixl::aarch64::MacroAssembler emit(code_buffer->ToRwAddr(static_cast<vixl::byte*>(host_pc)),
-                                     lbi.code_size, a64::PositionDependentCode);
+  vixl::aarch64::MacroAssembler emit(static_cast<vixl::byte*>(host_pc), code_buffer->GetRWDiff(), lbi.code_size,
+                                     a64::PositionDependentCode);
   emit.b(jump_distance >> 2);
 
   const s32 nops = (static_cast<s32>(lbi.code_size) - static_cast<s32>(emit.GetCursorOffset())) / 4;

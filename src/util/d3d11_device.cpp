@@ -79,6 +79,7 @@ bool D3D11Device::CreateDevice(const std::string_view& adapter, bool threaded_pr
     return false;
 
   ComPtr<IDXGIAdapter1> dxgi_adapter = D3DCommon::GetAdapterByName(m_dxgi_factory.Get(), adapter);
+  m_max_feature_level = D3DCommon::GetDeviceMaxFeatureLevel(dxgi_adapter.Get());
 
   static constexpr std::array<D3D_FEATURE_LEVEL, 3> requested_feature_levels = {
     {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0}};
@@ -128,6 +129,7 @@ bool D3D11Device::CreateDevice(const std::string_view& adapter, bool threaded_pr
     Log_InfoPrintf("D3D Adapter: %s", D3DCommon::GetAdapterName(dxgi_adapter.Get()).c_str());
   else
     Log_ErrorPrint("Failed to obtain D3D adapter name.");
+  Log_InfoFmt("Max device feature level: {}", D3DCommon::GetFeatureLevelString(m_max_feature_level));
 
   BOOL allow_tearing_supported = false;
   hr = m_dxgi_factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing_supported,
@@ -155,7 +157,6 @@ void D3D11Device::DestroyDevice()
 {
   std::unique_lock lock(s_instance_mutex);
 
-  DestroyStagingBuffer();
   DestroyBuffers();
   m_context.Reset();
   m_device.Reset();
@@ -185,8 +186,11 @@ void D3D11Device::SetFeatures(FeatureMask disabled_features)
   m_features.texture_copy_to_self = false;
   m_features.supports_texture_buffers = !(disabled_features & FEATURE_MASK_TEXTURE_BUFFERS);
   m_features.texture_buffers_emulated_with_ssbo = false;
+  m_features.feedback_loops = false;
   m_features.geometry_shaders = !(disabled_features & FEATURE_MASK_GEOMETRY_SHADERS);
   m_features.partial_msaa_resolve = false;
+  m_features.memory_import = false;
+  m_features.explicit_present = false;
   m_features.gpu_timing = true;
   m_features.shader_cache = true;
   m_features.pipeline_cache = false;
@@ -455,9 +459,9 @@ std::string D3D11Device::GetDriverInfo() const
 
 bool D3D11Device::CreateBuffers()
 {
-  if (!m_vertex_buffer.Create(m_device.Get(), D3D11_BIND_VERTEX_BUFFER, VERTEX_BUFFER_SIZE) ||
-      !m_index_buffer.Create(m_device.Get(), D3D11_BIND_INDEX_BUFFER, INDEX_BUFFER_SIZE) ||
-      !m_uniform_buffer.Create(m_device.Get(), D3D11_BIND_CONSTANT_BUFFER, UNIFORM_BUFFER_SIZE))
+  if (!m_vertex_buffer.Create(D3D11_BIND_VERTEX_BUFFER, VERTEX_BUFFER_SIZE, VERTEX_BUFFER_SIZE) ||
+      !m_index_buffer.Create(D3D11_BIND_INDEX_BUFFER, INDEX_BUFFER_SIZE, INDEX_BUFFER_SIZE) ||
+      !m_uniform_buffer.Create(D3D11_BIND_CONSTANT_BUFFER, MIN_UNIFORM_BUFFER_SIZE, MAX_UNIFORM_BUFFER_SIZE))
   {
     Log_ErrorPrintf("Failed to create vertex/index/uniform buffers.");
     return false;
@@ -600,11 +604,6 @@ bool D3D11Device::GetHostRefreshRate(float* refresh_rate)
   return GPUDevice::GetHostRefreshRate(refresh_rate);
 }
 
-void D3D11Device::SetVSync(bool enabled)
-{
-  m_vsync_enabled = enabled;
-}
-
 bool D3D11Device::BeginPresent(bool skip_present)
 {
   if (skip_present)
@@ -613,7 +612,7 @@ bool D3D11Device::BeginPresent(bool skip_present)
   if (!m_swap_chain)
   {
     // Note: Really slow on Intel...
-    m_context->Flush();
+    //m_context->Flush();
     TrimTexturePool();
     return false;
   }
@@ -646,22 +645,31 @@ bool D3D11Device::BeginPresent(bool skip_present)
   return true;
 }
 
-void D3D11Device::EndPresent()
+void D3D11Device::EndPresent(bool explicit_present)
 {
+  DebugAssert(!explicit_present);
   DebugAssert(m_num_current_render_targets == 0 && !m_current_depth_target);
 
-  if (!m_vsync_enabled && m_gpu_timing_enabled)
+  if (m_vsync_enabled && m_gpu_timing_enabled)
     PopTimestampQuery();
 
-  if (!m_vsync_enabled && m_using_allow_tearing)
+  // DirectX has no concept of tear-or-sync. I guess if we measured times ourselves, we could implement it.
+  if (m_vsync_enabled)
+    m_swap_chain->Present(BoolToUInt32(1), 0);
+  else if (m_using_allow_tearing) // Disabled or VRR, VRR requires the allow tearing flag :/
     m_swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
   else
-    m_swap_chain->Present(BoolToUInt32(m_vsync_enabled), 0);
+    m_swap_chain->Present(0, 0);
 
   if (m_gpu_timing_enabled)
     KickTimestampQuery();
 
   TrimTexturePool();
+}
+
+void D3D11Device::SubmitPresent()
+{
+  Panic("Not supported by this API.");
 }
 
 GPUDevice::AdapterAndModeList D3D11Device::StaticGetAdapterAndModeList()
@@ -878,41 +886,67 @@ void D3D11Device::UnmapIndexBuffer(u32 used_index_count)
 
 void D3D11Device::PushUniformBuffer(const void* data, u32 data_size)
 {
-  const u32 used_space = Common::AlignUpPow2(data_size, UNIFORM_BUFFER_ALIGNMENT);
-  const auto res = m_uniform_buffer.Map(m_context.Get(), UNIFORM_BUFFER_ALIGNMENT, used_space);
+  const u32 req_align =
+    m_uniform_buffer.IsUsingMapNoOverwrite() ? UNIFORM_BUFFER_ALIGNMENT : UNIFORM_BUFFER_ALIGNMENT_DISCARD;
+  const u32 req_size = Common::AlignUpPow2(data_size, req_align);
+  const auto res = m_uniform_buffer.Map(m_context.Get(), req_align, req_size);
   std::memcpy(res.pointer, data, data_size);
-  m_uniform_buffer.Unmap(m_context.Get(), data_size);
+  m_uniform_buffer.Unmap(m_context.Get(), req_size);
   s_stats.buffer_streamed += data_size;
 
-  const UINT first_constant = (res.index_aligned * UNIFORM_BUFFER_ALIGNMENT) / 16u;
-  const UINT num_constants = (used_space * UNIFORM_BUFFER_ALIGNMENT) / 16u;
-  m_context->VSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
-  m_context->PSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
+  if (m_uniform_buffer.IsUsingMapNoOverwrite())
+  {
+    const UINT first_constant = (res.index_aligned * UNIFORM_BUFFER_ALIGNMENT) / 16u;
+    const UINT num_constants = req_size / 16u;
+    m_context->VSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
+    m_context->PSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
+  }
+  else
+  {
+    DebugAssert(res.index_aligned == 0);
+    m_context->VSSetConstantBuffers(0, 1, m_uniform_buffer.GetD3DBufferArray());
+    m_context->PSSetConstantBuffers(0, 1, m_uniform_buffer.GetD3DBufferArray());
+  }
 }
 
 void* D3D11Device::MapUniformBuffer(u32 size)
 {
-  const u32 used_space = Common::AlignUpPow2(size, UNIFORM_BUFFER_ALIGNMENT);
-  const auto res = m_uniform_buffer.Map(m_context.Get(), UNIFORM_BUFFER_ALIGNMENT, used_space);
+  const u32 req_align =
+    m_uniform_buffer.IsUsingMapNoOverwrite() ? UNIFORM_BUFFER_ALIGNMENT : UNIFORM_BUFFER_ALIGNMENT_DISCARD;
+  const u32 req_size = Common::AlignUpPow2(size, req_align);
+  const auto res = m_uniform_buffer.Map(m_context.Get(), req_align, req_size);
   return res.pointer;
 }
 
 void D3D11Device::UnmapUniformBuffer(u32 size)
 {
-  const u32 used_space = Common::AlignUpPow2(size, UNIFORM_BUFFER_ALIGNMENT);
-  const UINT first_constant = m_uniform_buffer.GetPosition() / 16u;
-  const UINT num_constants = used_space / 16u;
+  const u32 pos = m_uniform_buffer.GetPosition();
+  const u32 req_align =
+    m_uniform_buffer.IsUsingMapNoOverwrite() ? UNIFORM_BUFFER_ALIGNMENT : UNIFORM_BUFFER_ALIGNMENT_DISCARD;
+  const u32 req_size = Common::AlignUpPow2(size, req_align);
 
-  m_uniform_buffer.Unmap(m_context.Get(), used_space);
+  m_uniform_buffer.Unmap(m_context.Get(), req_size);
   s_stats.buffer_streamed += size;
 
-  m_context->VSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
-  m_context->PSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
+  if (m_uniform_buffer.IsUsingMapNoOverwrite())
+  {
+    const UINT first_constant = pos / 16u;
+    const UINT num_constants = req_size / 16u;
+    m_context->VSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
+    m_context->PSSetConstantBuffers1(0, 1, m_uniform_buffer.GetD3DBufferArray(), &first_constant, &num_constants);
+  }
+  else
+  {
+    DebugAssert(pos == 0);
+    m_context->VSSetConstantBuffers(0, 1, m_uniform_buffer.GetD3DBufferArray());
+    m_context->PSSetConstantBuffers(0, 1, m_uniform_buffer.GetD3DBufferArray());
+  }
 }
 
-void D3D11Device::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds)
+void D3D11Device::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds, GPUPipeline::RenderPassFlag feedback_loop)
 {
   ID3D11RenderTargetView* rtvs[MAX_RENDER_TARGETS];
+  DebugAssert(!feedback_loop);
 
   bool changed = (m_num_current_render_targets != num_rts || m_current_depth_target != ds);
   m_current_depth_target = static_cast<D3D11Texture*>(ds);
@@ -1047,12 +1081,19 @@ void D3D11Device::SetScissor(s32 x, s32 y, s32 width, s32 height)
 
 void D3D11Device::Draw(u32 vertex_count, u32 base_vertex)
 {
+  DebugAssert(!m_vertex_buffer.IsMapped() && !m_index_buffer.IsMapped());
   s_stats.num_draws++;
   m_context->Draw(vertex_count, base_vertex);
 }
 
 void D3D11Device::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
 {
+  DebugAssert(!m_vertex_buffer.IsMapped() && !m_index_buffer.IsMapped());
   s_stats.num_draws++;
   m_context->DrawIndexed(index_count, base_index, base_vertex);
+}
+
+void D3D11Device::DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type)
+{
+  Panic("Barriers are not supported");
 }

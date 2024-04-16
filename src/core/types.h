@@ -80,6 +80,15 @@ enum class GPURenderer : u8
   Count
 };
 
+enum class DisplayDeinterlacingMode : u8
+{
+  Disabled,
+  Weave,
+  Blend,
+  Adaptive,
+  Count
+};
+
 enum class GPUTextureFilter : u8
 {
   Nearest,
@@ -106,6 +115,15 @@ enum class GPUWireframeMode : u8
   OverlayWireframe,
   OnlyWireframe,
   Count,
+};
+
+enum class GPULineDetectMode : u8
+{
+  Disabled,
+  Quads,
+  BasicTriangles,
+  AggressiveTriangles,
+  Count
 };
 
 enum class DisplayCropMode : u8
@@ -154,11 +172,30 @@ enum class DisplayExclusiveFullscreenControl : u8
   Count
 };
 
+enum class DisplayScreenshotMode : u8
+{
+  ScreenResolution,
+  InternalResolution,
+  UncorrectedInternalResolution,
+  Count
+};
+
+enum class DisplayScreenshotFormat : u8
+{
+  PNG,
+  JPEG,
+  WebP,
+  Count
+};
+
 enum class AudioBackend : u8
 {
   Null,
 #ifdef ENABLE_CUBEB
   Cubeb,
+#endif
+#ifdef ENABLE_SDL2
+  SDL,
 #endif
 #ifdef _WIN32
   XAudio2,
