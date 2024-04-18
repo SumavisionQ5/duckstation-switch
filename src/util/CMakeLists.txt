@@ -262,7 +262,7 @@ elseif(APPLE)
   find_library(IOK_LIBRARY IOKit REQUIRED)
   find_library(METAL_LIBRARY Metal)
   find_library(QUARTZCORE_LIBRARY QuartzCore)
-  target_link_libraries(util PRIVATE ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOK_LIBRARY} spirv-cross)
+  target_link_libraries(util PRIVATE ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOK_LIBRARY} spirv-cross-c-shared)
   set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
 elseif(NOT ANDROID AND NOT NINTENDO_SWITCH)
   target_sources(util PRIVATE
@@ -280,6 +280,9 @@ elseif(NINTENDO_SWITCH)
   target_sources(util PRIVATE
     platform_misc_switch.cpp
     switch_input_source.cpp
+
+    switch_audio_stream.cpp
+    switch_audio_stream.h
 
     deko3d_device.cpp
     deko3d_stream_buffer.cpp
